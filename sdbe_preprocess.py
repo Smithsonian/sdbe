@@ -18,9 +18,12 @@ Preprocessing routines for SWARM data to match R2DBE data.
 """
 
 import read_sdbe_vdif, read_r2dbe_vdif, cross_corr
+import vdif
 import numpy as np
+import scipy as sp
 import h5py
 import logging
+import struct
 from string import join
 import os
 import matplotlib.pyplot as plt
@@ -300,6 +303,40 @@ def run_diagnostics(scan_filename_base,rel_path_to_in='./',rel_path_to_out='./')
 	fig.savefig(rel_path_to_out + scan_filename_base + '_sdbe_preprocess_reordering.pdf',bbox_inches='tight')
 	plt.close()
 	
+	# Convert SDBE data to time-domain to get good quantization levels
+	logger.info('Transform SWARM data to time-domain to calibrate quantization levels.')
+	xs0_nearest = resample_sdbe_to_r2dbe_fft_interp(Xs0_shuffled)[offset_swarmdbe_data:]
+	xs1_nearest = resample_sdbe_to_r2dbe_fft_interp(Xs1_shuffled)[offset_swarmdbe_data:]
+	##### This code snippet taken from alc.py
+	L = len(xs0_nearest)
+	y = sorted(xs0_nearest)
+	# find value 16% of the way through
+	Lt = int(L*0.16)
+	th_1 = abs(y[Lt-1])
+	# find value at 84% of the way through
+	Lt2 = int(L*0.84)
+	th_2 = abs(y[Lt2-1])
+	# average these threshold values
+	th0 = (th_1+th_2)/2
+	L = len(xs1_nearest)
+	y = sorted(xs1_nearest)
+	# find value 16% of the way through
+	Lt = int(L*0.16)
+	th_1 = abs(y[Lt-1])
+	# find value at 84% of the way through
+	Lt2 = int(L*0.84)
+	th_2 = abs(y[Lt2-1])
+	# average these threshold values
+	th1 = (th_1+th_2)/2
+	####
+	
+	# Store binary data for first R2DBE VDIF packet to use as template
+	# when composing SWARM data as VDIF packets
+	logger.info('Storing R2DBE VDIF bytes as template.')
+	f = open(rel_path_to_in + scan_filename_base + '_r2dbe_eth3.vdif','r')
+	vdif_r2dbe_bytes = np.array(struct.unpack('<%dB' % read_r2dbe_vdif.FRAME_SIZE_BYTES, f.read(read_r2dbe_vdif.FRAME_SIZE_BYTES)),dtype=np.uint8)
+	f.close()
+	
 	# print some statistics to logger
 	logger.info('''First batch of valid data:
 	%s
@@ -317,8 +354,13 @@ def run_diagnostics(scan_filename_base,rel_path_to_in='./',rel_path_to_out='./')
 	fh5 = h5py.File(output_filename,'w')
 	fh5.create_dataset('Xs1',data=Xs1_shuffled)
 	fh5.create_dataset('Xs0',data=Xs0_shuffled)
-	fh5.create_dataset('offset_r2dbe_data',data=offset_r2dbe_data.astype(np.int32))
-	fh5.create_dataset('offset_swarmdbe_data',data=offset_swarmdbe_data.astype(np.int32))
+	#~ fh5.create_dataset('xs1',data=xs0_nearest)
+	#~ fh5.create_dataset('xs0',data=xs1_nearest)
+	fh5.create_dataset('th1',data=th1)
+	fh5.create_dataset('th0',data=th0)
+	fh5.create_dataset('vdif_template',data=vdif_r2dbe_bytes)
+	fh5.create_dataset('offset_r2dbe_data',data=offset_r2dbe_data)
+	fh5.create_dataset('offset_swarmdbe_data',data=offset_swarmdbe_data)
 	fh5.create_dataset('idx_first_valid',data=idx_first_valid.astype(np.int32))
 	fh5.create_dataset('idx_end_first_batch_valid',data=idx_end_first_batch_valid.astype(np.int32))
 	fh5.create_dataset('idx_start_second_batch_valid',data=idx_start_second_batch_valid.astype(np.int32))
@@ -550,25 +592,25 @@ def resample_sdbe_to_r2dbe_fft_interp(Xs,interp_kind="nearest"):
 	"""
 	
 	# timestep sizes for SWARM and R2DBE rates
-	dt_s = 1.0/SWARM_RATE
-	dt_r = 1.0/R2DBE_RATE
+	dt_s = 1.0/read_sdbe_vdif.SWARM_RATE
+	dt_r = 1.0/read_sdbe_vdif.R2DBE_RATE
 	
 	# the timespan of one SWARM FFT window
-	T_s = dt_s*SWARM_SAMPLES_PER_WINDOW
+	T_s = dt_s*read_sdbe_vdif.SWARM_SAMPLES_PER_WINDOW
 	
 	# the timespan of all SWARM data
 	T_s_all = T_s*Xs.shape[0]
 	
 	# get time-domain signal
-	xs_swarm_rate = irfft(Xs,n=SWARM_SAMPLES_PER_WINDOW,axis=1).flatten()
+	xs_swarm_rate = np.fft.irfft(Xs,n=read_sdbe_vdif.SWARM_SAMPLES_PER_WINDOW,axis=1).flatten()
 	# and calculate sample points
-	t_swarm_rate = arange(0,T_s_all,dt_s)
+	t_swarm_rate = np.arange(0,T_s_all,dt_s)
 	
 	# calculate resample points (subtract one dt_s from end to avoid extrapolation)
-	t_r2dbe_rate = arange(0,T_s_all-dt_s,dt_r)
+	t_r2dbe_rate = np.arange(0,T_s_all-dt_s,dt_r)
 	
 	# and interpolate
-	x_interp = interp1d(t_swarm_rate,xs_swarm_rate,kind=interp_kind)
+	x_interp = sp.interpolate.interp1d(t_swarm_rate,xs_swarm_rate,kind=interp_kind)
 	xs = x_interp(t_r2dbe_rate)
 	
 	return xs
@@ -601,28 +643,28 @@ def resample_sdbe_to_r2dbe_zpfft(Xs,return_xs_f=False):
 	"""
 	
 	# timestep sizes for SWARM and R2DBE rates
-	dt_s = 1.0/SWARM_RATE
-	dt_r = 1.0/R2DBE_RATE
+	dt_s = 1.0/read_sdbe_vdif.SWARM_RATE
+	dt_r = 1.0/read_sdbe_vdif.R2DBE_RATE
 	
 	# we need to oversample by factor 64 and then undersample by factor 39
 	simple_r = 64 # 4096
 	simple_s = 39 # 2496
-	fft_window_oversample = 2*SWARM_CHANNELS*simple_r # 2* due to real FFT
+	fft_window_oversample = 2*read_sdbe_vdif.SWARM_CHANNELS*simple_r # 2* due to real FFT
 	
 	# oversample timestep size
 	dt_f = dt_s/simple_r
 	
 	# the timespan of one SWARM FFT window
-	T_s = dt_s*SWARM_SAMPLES_PER_WINDOW
+	T_s = dt_s*read_sdbe_vdif.SWARM_SAMPLES_PER_WINDOW
 	
 	# what are these...?
 	x_t2_0 = None
 	x_t2_1 = None
 	
 	# time vectors over one SWARM FFT window in different step sizes
-	t_r = arange(0,T_s,dt_r)
-	t_s = arange(0,T_s,dt_s)
-	t_f = arange(0,T_s,dt_f)
+	t_r = np.arange(0,T_s,dt_r)
+	t_s = np.arange(0,T_s,dt_s)
+	t_f = np.arange(0,T_s,dt_f)
 	
 	# offset in oversampled time series that corresponds to one dt_r step
 	# from the last R2DBE rate sample in the previous window
@@ -633,22 +675,22 @@ def resample_sdbe_to_r2dbe_zpfft(Xs,return_xs_f=False):
 	offset_global_s = list()
 	
 	# total number of time series samples
-	N_x = int(ceil(Xs.shape[0]*SWARM_SAMPLES_PER_WINDOW*dt_s/dt_r))
+	N_x = int(np.ceil(Xs.shape[0]*read_sdbe_vdif.SWARM_SAMPLES_PER_WINDOW*dt_s/dt_r))
 	# and initialize the output
-	xs = zeros(N_x)
-	fine_sample_index = zeros(N_x)
-	next_start_vec = zeros(Xs.shape[0])
+	xs = np.zeros(N_x)
+	fine_sample_index = np.zeros(N_x)
+	next_start_vec = np.zeros(Xs.shape[0])
 	# index in output where samples from next window are stored
 	start_output = 0
 	
 	# store the oversampled time-domain signal if requested
 	if (return_xs_f):
-		ts_f = zeros([Xs.shape[0],SWARM_SAMPLES_PER_WINDOW*simple_r])
-		xs_f = zeros([Xs.shape[0],SWARM_SAMPLES_PER_WINDOW*simple_r])
+		ts_f = np.zeros([Xs.shape[0],read_sdbe_vdif.SWARM_SAMPLES_PER_WINDOW*simple_r])
+		xs_f = np.zeros([Xs.shape[0],read_sdbe_vdif.SWARM_SAMPLES_PER_WINDOW*simple_r])
 	
 	for ii in range(Xs.shape[0]):
 		# iFFT and oversample by 64 in one
-		xs_chunk_f = irfft(Xs[ii,:],n=fft_window_oversample)
+		xs_chunk_f = np.fft.irfft(Xs[ii,:],n=fft_window_oversample)
 		
 		if (return_xs_f):
 			ts_f[ii,:] = ii*T_s + t_f
@@ -659,7 +701,7 @@ def resample_sdbe_to_r2dbe_zpfft(Xs,return_xs_f=False):
 		xs_chunk = xs_chunk_f[next_start::simple_s]
 		stop_output = start_output+xs_chunk.size
 		xs[start_output:stop_output] = xs_chunk
-		fine_sample_index[start_output:stop_output] = arange(0,fft_window_oversample)[next_start::simple_s]
+		fine_sample_index[start_output:stop_output] = np.arange(0,fft_window_oversample)[next_start::simple_s]
 		# update the starting index in the output array
 		start_output = stop_output
 		
