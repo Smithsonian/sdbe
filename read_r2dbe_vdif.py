@@ -44,7 +44,7 @@ SWARM_CHANNELS = 2**14
 SWARM_SAMPLES_PER_WINDOW = 2*SWARM_CHANNELS
 SWARM_RATE = 2496e6
 
-def read_from_file(filename,num_frames,offset_frames=0):
+def read_from_file(filename,num_frames,offset_frames=0,samples_per_window=R2DBE_SAMPLES_PER_WINDOW,frame_size_bytes=FRAME_SIZE_BYTES):
 	"""
 	Read a given number of VDIF frames from file.
 	
@@ -53,6 +53,8 @@ def read_from_file(filename,num_frames,offset_frames=0):
 	filename -- The VDIF filename from which sample data should be read.
 	num_frames -- The number of frames to read.
 	offset_frames -- Number of frames to skip at the start of the file.
+	samples_per_window -- Samples per window (default is 32768)
+	frame_size_bytes -- Number of bytes in VDIF frame (default is 8224)
 	
 	Returns:
 	--------
@@ -62,22 +64,26 @@ def read_from_file(filename,num_frames,offset_frames=0):
 	# get logger
 	logger = getLogger(__name__)
 	
-	num_samples = R2DBE_SAMPLES_PER_WINDOW * num_frames
+	num_samples = samples_per_window * num_frames
 	
 	x_r2dbe = empty(num_samples,dtype=int8)
 	x_r2dbe[:] = -128
 	psn = 0;
 	with open(filename,'r') as f:
 		if (offset_frames > 0):
+			logger.info('Reading from offset of %d VDIF frames.' % offset_frames)
+			offset_bytes = 0
 			for ii in range(offset_frames):
-				frame_bytes = f.read(FRAME_SIZE_BYTES)
-				if (len(frame_bytes) != FRAME_SIZE_BYTES):
+				frame_bytes = f.read(frame_size_bytes)
+				offset_bytes += frame_size_bytes
+				if (len(frame_bytes) != frame_size_bytes):
 					logger.error("EoF reached prematurely")
 					break
-				
+			logger.info('Offset by %d bytes.' % offset_bytes)
+		
 		for ii in range(0,num_frames):
-			frame_bytes = f.read(FRAME_SIZE_BYTES)
-			if (len(frame_bytes) != FRAME_SIZE_BYTES):
+			frame_bytes = f.read(frame_size_bytes)
+			if (len(frame_bytes) != frame_size_bytes):
 				logger.error("EoF reached prematurely")
 				break
 			frame = vdif.VDIFFrame.from_bin(frame_bytes)
@@ -89,7 +95,7 @@ def read_from_file(filename,num_frames,offset_frames=0):
 				if not (frame.psn == (psn+1)):
 					logger.warning("Packet out of order in frame %d" % ii)
 				psn += 1
-			x_r2dbe[ii*R2DBE_SAMPLES_PER_WINDOW:(ii+1)*R2DBE_SAMPLES_PER_WINDOW] = frame.data
+			x_r2dbe[ii*samples_per_window:(ii+1)*samples_per_window] = frame.data
 	
 	return x_r2dbe
 
