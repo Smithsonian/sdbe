@@ -26,8 +26,13 @@ import logging
 import struct
 from string import join
 import os
+import sys
+import resource
 import matplotlib.pyplot as plt
 from datetime import datetime
+
+VDIFOUT_SAMPLES_PER_FRAME = 16384
+VDIFOUT_SAMPLE_RATE = 2048e6
 
 def run_diagnostics(scan_filename_base,rel_path_to_in='./',rel_path_to_out='./'):
 	"""
@@ -354,8 +359,8 @@ def run_diagnostics(scan_filename_base,rel_path_to_in='./',rel_path_to_out='./')
 	fh5 = h5py.File(output_filename,'w')
 	fh5.create_dataset('Xs1',data=Xs1_shuffled)
 	fh5.create_dataset('Xs0',data=Xs0_shuffled)
-	#~ fh5.create_dataset('xs1',data=xs0_nearest)
-	#~ fh5.create_dataset('xs0',data=xs1_nearest)
+	fh5.create_dataset('xs1',data=xs1_nearest)
+	fh5.create_dataset('xs0',data=xs0_nearest)
 	fh5.create_dataset('th1',data=th1)
 	fh5.create_dataset('th0',data=th0)
 	fh5.create_dataset('vdif_template',data=vdif_r2dbe_bytes)
@@ -398,6 +403,9 @@ def get_diagnostics_from_file(scan_filename_base,rel_path='./'):
 	idx_peaks = fh5.get('idx_peaks').value.astype(int)
 	window_search_range = fh5.get('window_search_range').value.astype(int)
 	diagnostics['get_idx_offset'] = window_search_range[idx_peaks]
+	diagnostics['vdif_template'] = fh5.get('vdif_template').value
+	diagnostics['2bit_threshold_x0'] = fh5.get('th0').value
+	diagnostics['2bit_threshold_x1'] = fh5.get('th1').value
 	fh5.close()
 	
 	return diagnostics
@@ -483,9 +491,9 @@ def process_chunk(start1,end1,start2,end2,get_idx_offset,scan_filename_base,put_
 	logger = logging.getLogger(__name__)
 	
 	# initialize output
-	nd1 = put_idx_range[1] - put_idx_range[0]#(end1-start1+1).sum() + (num_batches-1)*read_sbde_vdif.SWARM_TRANSPOSE_SIZE
+	nd1 = put_idx_range[1] - put_idx_range[0]#(end1-start1+1).sum() + (num_batches-1)*read_sdbe_vdif.SWARM_TRANSPOSE_SIZE
 	nd2 = read_sdbe_vdif.SWARM_CHANNELS
-	logging.info('Creating output array of shape %dx%d' % (nd1,nd2))
+	logger.info('Creating output array of shape %dx%d' % (nd1,nd2))
 	Xs1_ordered = np.zeros((nd1,nd2),dtype=np.complex64)
 	Xs0_ordered = np.zeros((nd1,nd2),dtype=np.complex64)
 	
@@ -494,10 +502,10 @@ def process_chunk(start1,end1,start2,end2,get_idx_offset,scan_filename_base,put_
 	
 	# start processing on first batch
 	if (put_idx_range[0] <= (end1.min()+1)):
-		bcount_start = 1+ int((start1 + get_idx_offset).min()/read_sbde_vdif.SWARM_TRANSPOSE_SIZE) # 1+ is because we always skip first bcount value
-		bcount_end = 1+ int((end1 + get_idx_offset+1).max()/read_sbde_vdif.SWARM_TRANSPOSE_SIZE)
+		bcount_start = 1+ int((start1 + get_idx_offset).min()/read_sdbe_vdif.SWARM_TRANSPOSE_SIZE) # 1+ is because we always skip first bcount value
+		bcount_end = 1+ int((end1 + get_idx_offset+1).max()/read_sdbe_vdif.SWARM_TRANSPOSE_SIZE)
 		t0 = datetime.now()
-		specr,speci,timestamps = read_sbde_vdif.read_spectra_from_files(scan_filename_base + '_swarmdbe',bcount_offset=bcount_start,num_bcount=(bcount_end-bcount_start))
+		specr,speci,timestamps = read_sdbe_vdif.read_spectra_from_files(scan_filename_base + '_swarmdbe',bcount_offset=bcount_start,num_bcount=(bcount_end-bcount_start))
 		T_reading_beng = T_reading_beng + (datetime.now() - t0).total_seconds()
 		t0 = datetime.now()
 		Xs1 = np.array(specr[1,:,:],dtype=np.complex64) + 1j*np.array(speci[1,:,:],dtype=np.complex64)
@@ -508,12 +516,12 @@ def process_chunk(start1,end1,start2,end2,get_idx_offset,scan_filename_base,put_
 			base_idx = np.arange(start1[ithread],end1[ithread]+1)
 			get_idx = base_idx+get_idx_offset[ithread]
 			put_idx = base_idx
-			logging.info('(1st batch) Taking data from [%d,%d] and putting it in [%d,%d]' % (get_idx[0],get_idx[-1],put_idx[0],put_idx[-1]))
+			logger.info('(1st batch) Taking data from [%d,%d] and putting it in [%d,%d]' % (get_idx[0],get_idx[-1],put_idx[0],put_idx[-1]))
 			idx_valid_put_idx = np.nonzero((put_idx >= put_idx_range[0]) & (put_idx < put_idx_range[1]))[0]
 			if (len(idx_valid_put_idx) == 0):
-				logging.info('No valid put indecies, skipping')
+				logger.info('No valid put indecies, skipping')
 				continue
-			logging.info('(1st batch) Limit to data from [%d,%d] and data in [%d,%d]' % (get_idx[idx_valid_put_idx[0]],get_idx[idx_valid_put_idx[-1]],put_idx[idx_valid_put_idx[0]],put_idx[idx_valid_put_idx[-1]]))
+			logger.info('(1st batch) Limit to data from [%d,%d] and data in [%d,%d]' % (get_idx[idx_valid_put_idx[0]],get_idx[idx_valid_put_idx[-1]],put_idx[idx_valid_put_idx[0]],put_idx[idx_valid_put_idx[-1]]))
 			Xs1_ordered[put_idx[idx_valid_put_idx]-put_idx_range[0],:] = Xs1[get_idx[idx_valid_put_idx],:]
 			Xs0_ordered[put_idx[idx_valid_put_idx]-put_idx_range[0],:] = Xs0[get_idx[idx_valid_put_idx],:]
 		T_reordering = T_reordering + (datetime.now() - t0).total_seconds()
@@ -522,7 +530,7 @@ def process_chunk(start1,end1,start2,end2,get_idx_offset,scan_filename_base,put_
 	base_idx_2_0 = np.arange(start2[0],end2[0]+1)
 	base_idx_2_1 = np.arange(start2[1],end2[1]+1)
 	batch_range = range(put_idx_range[0]/128-2,put_idx_range[1]/128+2)
-	logging.info('Defined batch_range = [%d,%d)' % (batch_range[0],batch_range[-1]))
+	logger.info('Defined batch_range = [%d,%d)' % (batch_range[0],batch_range[-1]))
 	for ibatch in batch_range:
 		#~ t0 = datetime.now()
 		bcount_start = 1+ int((start2 + (ibatch-1)*read_sdbe_vdif.SWARM_TRANSPOSE_SIZE + get_idx_offset).min()/read_sdbe_vdif.SWARM_TRANSPOSE_SIZE)
@@ -546,12 +554,12 @@ def process_chunk(start1,end1,start2,end2,get_idx_offset,scan_filename_base,put_
 			get_idx = base_idx+get_idx_offset[ithread]
 			get_idx = get_idx + get_idx_global_offset
 			put_idx = base_idx
-			logging.info('(nth batch) Taking data from [%d,%d] and putting it in [%d,%d]' % (get_idx[0],get_idx[-1],put_idx[0],put_idx[-1]))
+			logger.info('(nth batch) Taking data from [%d,%d] and putting it in [%d,%d]' % (get_idx[0],get_idx[-1],put_idx[0],put_idx[-1]))
 			idx_valid_put_idx = np.nonzero((put_idx >= put_idx_range[0]) & (put_idx < put_idx_range[1]))[0]
 			if (len(idx_valid_put_idx) == 0):
-				logging.info('No valid put indecies, skipping')
+				logger.info('No valid put indecies, skipping')
 				continue
-			logging.info('(nth batch) Limit to data from [%d,%d] and data in [%d,%d]' % (get_idx[idx_valid_put_idx[0]],get_idx[idx_valid_put_idx[-1]],put_idx[idx_valid_put_idx[0]],put_idx[idx_valid_put_idx[-1]]))
+			logger.info('(nth batch) Limit to data from [%d,%d] and data in [%d,%d]' % (get_idx[idx_valid_put_idx[0]],get_idx[idx_valid_put_idx[-1]],put_idx[idx_valid_put_idx[0]],put_idx[idx_valid_put_idx[-1]]))
 			Xs1_ordered[put_idx[idx_valid_put_idx]-put_idx_range[0],:] = Xs1[get_idx[idx_valid_put_idx],:]
 			Xs0_ordered[put_idx[idx_valid_put_idx]-put_idx_range[0],:] = Xs0[get_idx[idx_valid_put_idx],:]
 		T_reordering = T_reordering + (datetime.now() - t0).total_seconds()
@@ -559,7 +567,7 @@ def process_chunk(start1,end1,start2,end2,get_idx_offset,scan_filename_base,put_
 	T_total_time = T_total_time + (datetime.now() - t0).total_seconds()
 	T_recording = 1.0 * nd1 * 32768 / read_sdbe_vdif.SWARM_RATE
 	
-	logging.info('''Benchmark results:
+	logger.info('''Benchmark results:
 	\tTotals\t\t\t\t\t\t        Time [s]\t    Per rec time
 	\tUsed data recording time:\t\t\t%16.6f\t\t%10.3f
 	\tTotal time:\t\t\t\t\t%16.6f\t\t%10.3f
@@ -571,13 +579,166 @@ def process_chunk(start1,end1,start2,end2,get_idx_offset,scan_filename_base,put_
 	
 	return Xs1_ordered,Xs0_ordered
 	
+def vdif_psn_to_eud(psn):
+	"""
+	Return two integer values to populate eud[2:4] given the psn.
+	
+	Arguments:
+	----------
+	psn -- Packet serial number
+	
+	Returns:
+	--------
+	eud2, eud3 -- Integer values (4byte words) with which to populate
+	VDIFFrame.eud[2:4].
+	"""
+	
+	eud2 = psn & 0xffffffff
+	eud3 = (psn >> 32) & 0xffffffff 
+	
+	return eud2,eud3
+	
+def vdif_station_id_str_to_int(station_id):
+	"""
+	Return integer value corresponding to two-letter station ID.
+	
+	Arguments:
+	----------
+	station_id -- Two letter station code.
+	
+	Returns:
+	--------
+	station_id_int -- Integer value corresponding to two-letter station code.
+	"""
+	
+	b = struct.unpack('<2B',station_id)
+	
+	station_id_int = (b[0] << 8) | b[1]
+	
+	return station_id_int
+	
+def make_vdif_header_from_template(vdif_template):
+	"""
+	Update the VDIF header to reflect new data format.
+	
+	Arguments:
+	----------
+	template -- Numpy array of int8 that contains first R2DBE VDIF frame.
+	
+	Returns:
+	--------
+	vdf -- VDIFFrame object with all-zeros data and correct header information
+	for the first frame of the processed SWARM data.
+	"""
+	
+	# create frame from bytes
+	vdf = vdif.VDIFFrame.from_bin(struct.pack('<%dB' % read_r2dbe_vdif.FRAME_SIZE_BYTES,*vdif_template))
+	
+	# Header information that is assumed correct are:
+	#	bits-per-sample (2)
+	#	complex (False)
+	#	eud_vers (2)
+	#	invalid_data (False)
+	#	legacy_mode (False)
+	#	log2_chans (0)
+	#	ref_epoch (30)
+	#	secs_since_epoch ...should be the same as the reference R2DBE, BUT SHOULD BE UPDATED AS FRAMES PRODUCED!
+	#	thread_id (0)
+	#	vdif_vers (0)
+	
+	# initialize data
+	vdf.data = np.zeros(VDIFOUT_SAMPLES_PER_FRAME,dtype=np.int32)
+	
+	# frame length in 8byte chunks
+	vdf.frame_length = (32 + VDIFOUT_SAMPLES_PER_FRAME*vdf.bits_per_sample/8)/8 # 32 is for VDIF header, first 8 for bits-to-bytes, second 8 because it is measured in 8byte chunks
+	
+	# initialize the psn to zero
+	vdf.psn = 0
+	# and build the eud based on that
+	vdf.eud[2:4] = vdif_psn_to_eud(vdf.psn)
+	
+	# new sample rate
+	vdf.sample_rate = VDIFOUT_SAMPLE_RATE
+	
+	# station ID should be 'Sm'
+	vdf.station_id = vdif_station_id_str_to_int('Sm')
+	
+	return vdf
+	
+def quantize_to_2bit(xs,th):
+	"""
+	Quantize data to 2bit given the threshold symmetric around zero.
+	
+	Arguments:
+	----------
+	xs -- Time-domain signal to quantize.
+	
+	Returns:
+	--------
+	xs_2bit -- Time-domain signal quantized to 2bit. The returned result
+	is given as a numpy array of int8.
+	"""
+	
+	xs_out = np.zeros(xs.size,dtype=np.int8)
+	idx_neg2 = np.nonzero(xs < -th)[0]
+	xs_out[idx_neg2] = -2
+	idx_neg1 = np.nonzero((xs >= -th) & (xs < 0))[0]
+	xs_out[idx_neg1] = -1
+	idx_zero = np.nonzero((xs >= 0) & (xs < th))[0]
+	xs_out[idx_zero] = 0
+	idx_pos1 = np.nonzero(xs >= th)[0]
+	xs_out[idx_pos1] = 1
+	
+	return xs_out
+	
+def bandlimit_1248_to_1024(xs,sub_sample=True):
+	"""
+	Process frequency content to extract the 1024MHz from 1248MHz.
+	
+	Arguments:
+	----------
+	xs -- Time-domain signal with power-of-two number of samples greater
+	than or equal to 2**12 (4096). The signal should be sampled at 4096Msps.
+	sub_sample -- Flag to set whether returned result is sampled at the
+	original 4096Msps or at Nyquist 2048Msps.
+	
+	Returns:
+	--------
+	xs_bl -- Signal bandlimited by extracting the desired 1024MHz.
+	
+	Notes:
+	------
+	Assumes xs is the 2nd SWARM channel so that 150MHz is discarded at
+	the start, and 74MHz discarded at the end.
+	"""
+	
+	FFT_SIZE = 2**12
+	
+	# lower is inclusive, upper is exclusive
+	BAND_BOUNDARIES = [150e6,1174e6]
+	
+	# FFT and keep only positive frequencies
+	Xs = np.fft.fft(xs.reshape(((xs.size/FFT_SIZE),FFT_SIZE)))[:,:FFT_SIZE/2]
+	
+	# band-limit
+	freq_vec = np.arange(0,read_r2dbe_vdif.R2DBE_RATE/2,read_r2dbe_vdif.R2DBE_RATE/FFT_SIZE)
+	idx_bl = np.nonzero((freq_vec >= BAND_BOUNDARIES[0]) & (freq_vec < BAND_BOUNDARIES[1]))[0]
+	Xs_bl = Xs[:,idx_bl]
+	
+	# take back to time-domain
+	xs_bl = np.fft.irfft(Xs_bl,n=FFT_SIZE).flatten()
+	
+	# optionally subsample
+	if (sub_sample):
+		xs_bl = xs_bl[::2]
+	
+	return xs_bl
+	
 def resample_sdbe_to_r2dbe_fft_interp(Xs,interp_kind="nearest"):
 	"""
 	Resample SWARM spectrum product in time-domain at R2DBE rate using
 	iFFT and then interpolation in the time-domain.
 	
-	Arguments:
-	----------
 	Arguments:
 	----------
 	Xs -- MxN numpy array in which the zeroth dimension is increasing
@@ -594,20 +755,22 @@ def resample_sdbe_to_r2dbe_fft_interp(Xs,interp_kind="nearest"):
 	# timestep sizes for SWARM and R2DBE rates
 	dt_s = 1.0/read_sdbe_vdif.SWARM_RATE
 	dt_r = 1.0/read_sdbe_vdif.R2DBE_RATE
-	
+
 	# the timespan of one SWARM FFT window
 	T_s = dt_s*read_sdbe_vdif.SWARM_SAMPLES_PER_WINDOW
-	
+
 	# the timespan of all SWARM data
 	T_s_all = T_s*Xs.shape[0]
-	
+
 	# get time-domain signal
 	xs_swarm_rate = np.fft.irfft(Xs,n=read_sdbe_vdif.SWARM_SAMPLES_PER_WINDOW,axis=1).flatten()
+	# output of iFFT is periodic function, so append first sample value to the end
+	xs_swarm_rate = np.concatenate((xs_swarm_rate,np.ones(1)*xs_swarm_rate[0]))
 	# and calculate sample points
-	t_swarm_rate = np.arange(0,T_s_all,dt_s)
-	
-	# calculate resample points (subtract one dt_s from end to avoid extrapolation)
-	t_r2dbe_rate = np.arange(0,T_s_all-dt_s,dt_r)
+	t_swarm_rate = np.arange(0,xs_swarm_rate.size)*dt_s
+
+	# calculate resample points
+	t_r2dbe_rate = np.arange(0,t_swarm_rate[-1],dt_r)
 	
 	# and interpolate
 	x_interp = sp.interpolate.interp1d(t_swarm_rate,xs_swarm_rate,kind=interp_kind)
@@ -726,4 +889,267 @@ def resample_sdbe_to_r2dbe_zpfft(Xs,return_xs_f=False):
 	else:
 		return xs,next_start_vec
 	
+if __name__ == "__main__":
+	
+	# time
+	t_total_start = datetime.now()
+	
+	# set the scan name
+	scan_filename_base = 'prep6_test1_local'
+	
+	# path to diagnostics
+	rel_path_out = '/home/ayoung/Work/projects/CrossCorrMar2015/out/'
+	# path to VDIF data files
+	rel_path_dat = '/home/ayoung/Work/projects/CrossCorrMar2015/dat/'
+	
+	# turn on logging
+	#logging.basicConfig(format=logging.BASIC_FORMAT,level=logging.INFO,stream=sys.stdout)
+	logfilename = rel_path_out + scan_filename_base + '_ppsdbe_2.log'
+	logging.basicConfig(format=logging.BASIC_FORMAT,level=logging.INFO,filename=logfilename)
+	logger = logging.getLogger()
+	
+	# read diagnostics output
+	d = get_diagnostics_from_file(scan_filename_base,rel_path_out)
+	
+	# create a template VDIFFrame
+	vdf_tmp = make_vdif_header_from_template(d['vdif_template'])
+	
+	# processing is done multiples of 39-snapshot frames so the time-domain 
+	# signal given to bandlimit_1248_to_1024 is a power-of-two element array.
+	chunks_in_39_snapshots = 32
+	t_chunk = chunks_in_39_snapshots*39*read_sdbe_vdif.SWARM_SAMPLES_PER_WINDOW/read_sdbe_vdif.SWARM_RATE
 
+	# VDIF frames per chunk -- THIS SHOULD REALLY BE A ROUND NUMBER!
+	N_vdf_per_chunk = int(np.floor(t_chunk / (VDIFOUT_SAMPLES_PER_FRAME/VDIFOUT_SAMPLE_RATE)))
+	frame_range = range(N_vdf_per_chunk)
+	
+	# initialize temporary storage for handling SWARM data offset; at 
+	# most we'll want to store VDIFOUT_SAMPLES_PER_FRAME-1 samples, but
+	# for now set length to zero, which indicates no buffering
+	xs0_buff = np.zeros(0)
+	xs1_buff = np.zeros(0)
+	
+	# initialize psn values
+	psn_xs0 = vdf_tmp.psn
+	psn_xs1 = vdf_tmp.psn
+	
+	# update the secs_since_epoch each time psn mods with this
+	update_secs_since_epoch_per_psn = int(1.0 / (VDIFOUT_SAMPLES_PER_FRAME/VDIFOUT_SAMPLE_RATE))
+	
+	# real-time stop in seconds
+	t_stop = 0.131072
+		
+	# number of chunks until we reach stop time (excluded, whole-number chunks)
+	N_chunk = int(np.floor(t_stop/t_chunk))
+	
+	# benchmarking
+	t_process = 0.0
+	t_resample = 0.0
+	t_bandlimit = 0.0
+	t_quantize = 0.0
+	t_pack_vdif = 0.0
+	
+	# default quantization threshold from diagnostics
+	threshold_2bit_quant_xs0 = d['2bit_threshold_x0']
+	threshold_2bit_quant_xs1 = d['2bit_threshold_x1']
+	
+	# open output file
+	out_vdf_filename_xs0 = rel_path_out + scan_filename_base + '_ppsdbe_xs0_2.vdif'
+	out_vdf_filename_xs1 = rel_path_out + scan_filename_base + '_ppsdbe_xs1_2.vdif'
+	logger.info('Writing output VDIF to (xs0) %s and (xs1) %s' % (out_vdf_filename_xs0,out_vdf_filename_xs1))
+	#~ with open(out_vdf_filename,'w') as f_vdf_out:
+	try:
+		f_vdf_out_xs0 = open(out_vdf_filename_xs0,'w')
+		f_vdf_out_xs1 = open(out_vdf_filename_xs1,'w')
+		for ichunk in range(N_chunk):
+			
+			# read spectrum snapshot data
+			chunk_start = ichunk * chunks_in_39_snapshots * 39
+			chunk_stop = (ichunk+1) * chunks_in_39_snapshots * 39
+			
+			logger.info('Processing chunk %d of %d: Requested index range is [%d,%d)' % (ichunk,N_chunk,chunk_start,chunk_stop))
+			
+			# we don't need Xs0 - only interested in one sideband for now
+			t_start = datetime.now()
+			Xs1,Xs0 = process_chunk(d['start1'],d['end1'],d['start2'],d['end2'],d['get_idx_offset'],rel_path_dat + scan_filename_base,put_idx_range=[chunk_start,chunk_stop])
+			t_process += (datetime.now() - t_start).total_seconds()
+			
+			# resample in time-domain
+			
+			logger.info('Resampling %d SWARM FFT windows.' % Xs1.shape[0])
+			
+			t_start = datetime.now()
+			#~ xs0 = resample_sdbe_to_r2dbe_fft_interp(Xs0,interp_kind="linear")
+			xs1 = resample_sdbe_to_r2dbe_fft_interp(Xs1,interp_kind="linear")
+			t_resample += (datetime.now() - t_start).total_seconds()
+			
+			N_pow_2 = int(np.log2(xs1.size))
+			if (not (2**N_pow_2 == xs1.size)):
+				logger.warn('Non-power of 2 number of resampled samples: %d != %d' % (2**N_pow_2, xs1.size))
+				xs1 = xs1[:2**N_pow_2]
+			
+			# extract only usable part of spectrum
+			
+			logger.info('Bandlimiting %d time-domain samples.' % xs1.size)
+			
+			t_start = datetime.now()
+			#~ xs0 = bandlimit_1248_to_1024(xs0,sub_sample=True)
+			xs1 = bandlimit_1248_to_1024(xs1,sub_sample=True)
+			t_bandlimit += (datetime.now() - t_start).total_seconds()
+			
+			# quantize to 2bit
+			
+			logger.info('Quantizing %d time-domain samples.' % xs1.size)
+			
+			t_start = datetime.now()
+			# if this is the first chunk, determine optimal quantization thresholds
+			if (ichunk == 0):
+				##### This code snippet taken from alc.py
+				#~ L = len(xs0)
+				#~ y = sorted(xs0)
+				#~ # find value 16% of the way through
+				#~ Lt = int(L*0.16)
+				#~ th_1 = abs(y[Lt-1])
+				#~ # find value at 84% of the way through
+				#~ Lt2 = int(L*0.84)
+				#~ th_2 = abs(y[Lt2-1])
+				#~ # average these threshold values
+				#~ threshold_2bit_quant_xs0 = (th_1+th_2)/2
+				L = len(xs1)
+				y = sorted(xs1)
+				# find value 16% of the way through
+				Lt = int(L*0.16)
+				th_1 = abs(y[Lt-1])
+				# find value at 84% of the way through
+				Lt2 = int(L*0.84)
+				th_2 = abs(y[Lt2-1])
+				# average these threshold values
+				threshold_2bit_quant_xs1 = (th_1+th_2)/2
+				#####
+			
+			#~ xs0 = quantize_to_2bit(xs0,threshold_2bit_quant_xs0)
+			xs1 = quantize_to_2bit(xs1,threshold_2bit_quant_xs1)
+			t_quantize += (datetime.now() - t_start).total_seconds()
+			
+			# pack in VDIF
+			
+			logger.info('Packing to VDIF.')
+			
+			t_start = datetime.now()
+			# if this is the first chunk, we need to limit data taking
+			# SWARM offset into account
+			if (ichunk == 0):
+				# divide offset by 2, since we're now at half-R2DBE-rate
+				#~ xs0_swarm_offset = d['offset_swarmdbe_data']/2
+				#~ xs0 = xs0[xs0_swarm_offset:]
+				#~ logger.info('SWARM data offset applied to xs0: starting %d samples in, only %d samples left.' % (xs0_swarm_offset,len(xs0)))
+				xs1_swarm_offset = d['offset_swarmdbe_data']/2
+				xs1 = xs1[xs1_swarm_offset:]
+				logger.info('SWARM data offset applied to xs1: starting %d samples in, only %d samples left.' % (xs1_swarm_offset,len(xs1)))
+				
+			
+			#~ # append buffer if present
+			#~ if (len(xs0_buff) > 0):
+				#~ logger.info('Buffered data for xs0: appending %d samples to the start of %d-long xs0.' % (len(xs0_buff),len(xs0)))
+				#~ xs0 = np.concatenate((xs0_buff,xs0))
+			
+			if (len(xs1_buff) > 0):
+				logger.info('Buffered data for xs1: appending %d samples to the start of %d-long xs1.' % (len(xs1_buff),len(xs1)))
+				xs1 = np.concatenate((xs1_buff,xs1))
+			
+			# divide into VDIF frames to write out
+			#~ N_vdf_frames = int(np.ceil(1.0*max(len(xs0),len(xs1))/VDIFOUT_SAMPLES_PER_FRAME))
+			N_vdf_frames = int(np.ceil(1.0*max(0,len(xs1))/VDIFOUT_SAMPLES_PER_FRAME))
+			
+			logger.info('Writing data to %d VDIF frames.' % N_vdf_frames)
+			for iframe in range(N_vdf_frames):
+				
+				logger.debug('Processing VDIF frame %d of %d for chunk %d.' % (iframe,N_vdf_per_chunk,ichunk))
+				
+				
+				
+				############# NOTE THIS FLAG DEFAULT WHEN ONLY DOING ONE OUTPUT!
+				full_xs0_frame = False
+				#############
+				
+				
+				
+				full_xs1_frame = True
+				# get range of samples to use
+				samp_start = iframe*VDIFOUT_SAMPLES_PER_FRAME
+				samp_stop = (iframe+1)*VDIFOUT_SAMPLES_PER_FRAME
+				
+				logger.debug('Samples for this frame: [%d,%d).' % (samp_start,samp_stop))
+				
+				#~ if (samp_stop > len(xs0)):
+					#~ xs0_buff = xs0[samp_start:]
+					#~ logger.info('Not enough data in xs0 to fill VDIF frame %d, buffering %d samples.' % (iframe,len(xs0_buff)))
+					#~ full_xs0_frame = False
+				if (samp_stop > len(xs1)):
+					xs1_buff = xs1[samp_start:]
+					logger.info('Not enough data in xs1 to fill VDIF frame %d, buffering %d samples.' % (iframe,len(xs1_buff)))
+					full_xs1_frame = False
+				
+				# terminate loop if data has dried up on both streams
+				if (not (full_xs0_frame or full_xs1_frame)):
+					logger.info('Not enough data for full frame in either stream, breaking.')
+					break
+				
+				if (full_xs0_frame):
+					psn_xs0 += 1
+					logger.debug('Writing VDIF packet %d in xs0 stream.' % psn_xs0)
+					# update frame psn
+					vdf_tmp.psn = psn_xs0
+					# and update the eud that contains it
+					vdf_tmp.eud[2:4] = vdif_psn_to_eud(vdf_tmp.psn)
+					# if psn is on second boundary, then update secs_since_epoch
+					if (vdf_tmp.psn % update_secs_since_epoch_per_psn == 0):
+						vdf_tmp.secs_since_epoch += 1
+					# update frame data for xs0 and write to file
+					vdf_tmp.data = xs0[samp_start:samp_stop]
+					f_vdf_out_xs0.write(vdf_tmp.to_bin())
+				if (full_xs1_frame):
+					psn_xs1 += 1
+					logger.debug('Writing VDIF packet %d in xs1 stream.' % psn_xs1)
+					# update frame psn
+					vdf_tmp.psn = psn_xs1
+					# and update the eud that contains it
+					vdf_tmp.eud[2:4] = vdif_psn_to_eud(vdf_tmp.psn)
+					# if psn is on second boundary, then update secs_since_epoch
+					if (vdf_tmp.psn % update_secs_since_epoch_per_psn == 0):
+						vdf_tmp.secs_since_epoch += 1
+					# update frame data for xs1 and write to file
+					vdf_tmp.data = xs1[samp_start:samp_stop]
+					f_vdf_out_xs1.write(vdf_tmp.to_bin())
+			
+			t_pack_vdif += (datetime.now() - t_start).total_seconds()
+			
+	finally:
+		
+		#~ logger.info('Found %d unused samples in xs0' % len(xs0_buff))
+		logger.info('Found %d unused samples in xs1' % len(xs1_buff))
+		
+		# close the output vdif file
+		f_vdf_out_xs0.close()
+		f_vdf_out_xs1.close()
+	
+	t_total = (datetime.now() - t_total_start).total_seconds()
+	
+	# output benchmarking results
+	logger.info('''Benchmark results:
+	\tTotals\t\t\t\t\t\t        Time [s]\t    Per rec time
+	\tUsed data recording time:\t\t\t%16.6f\t\t%10.3f
+	\tTotal time:\t\t\t\t\t%16.6f\t\t%10.3f
+
+	\tComponents\t\t\t\t\t\t        Time [s]\t    Per rec time
+	\tProcess:\t\t\t\t\t%16.6f\t\t%10.3f
+	\tResample:\t\t\t\t\t%16.6f\t\t%10.3f
+	\tBandlimit:\t\t\t\t\t%16.6f\t\t%10.3f
+	\tQuantize:\t\t\t\t\t%16.6f\t\t%10.3f
+	\tPack VDIF:\t\t\t\t\t%16.6f\t\t%10.3f
+	''' % (t_stop,t_stop/t_stop,t_total,t_total/t_stop,t_process,t_process/t_stop,t_resample,t_resample/t_stop,t_bandlimit,t_bandlimit/t_stop,t_quantize,t_quantize/t_stop,t_pack_vdif,t_pack_vdif/t_stop))
+	
+	logger.info('Memory usage: %d bytes (%8.6f GB).' % (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024,resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/2.0**20))
+	
+	logging.shutdown()
+	
