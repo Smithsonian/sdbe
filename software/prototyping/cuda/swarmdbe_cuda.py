@@ -7,6 +7,7 @@ from numpy import empty, zeros, int8, array, concatenate, floor, arange, \
 	roll, complex64, float32, hstack, ceil, int32, float64
 import pycuda.autoinit
 import pycuda.gpuarray as gpuarray
+import pycuda.driver as drv
 from pycuda.compiler import SourceModule
 from pycuda.elementwise import ElementwiseKernel
 import scikits.cuda.fft as cu_fft
@@ -62,6 +63,17 @@ mod = SourceModule("""
 			b[tid] = a[__double2int_rn(tid*c)];
 		}
 	}
+
+	texture<float,2,cudaReadModeElementType> a_tex;
+	__global__ void copy_texture_kernel(float *b, int Nb, double c, int Nf){
+		int tid = blockIdx.x * blockDim.x + threadIdx.x;
+		if (tid < Nb){
+			double sy = floor(tid * c / Nf);
+			double sx = tid * c - sy * Nf;
+			b[tid] = tex2D(a_tex,sx+0.5f,sy+0.5f);
+		}
+	}
+
 	""")
 
 def get_time(dt):
@@ -191,7 +203,6 @@ def resample_sdbe_to_r2dbe_zpfft(Xs):
 		# pull data back onto host
 		xs_chunk = y_d.get()
 
-
 		# fill output numpy array
 		stop_output = start_output+xs_chunk_size
 		xs[start_output:stop_output] = xs_chunk[:xs_chunk_size]
@@ -251,15 +262,34 @@ def resample_sdbe_to_r2dbe_fft_interp(Xs,interp_kind="nearest"):
 	# calculate time series, include scaling
 	cu_fft.ifft(x_d,xf_d,plan,scale=True)
 
-	# compile kernel
-	nearest_interp = mod.get_function(interp_kind)
-
 	# and interpolate
 	xs_size = int(floor(Xs.shape[0]*SWARM_SAMPLES_PER_WINDOW*dt_s/dt_r)) - 1
 	TPB = 64				# threads per block
 	nB = int(ceil(1. * xs_size / TPB))	# number of blocks
 	xs_d = gpuarray.empty(xs_size,float32)	# decimated time-series 
-	nearest_interp(xf_d,xs_d,int32(xs_size),float64(dt_r/dt_s),block=(TPB,1,1),grid=(nB,1))
+	if interp_kind == 'nearest':
+		# compile kernel
+		nearest_interp = mod.get_function(interp_kind)
+		# call kernel
+		nearest_interp(xf_d,xs_d,int32(xs_size),float64(dt_r/dt_s),block=(TPB,1,1),grid=(nB,1))
+	elif interp_kind == 'linear':
+		# compile kernel
+		linear_interp = mod.get_function("copy_texture_kernel")
+		# get texture reference
+		a_texref = mod.get_texref("a_tex")
+		#a_texref.set_filter_mode(drv.filter_mode.LINEAR)
+		a_texref.set_filter_mode(drv.filter_mode.POINT)
+		# move time series to texture reference
+		# http://lists.tiker.net/pipermail/pycuda/2009-November/001916.html
+		descr = drv.ArrayDescriptor()
+		descr.format= drv.array_format.FLOAT
+		descr.height = Xs.shape[0]
+		descr.width = SWARM_SAMPLES_PER_WINDOW
+		descr.num_channels = 1
+		a_texref.set_address_2d(xf_d.gpudata,descr,SWARM_SAMPLES_PER_WINDOW*4)
+		# set up linear interpolation over texture
+		linear_interp(xs_d,int32(xs_size),float64(dt_r/dt_s),int32(SWARM_SAMPLES_PER_WINDOW),\
+				texrefs=[a_texref],block=(TPB,1,1),grid=(nB,1))
 
 	# increase our timer 
 	timer1 += get_time(datetime.now()-clock1) 
