@@ -161,14 +161,10 @@ def resample_sdbe_to_r2dbe_zpfft(Xs):
 	xp_d = gpuarray.zeros(fft_window_oversample/2+1, dtype=complex64)
 	y_d = gpuarray.empty(xs_chunk_size_max,dtype=float32)
 
-	timer1 = 0
 	for ii in range(Xs.shape[0]):
 
 		# move window to device
 		x_d = gpuarray.to_gpu(Xs[ii,:].astype(complex64))
-
-		# start clock
-		clock1 = datetime.now()
 
 		# threads per block
 		# number of blocks
@@ -197,9 +193,6 @@ def resample_sdbe_to_r2dbe_zpfft(Xs):
 		# rescale from ifft using ElementwiseKernel
 		scale(y_d)
 
-		# increase our timer 
-		timer1 += get_time(datetime.now()-clock1) 
-
 		# pull data back onto host
 		xs_chunk = y_d.get()
 
@@ -221,7 +214,6 @@ def resample_sdbe_to_r2dbe_zpfft(Xs):
 			next_start = 0
 		else:
 			next_start = simple_s - num_dt_f_steps_short
-	print 'timer1: ',timer1
 	return xs,next_start_vec
 
 def resample_sdbe_to_r2dbe_fft_interp(Xs,interp_kind="nearest"):
@@ -240,9 +232,6 @@ def resample_sdbe_to_r2dbe_fft_interp(Xs,interp_kind="nearest"):
 	--------
 	xs -- The time-domain signal sampled at the R2DBE rate.
 	"""
-	# local timer
-	timer1 = 0
-	
 	# timestep sizes for SWARM and R2DBE rates
 	dt_s = 1.0/SWARM_RATE
 	dt_r = 1.0/R2DBE_RATE
@@ -255,9 +244,6 @@ def resample_sdbe_to_r2dbe_fft_interp(Xs,interp_kind="nearest"):
 
 	# allocate memory for time series
 	xf_d = gpuarray.empty((Xs.shape[0],SWARM_SAMPLES_PER_WINDOW),float32)
-
-	# start clock
-	clock1 = datetime.now()
 
 	# calculate time series, include scaling
 	cu_fft.ifft(x_d,xf_d,plan,scale=True)
@@ -277,10 +263,10 @@ def resample_sdbe_to_r2dbe_fft_interp(Xs,interp_kind="nearest"):
 		linear_interp = mod.get_function("copy_texture_kernel")
 		# get texture reference
 		a_texref = mod.get_texref("a_tex")
-		#a_texref.set_filter_mode(drv.filter_mode.LINEAR)
-		a_texref.set_filter_mode(drv.filter_mode.POINT)
+		a_texref.set_filter_mode(drv.filter_mode.LINEAR)	# linear
+		#a_texref.set_filter_mode(drv.filter_mode.POINT)	# nearest-neighbor
 		# move time series to texture reference
-		# http://lists.tiker.net/pipermail/pycuda/2009-November/001916.html
+		# following http://lists.tiker.net/pipermail/pycuda/2009-November/001916.html
 		descr = drv.ArrayDescriptor()
 		descr.format= drv.array_format.FLOAT
 		descr.height = Xs.shape[0]
@@ -291,8 +277,4 @@ def resample_sdbe_to_r2dbe_fft_interp(Xs,interp_kind="nearest"):
 		linear_interp(xs_d,int32(xs_size),float64(dt_r/dt_s),int32(SWARM_SAMPLES_PER_WINDOW),\
 				texrefs=[a_texref],block=(TPB,1,1),grid=(nB,1))
 
-	# increase our timer 
-	timer1 += get_time(datetime.now()-clock1) 
-	
-	print 'timer1: ',timer1
 	return xs_d.get()
