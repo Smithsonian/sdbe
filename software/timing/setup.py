@@ -26,7 +26,8 @@ from distutils.core import setup, Extension
 module1 = Extension('timing',
                     sources = ['timing.c'],
                     include_dirs = ['/usr/local/include'],
-                    library_dirs = ['/usr/local/lib'])
+                    library_dirs = ['/usr/local/lib'],
+                    libraries = ['rt'])
 
 setup (name = 'timing',
        version = '1.0',
