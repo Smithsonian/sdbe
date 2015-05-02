@@ -12,6 +12,8 @@ from pycuda.compiler import SourceModule
 from pycuda.elementwise import ElementwiseKernel
 import scikits.cuda.fft as cu_fft
 from datetime import datetime
+from timing import get_process_cpu_time, CLOCK_RES_PROCESS_CPU
+from numpy.random import standard_normal
 
 # VDIF frame size
 FRAME_SIZE_BYTES = 1056
@@ -37,10 +39,19 @@ R2DBE_RATE = 4096e6
 mod = SourceModule("""
 	#include <pycuda-complex.hpp>  // enable support for complex numbers
 
-	__global__ void fill_padded(pycuda::complex<float> *a, int Na, pycuda::complex<float> *b, int Nb){
-		int tid = blockIdx.x * blockDim.x + threadIdx.x;
-		if (tid < Nb){
-			a[tid] = b[tid];
+	__global__ void fill_padded(int h, pycuda::complex<float> *out, int wo, pycuda::complex<float> *in, int wi){
+		// pads with zeros only along x axis
+
+		int x = blockIdx.x * blockDim.x + threadIdx.x;
+		int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+		if (y < h){
+			if (x < wi){
+				out[y*wo+x] = in[y*wi+x];
+			} else if (x < wo) {
+				out[y*wo+x]._M_re = 0;
+				out[y*wo+x]._M_im = 0;
+			}
 		}
 	}
 
@@ -164,14 +175,14 @@ def resample_sdbe_to_r2dbe_zpfft(Xs):
 	for ii in range(Xs.shape[0]):
 
 		# move window to device
-		x_d = gpuarray.to_gpu(Xs[ii,:].astype(complex64))
+		x_d = gpuarray.to_gpu(Xs[ii,:])
 
 		# threads per block
-		# number of blocks
+		# number of blocks (keep the array as zeros to save time)
 		TPB = 1024
 		nB = int(ceil(1. * Xs.shape[1] / TPB))
 		# pad with zeros to oversample by 64
-		fill_padded(xp_d, int32(fft_window_oversample/2+1),\
+		fill_padded(int32(1), xp_d, int32(fft_window_oversample/2+1),\
 			    x_d, int32(Xs.shape[1]),\
 			    block=(TPB,1,1), grid=(nB,1))
 
@@ -240,13 +251,21 @@ def resample_sdbe_to_r2dbe_fft_interp(Xs,interp_kind="nearest"):
 	plan = cu_fft.Plan(SWARM_SAMPLES_PER_WINDOW,complex64,float32,Xs.shape[0])
 
 	# load complex spectrum to device
-	x_d = gpuarray.to_gpu(hstack([ Xs, zeros((Xs.shape[0],1),dtype=complex64) ]).astype(complex64))
+	x_d = gpuarray.to_gpu(Xs)
+	xp_d = gpuarray.empty((Xs.shape[0],Xs.shape[1]+1),dtype=complex64)
+
+	# pad nyquist with zeros
+	block = (32,32,1)
+	grid = (int(ceil(1. * (Xs.shape[1]+1) / block[1])), int(ceil(1. * Xs.shape[0] / block[0])))
+	fill_padded = mod.get_function("fill_padded")
+	fill_padded(int32(Xs.shape[0]),xp_d,int32(Xs.shape[1]+1),x_d,int32(Xs.shape[1]),\
+		block=block,grid=grid)
 
 	# allocate memory for time series
 	xf_d = gpuarray.empty((Xs.shape[0],SWARM_SAMPLES_PER_WINDOW),float32)
 
 	# calculate time series, include scaling
-	cu_fft.ifft(x_d,xf_d,plan,scale=True)
+	cu_fft.ifft(xp_d,xf_d,plan,scale=True)
 
 	# and interpolate
 	xs_size = int(floor(Xs.shape[0]*SWARM_SAMPLES_PER_WINDOW*dt_s/dt_r)) - 1
@@ -278,3 +297,36 @@ def resample_sdbe_to_r2dbe_fft_interp(Xs,interp_kind="nearest"):
 				texrefs=[a_texref],block=(TPB,1,1),grid=(nB,1))
 
 	return xs_d.get()
+
+if __name__ == "__main__":
+	"""
+	Test script
+	"""
+
+	# size of fake spectra
+	N_Beng_count = 8
+	spectra_shape = (127 * N_Beng_count, 2**14)
+	spectra = standard_normal(spectra_shape) + 1j * standard_normal(spectra_shape)
+
+	# nearest-neighor
+	tic = get_process_cpu_time()
+	xs_nearest = resample_sdbe_to_r2dbe_fft_interp(spectra,interp_kind='nearest')
+	toc = get_process_cpu_time()
+	time_nearest = toc-tic
+
+	# linear 
+	tic = get_process_cpu_time()
+	xs_linear = resample_sdbe_to_r2dbe_fft_interp(spectra,interp_kind='linear')
+	toc = get_process_cpu_time()
+	time_linear = toc-tic
+
+	# zero-padding FFT
+	tic = get_process_cpu_time()
+	xs_zpfft = resample_sdbe_to_r2dbe_zpfft(spectra)
+	toc = get_process_cpu_time()
+	time_zpfft = toc-tic
+
+	print 'For {0} B engine frames:'.format(N_Beng_count)
+	print 'nearest-neighbor interpolation:',time_nearest
+	print 'linear interpolation:',time_linear
+	print 'zero-padding FFT:',time_zpfft
