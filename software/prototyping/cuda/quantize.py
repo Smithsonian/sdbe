@@ -15,13 +15,14 @@ kernel_template = """
 // http://devblogs.nvidia.com/parallelforall/faster-parallel-reductions-kepler/
 
 // warp reduce
-__inline__ __device__ unsigned int halfWarpReduceSum(unsigned int val){
-	for (int offset = warpSize/4; offset > 0; offset /= 2)
+__inline__ __device__ unsigned int partialWarpReduceSum(unsigned int val){
+	//for (int offset = warpSize/4; offset > 0; offset /= 2)
+	for (int offset = warpSize/(2*%(BITS_PER_SAMPLE)d); offset > 0; offset /= 2)
 		val += __shfl_down(val, offset);
 	return val;
 }
 
-__global__ void quantize_2bit(const float *in, unsigned int *out, int N)
+__global__ void quantize(const float *in, unsigned int *out, int N)
 {
 	// This kernel must be called with integer number of warps/block
 
@@ -35,13 +36,13 @@ __global__ void quantize_2bit(const float *in, unsigned int *out, int N)
 	samp  = (samp + %(OFFSET_K)d) & %(SAMP_MAX)d;
 
 	// bit-shift using bit-masked thread id
-	samp = samp << (%(BITS_PER_SAMPLE)d * (tid & 0xf)) ;
+	samp = samp << (%(BITS_PER_SAMPLE)d * (tid & %(BIT_MASK)s)) ;
 
-	// sum over half warps
-	samp = halfWarpReduceSum(samp);
+	// sum over partial warps
+	samp = partialWarpReduceSum(samp);
 
-	if (tid %% 0x10 == 0) {
-		out[tid / 16] = samp;
+	if (tid %% (32 / %(BITS_PER_SAMPLE)d) == 0) {
+		out[tid / (32 / %(BITS_PER_SAMPLE)d)] = samp;
 	}
 
 	}
@@ -49,7 +50,7 @@ __global__ void quantize_2bit(const float *in, unsigned int *out, int N)
 }
 """
 
-def quantize(x,bits_per_sample):
+def cpu_quantize(x,bits_per_sample):
 	ans = np.empty(x.size * bits_per_sample / 32, dtype=np.uint32)
         samp_max = 2**bits_per_sample - 1
         samp_per_word = 32 / bits_per_sample
@@ -74,44 +75,47 @@ def quantize(x,bits_per_sample):
 NUM_SAMPLES = 2**20
 BITS_PER_SAMPLE = 2
 
-kernel_source = kernel_template % {'BITS_PER_SAMPLE':BITS_PER_SAMPLE,'OFFSET_K':2**(BITS_PER_SAMPLE-1),'SAMP_MAX':2**BITS_PER_SAMPLE-1}
+# use kernel template to generate source code
+kernel_source = kernel_template % {'BITS_PER_SAMPLE':BITS_PER_SAMPLE,'OFFSET_K':2**(BITS_PER_SAMPLE-1),'SAMP_MAX':2**BITS_PER_SAMPLE-1, 'BIT_MASK':hex(32 / BITS_PER_SAMPLE - 1)}
 
+# compile
 kernel_module = SourceModule(kernel_source)
 
 # create floating point array
 h_32bit_signal = np.random.standard_normal(NUM_SAMPLES).astype(np.float32)
 
-#
+# from float32 signal from cpu to gpu
 d_32bit_signal = cuda.mem_alloc(h_32bit_signal.nbytes)
 cuda.memcpy_htod(d_32bit_signal,h_32bit_signal)
 
-#
-quantize_2bit = kernel_module.get_function('quantize_2bit')
+# get kernel function
+gpu_quantize = kernel_module.get_function('quantize')
 
-#
-d_2bit_signal = cuda.mem_alloc(h_32bit_signal.size * 2 / 8)
+# allocate device memory for quantized signal
+d_q_signal = cuda.mem_alloc(h_32bit_signal.size * BITS_PER_SAMPLE / 8)
 
-# quantize
+# quantize on gpu
 tic = get_process_cpu_time()
-quantize_2bit(d_32bit_signal,d_2bit_signal,np.int32(NUM_SAMPLES),\
+gpu_quantize(d_32bit_signal,d_q_signal,np.int32(NUM_SAMPLES),\
 	block=(512,1,1),grid=(NUM_SAMPLES/512,1))
 #	block=(32,1,1),grid=(NUM_SAMPLES/32,1))
 toc = get_process_cpu_time()
 time_gpu = toc - tic
 
-# pull back answer
-h_2bit_signal = np.empty(NUM_SAMPLES / 16, dtype=np.uint32)
-cuda.memcpy_dtoh(h_2bit_signal,d_2bit_signal)
+# pull back answer to cpu
+h_q_signal = np.empty(NUM_SAMPLES / (32 / BITS_PER_SAMPLE), dtype=np.uint32)
+cuda.memcpy_dtoh(h_q_signal,d_q_signal)
 
-# compute on CPU
+# quantize on CPU
 tic = get_process_cpu_time()
-_2bit_signal = quantize(h_32bit_signal,2)
+_q_signal = cpu_quantize(h_32bit_signal,BITS_PER_SAMPLE)
 toc = get_process_cpu_time()
 time_cpu = toc-tic
 
+# report timing and check answer
 print 'gpu time:',time_gpu
 print 'cpu time:',time_cpu
-if np.allclose(_2bit_signal, h_2bit_signal):
+if np.allclose(_q_signal, h_q_signal):
 	print 'test passed'
 else:
-	print 'test passed'
+	print 'test failed' 
