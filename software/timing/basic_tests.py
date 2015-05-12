@@ -52,10 +52,16 @@ import scikits.cuda.fft as cu_fft
 plan = cu_fft.Plan(f_swarm.size,np.complex64,np.float32)
 d_f_swarm = gpuarray.to_gpu(f_swarm) 
 d_x_swarm = gpuarray.empty(x_swarm.size,dtype=np.float32) 
+
+plan39 = cu_fft.Plan(f_swarm.size,np.complex64,np.float32,batch=39)
+d_f_swarm39 = gpuarray.to_gpu(np.tile(f_swarm,(39,1)) )
+d_x_swarm39 = gpuarray.empty((39,x_swarm.size),dtype=np.float32) 
 """
+
 
 exec(setup_cpu)
 
+# inverse FFT one snap shot (complex to real)
 test1 = """
 y = irfft(f_swarm)
 """
@@ -68,7 +74,7 @@ cu_fft.ifft(d_f_swarm,d_x_swarm,plan)
 """
 n = 1000
 c_t1 = timeit(c_test1, setup_gpu, number=n)
-t1n = c_t1 * snapspersec / n
+c_t1n = c_t1 * snapspersec / n
 
 test2 = """
 y = fftwirfft(f_swarm)
@@ -77,6 +83,15 @@ n = 1000
 t2 = timeit(test2, setup_cpu, number=n)
 t2n = t2 * snapspersec / n
 
+# inverse FFT 39 snap shots (complex to real)
+c_test3 = """
+cu_fft.ifft(d_f_swarm39,d_x_swarm39,plan39)
+"""
+n = 100
+c_t3 = timeit(c_test3, setup_gpu, number=n)
+c_t3n = c_t3 * snapspersec / 39. / n
+
+# resample 39 snapshots
 test3 = """
 y = resample(x_swarm39, n_r2dbe39)
 """
