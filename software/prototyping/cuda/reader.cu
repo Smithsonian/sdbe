@@ -30,11 +30,11 @@
 #define THREADS_PER_BLOCK_Y 4 // set so there is one warp per block, not necessarily optimal
 //~ #define BLOCKS_PER_GRID 128 // arbitrary power of 2
 
-// Data formats
+// Data structure
 #define BENG_CHANNELS_ 16384
 #define BENG_CHANNELS (BENG_CHANNELS_+1) // number of channels PLUS added sample-rate/2 component for the complex-to-real inverse transform
 #define BENG_SNAPSHOTS 128
-#define BENG_BUFFER_IN_COUNTS 32 // we will buffer 32 B-engine frames
+#define BENG_BUFFER_IN_COUNTS 4 // we will buffer 32 B-engine frames
 #define BENG_BUFFER_INDEX_MASK (BENG_BUFFER_IN_COUNTS-1) // mask used to convert B-engine counter to index into buffer
 #define SWARM_N_FIDS 8
 #define SWARM_XENG_PARALLEL_CHAN 8
@@ -42,33 +42,38 @@
 // VDIF packed B-engine packet
 #define BENG_VDIF_HDR_0_OFFSET_INT 4 // b1 b2 b3 b4
 #define BENG_VDIF_HDR_1_OFFSET_INT 5 //  c  0  f b0
-#define BENG_VDIF_CHANNELS_PER_INT 4 // a-d in a single uint32_t, and e-h in a single uint32_t
+#define BENG_VDIF_CHANNELS_PER_INT 4 // a-d in a single int32_t, and e-h in a single int32_t
 #define BENG_VDIF_INT_PER_SNAPSHOT (SWARM_XENG_PARALLEL_CHAN/BENG_VDIF_CHANNELS_PER_INT)
 #define BENG_PACKETS_PER_FRAME (BENG_CHANNELS_/SWARM_XENG_PARALLEL_CHAN)
 #define BENG_FRAME_COMPLETION_COMPLETE (BENG_PACKETS_PER_FRAME*THREADS_PER_BLOCK_X) // value of completion counter when B-engine frame complete, multiplication by THREADS_PER_BLOCK_x required since all x-threads increment counter
+#define BENG_VDIF_SAMPLE_VALUE_OFFSET 2.0f
 
 // Debugging
 //~ #define DEBUG
 //~ #define DEBUG_GPU
 //~ #define DEBUG_GPU_CONDITION (blockIdx.x == 0 && threadIdx.x == 7 && threadIdx.y == 3)
+//~ #define DEBUG_SINGLE_FRAME
+#define DEBUG_SINGLE_FRAME_CID 128
+#define DEBUG_SINGLE_FRAME_FID 7
+#define DEBUG_SINGLE_FRAME_BCOUNT 376263
 
 /*
  *  Forward declarations
  */
 // GPU kernels
 __global__ void vdif_reader(
-	uint32_t *vdif_frames, 
-	uint32_t *fid_out, 
-	uint32_t *cid_out, 
-	uint32_t *bcount_out, 
+	int32_t *vdif_frames, 
+	int32_t *fid_out, 
+	int32_t *cid_out, 
+	int32_t *bcount_out, 
 	cufftComplex *beng_data_out_0,
 	cufftComplex *beng_data_out_1, 
-	uint32_t *beng_frame_completion,
+	int32_t *beng_frame_completion,
 	int32_t num_vdif_frames, 
 	int blocks_per_grid);
 // host utilities
-void error_check(void);
-void error_check(cudaError_t err);
+void error_check(const char *f, const int l);
+void error_check(cudaError_t err, const char *f, const int l);
 
 int main(int argc, char **argv)
 {
@@ -89,28 +94,31 @@ int main(int argc, char **argv)
 	FILE *fh = NULL;
 	char filename_input[0x100] = "\0";
 	int32_t num_vdif_frames = 0;
-	uint32_t *vdif_buf = NULL;
+	int32_t *vdif_buf = NULL;
 	
 	// input (device)
-	uint32_t *gpu_vdif_buf = NULL;
+	int32_t *gpu_vdif_buf = NULL;
 	
 	// output (host)
-	uint32_t *fid;
-	uint32_t *cid;
-	uint32_t *bcount;
+	int32_t *fid;
+	int32_t *cid;
+	int32_t *bcount;
 	cufftComplex *beng_data_0,*beng_data_1;
+	FILE *fh_data = NULL;
+	char filename_data[0x100] = "\0";
+	bool data_to_file = 0; 
 	
 	// output (device)
-	uint32_t *gpu_fid;
-	uint32_t *gpu_cid;
-	uint32_t *gpu_bcount;
+	int32_t *gpu_fid;
+	int32_t *gpu_cid;
+	int32_t *gpu_bcount;
 	cufftComplex *gpu_beng_data_0,*gpu_beng_data_1;
 	
 	// control (host)
-	uint32_t *beng_frame_completion; // counts number of packets received per b-count value
+	int32_t *beng_frame_completion; // counts number of packets received per b-count value
 	
 	// control (device)
-	uint32_t *gpu_beng_frame_completion; // counts number of packets received per b-count value
+	int32_t *gpu_beng_frame_completion; // counts number of packets received per b-count value
 	
 	// for CUDA error checking
 	cudaError_t err;
@@ -130,16 +138,17 @@ int main(int argc, char **argv)
 		int option_index = 0;
 		static struct option long_options[] =
 		{
-			{  "input", required_argument, 0, 0 },
-			{  "count", required_argument, 0, 0 },
-			{"verbose",       no_argument, 0, 0 },
-			{ "blocks", required_argument, 0, 0 },
-			{"logfile", required_argument, 0, 0 },
-			{"repeats", required_argument, 0, 0 },
-			{        0,                 0, 0, 0 }
+			{   "input", required_argument, 0, 0 },
+			{   "count", required_argument, 0, 0 },
+			{ "verbose",       no_argument, 0, 0 },
+			{  "blocks", required_argument, 0, 0 },
+			{ "logfile", required_argument, 0, 0 },
+			{ "repeats", required_argument, 0, 0 },
+			{"datafile", required_argument, 0, 0 },
+			{         0,                 0, 0, 0 }
 		};
 		
-		c = getopt_long(argc, argv, "i:c:vb:l:r:", long_options, &option_index);
+		c = getopt_long(argc, argv, "i:c:vb:l:r:d:", long_options, &option_index);
 		
 		if (c == -1)
 		{
@@ -167,6 +176,9 @@ int main(int argc, char **argv)
 					break;
 				case 5:
 					c = 'r';
+					break;
+				case 6:
+					c = 'd';
 					break;
 			}
 		}
@@ -235,6 +247,18 @@ int main(int argc, char **argv)
 				#endif
 				repeats = atoi(optarg);
 				break;
+			case 'd':
+				#ifdef DEBUG
+				printf("\tDatafile is", long_options[option_index].name);
+				if (optarg)
+				{
+					printf(" '%s'.", optarg);
+				}
+				printf("\n");
+				#endif
+				snprintf(filename_data, sizeof(filename_data), "%s", optarg);
+				data_to_file = 1;
+				break;
 			default:
 				fprintf(stderr,"?? getopt returned character code 0%o ??\n.",c);
 				exit(EXIT_FAILURE);
@@ -274,6 +298,30 @@ int main(int argc, char **argv)
 		}
 	}
 	
+	// open datafile
+	if (data_to_file)
+	{
+		if (strlen(filename_input) == 0)
+		{
+			fprintf(stderr,"Data filename not specified.\n");
+			exit(EXIT_FAILURE);
+		}
+		else
+		{
+			fh_data = fopen(filename_data,"w");
+			if (fh_data != NULL)
+			{
+				// write the buffer size
+				int32_t tmp = BENG_BUFFER_IN_COUNTS;
+				fwrite((void *)&tmp, sizeof(int32_t), 1, fh_data);
+			}
+			else
+			{
+				fprintf(stderr,"Unable to open datafile '%s'.\n",filename_log);
+				exit(EXIT_FAILURE);
+			}
+		}
+	}
 	// read requested number of VDIF frames from input file
 	if (num_vdif_frames < 1)
 	{
@@ -292,7 +340,7 @@ int main(int argc, char **argv)
 		if (fh != NULL)
 		{
 			// read file
-			vdif_buf = (uint32_t *)malloc(num_vdif_bytes);
+			vdif_buf = (int32_t *)malloc(num_vdif_bytes);
 			if (vdif_buf == NULL)
 			{
 				fprintf(stderr,"Unable to allocate memory for input data.\n");
@@ -322,17 +370,17 @@ int main(int argc, char **argv)
 	printf("reader:DEBUG:Creating CUDA events for timing.\n");
 	#endif
 	err = cudaEventCreate(&start);
-	error_check(err);
+	error_check(err,__FILE__,__LINE__);
 	err = cudaEventCreate(&stop);
-	error_check(err);
+	error_check(err,__FILE__,__LINE__);
 	
 	#ifdef DEBUG
 	printf("reader:DEBUG:Copying data from host to device...");
 	#endif
 	err = cudaMalloc((void **)&gpu_vdif_buf, num_vdif_bytes);
-	error_check(err);
+	error_check(err,__FILE__,__LINE__);
 	err = cudaMemcpy(gpu_vdif_buf, vdif_buf, num_vdif_bytes, cudaMemcpyHostToDevice);
-	error_check(err);
+	error_check(err,__FILE__,__LINE__);
 	#ifdef DEBUG
 	printf(" done.\n");
 	#endif
@@ -341,9 +389,9 @@ int main(int argc, char **argv)
 	#ifdef DEBUG
 	printf("reader:DEBUG:Allocating memory for control...");
 	#endif
-	beng_frame_completion = (uint32_t *)malloc(sizeof(uint32_t)*BENG_BUFFER_IN_COUNTS);
-	err = cudaMalloc((void **)&gpu_beng_frame_completion, sizeof(uint32_t)*BENG_BUFFER_IN_COUNTS);
-	error_check(err);
+	beng_frame_completion = (int32_t *)malloc(sizeof(int32_t)*BENG_BUFFER_IN_COUNTS);
+	err = cudaMalloc((void **)&gpu_beng_frame_completion, sizeof(int32_t)*BENG_BUFFER_IN_COUNTS);
+	error_check(err,__FILE__,__LINE__);
 	#ifdef DEBUG
 	printf(" done.\n");
 	#endif
@@ -355,8 +403,8 @@ int main(int argc, char **argv)
 	#ifdef DEBUG
 	printf("reader:DEBUG:Copying control from host to device...");
 	#endif
-	err = cudaMemcpy(gpu_beng_frame_completion, beng_frame_completion, sizeof(uint32_t)*BENG_BUFFER_IN_COUNTS, cudaMemcpyHostToDevice);
-	error_check(err);
+	err = cudaMemcpy(gpu_beng_frame_completion, beng_frame_completion, sizeof(int32_t)*BENG_BUFFER_IN_COUNTS, cudaMemcpyHostToDevice);
+	error_check(err,__FILE__,__LINE__);
 	#ifdef DEBUG
 	printf(" done.\n");
 	#endif
@@ -365,26 +413,37 @@ int main(int argc, char **argv)
 	#ifdef DEBUG
 	printf("reader:DEBUG:Allocating memory for output.\n");
 	#endif
-	cid = (uint32_t *)malloc(num_vdif_frames*sizeof(uint32_t));
-	fid = (uint32_t *)malloc(num_vdif_frames*sizeof(uint32_t));
-	bcount = (uint32_t *)malloc(num_vdif_frames*sizeof(uint32_t));
+	cid = (int32_t *)malloc(num_vdif_frames*sizeof(int32_t));
+	fid = (int32_t *)malloc(num_vdif_frames*sizeof(int32_t));
+	bcount = (int32_t *)malloc(num_vdif_frames*sizeof(int32_t));
 	
 	size_t beng_data_bytes = BENG_CHANNELS*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS*sizeof(cuComplex);
 	#ifdef DEBUG
-	printf("reader:DEBUG:Allocating %d bytes for B-engine buffer.\n",beng_data_bytes);
+	printf("reader:DEBUG:Allocating %d bytes for B-engine buffer.\n",2*beng_data_bytes);
 	#endif
 	beng_data_0 = (cufftComplex *)malloc(beng_data_bytes);
 	beng_data_1 = (cufftComplex *)malloc(beng_data_bytes);
-	err = cudaMalloc((void **)&gpu_cid, num_vdif_frames*sizeof(uint32_t));
-	error_check(err);
-	err = cudaMalloc((void **)&gpu_fid, num_vdif_frames*sizeof(uint32_t));
-	error_check(err);
-	err = cudaMalloc((void **)&gpu_bcount, num_vdif_frames*sizeof(uint32_t));
-	error_check(err);
+	err = cudaMalloc((void **)&gpu_cid, num_vdif_frames*sizeof(int32_t));
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMemset((void *)gpu_cid, 0, num_vdif_frames*sizeof(int32_t));
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMalloc((void **)&gpu_fid, num_vdif_frames*sizeof(int32_t));
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMemset((void *)gpu_fid, 0, num_vdif_frames*sizeof(int32_t));
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMalloc((void **)&gpu_bcount, num_vdif_frames*sizeof(int32_t));
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMemset((void *)gpu_bcount, 0, num_vdif_frames*sizeof(int32_t));
+	error_check(err,__FILE__,__LINE__);
 	err = cudaMalloc((void **)&gpu_beng_data_0, beng_data_bytes);
-	error_check(err);
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMemset((void *)gpu_beng_data_0, 0, beng_data_bytes);
+	error_check(err,__FILE__,__LINE__);
 	err = cudaMalloc((void **)&gpu_beng_data_1, beng_data_bytes);
-	error_check(err);
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMemset((void *)gpu_beng_data_1, 0, beng_data_bytes);
+	error_check(err,__FILE__,__LINE__);
+	cudaDeviceSynchronize(); // make sure the memset is done
 	
 	#ifdef DEBUG
 	printf("reader:DEBUG:Defining threads and blocks.\n");
@@ -397,7 +456,6 @@ int main(int argc, char **argv)
 	#ifdef DEBUG
 	printf("\t  blocks-per-grid = (%d,%d,%d)\n",blocksPerGrid.x,blocksPerGrid.y,blocksPerGrid.z);
 	#endif
-	
 	
 	for (ir=0; ir<repeats; ir++)
 	{
@@ -428,19 +486,38 @@ int main(int argc, char **argv)
 	#ifdef DEBUG
 	printf("reader:DEBUG:Copying data from device to host...");
 	#endif
-	err = cudaMemcpy(fid, gpu_fid, num_vdif_frames*sizeof(uint32_t), cudaMemcpyDeviceToHost);
-	error_check(err);
-	err = cudaMemcpy(cid, gpu_cid, num_vdif_frames*sizeof(uint32_t), cudaMemcpyDeviceToHost);
-	error_check(err);
-	err = cudaMemcpy(bcount, gpu_bcount, num_vdif_frames*sizeof(uint32_t), cudaMemcpyDeviceToHost);
-	error_check(err);
-	err = cudaMemcpy(beng_data_0, gpu_beng_data_0, num_vdif_frames*(VDIF_BYTE_SIZE_DATA*8/VDIF_BIT_DEPTH)*sizeof(float), cudaMemcpyDeviceToHost);
-	error_check(err);
-	err = cudaMemcpy(beng_data_1, gpu_beng_data_1, num_vdif_frames*(VDIF_BYTE_SIZE_DATA*8/VDIF_BIT_DEPTH)*sizeof(float), cudaMemcpyDeviceToHost);
-	error_check(err);
+	err = cudaMemcpy(fid, gpu_fid, num_vdif_frames*sizeof(int32_t), cudaMemcpyDeviceToHost);
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMemcpy(cid, gpu_cid, num_vdif_frames*sizeof(int32_t), cudaMemcpyDeviceToHost);
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMemcpy(bcount, gpu_bcount, num_vdif_frames*sizeof(int32_t), cudaMemcpyDeviceToHost);
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMemcpy(beng_data_0, gpu_beng_data_0, beng_data_bytes, cudaMemcpyDeviceToHost);
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMemcpy(beng_data_1, gpu_beng_data_1, beng_data_bytes, cudaMemcpyDeviceToHost);
+	error_check(err,__FILE__,__LINE__);
 	#ifdef DEBUG
 	printf(" done.\n");
 	#endif
+	
+	#ifdef DEBUG
+	printf("reader:DEBUG:Copying control from device to host...");
+	#endif
+	err = cudaMemcpy(beng_frame_completion, gpu_beng_frame_completion, sizeof(int32_t)*BENG_BUFFER_IN_COUNTS, cudaMemcpyDeviceToHost);
+	error_check(err,__FILE__,__LINE__);
+	#ifdef DEBUG
+	printf(" done.\n");
+	#endif
+	
+	if (data_to_file)
+	{
+		// write B-engine completion counters
+		fwrite((void *)beng_frame_completion, sizeof(int32_t), BENG_BUFFER_IN_COUNTS, fh_data);
+		// write B-engine data for phased sum 0
+		fwrite((void *)beng_data_0, sizeof(cufftComplex), BENG_CHANNELS*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS, fh_data);
+		// write B-engine data for phased sum 1
+		fwrite((void *)beng_data_1, sizeof(cufftComplex), BENG_CHANNELS*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS, fh_data);
+	}
 	
 	if (verbose_output)
 	{
@@ -461,7 +538,7 @@ int main(int argc, char **argv)
 					fprintf(stdout,"\t\t\tData:\n");
 					for (ik=0; ik<BENG_CHANNELS; ik++) // for each channel
 					{
-						if (ik<10 || ik>BENG_CHANNELS-11) // only display data for first 10 and last 10 channels
+						if (ik<3 || ik>BENG_CHANNELS-4 || (ik>BENG_CHANNELS/2 && ik<BENG_CHANNELS/2+5)) // only display data for first 10 and last 10 channels
 						{
 							int idx_beng = ik + ij*BENG_CHANNELS + ii*BENG_SNAPSHOTS*BENG_CHANNELS;
 							if (il == 0)
@@ -472,12 +549,12 @@ int main(int argc, char **argv)
 							{
 								beng_sample = beng_data_1[idx_beng];
 							}
-							fprintf(stdout,"%2d+j%2d",(int)cuCrealf(beng_sample),(int)cuCimagf(beng_sample));
+							fprintf(stdout,"%2d+%2dj",(int)cuCrealf(beng_sample),(int)cuCimagf(beng_sample));
 							if (ik < BENG_CHANNELS-1)
 							{
 								fprintf(stdout,", ");
 							}
-							if (ik == 9)
+							if (ik == 2 || ik == BENG_CHANNELS/2+4)
 							{
 								fprintf(stdout,"... , ");
 							}
@@ -488,6 +565,42 @@ int main(int argc, char **argv)
 			}
 		}
 	}
+	
+	#ifdef DEBUG_SINGLE_FRAME
+				
+			#endif
+	
+	#ifdef DEBUG_SINGLE_FRAME
+		for (ii=0; ii<num_vdif_frames; ii++)
+		{
+			if (cid[ii] == DEBUG_SINGLE_FRAME_CID && fid[ii] == DEBUG_SINGLE_FRAME_FID && bcount[ii] == DEBUG_SINGLE_FRAME_BCOUNT)
+			{
+				printf("B-count: %8d; fid: %3d; cid: %3d\n",bcount[ii],fid[ii],cid[ii]);
+				int ch_a = SWARM_XENG_PARALLEL_CHAN * (cid[ii] * SWARM_N_FIDS + fid[ii]);
+				printf("        a        b        c        d        e        f        g        h\n");
+				for (ij=0; ij<SWARM_XENG_PARALLEL_CHAN; ij++)
+				{
+					printf("    %5d",ch_a+ij);
+				}
+				printf("\n");
+				int idx_beng = BENG_CHANNELS*BENG_SNAPSHOTS*(bcount[ii]&BENG_BUFFER_INDEX_MASK) + ch_a;
+				for (ij=0; ij<BENG_SNAPSHOTS; ij++)
+				{
+					printf("\tSnapshot #%3d:\n",ij);
+					for (ik=0; ik<SWARM_XENG_PARALLEL_CHAN; ik++)
+					{
+						printf("   %2d%+2dj",(int)cuCrealf(beng_data_0[idx_beng+BENG_CHANNELS*ij+ik]),(int)cuCimagf(beng_data_0[idx_beng+BENG_CHANNELS*ij+ik]));
+					}
+					printf("\n");
+					for (ik=0; ik<SWARM_XENG_PARALLEL_CHAN; ik++)
+					{
+						printf("   %2d%+2dj",(int)cuCrealf(beng_data_1[idx_beng+BENG_CHANNELS*ij+ik]),(int)cuCimagf(beng_data_1[idx_beng+BENG_CHANNELS*ij+ik]));
+					}
+					printf("\n");
+				}
+			}
+		}
+	#endif
 	
 	// Free device global memory
 	#ifdef DEBUG
@@ -526,6 +639,10 @@ int main(int argc, char **argv)
 	{
 		fclose(fh_log);
 	}
+	if (data_to_file)
+	{
+		fclose(fh_data);
+	}
 	exit(EXIT_SUCCESS);
 }
 
@@ -533,29 +650,29 @@ int main(int argc, char **argv)
  * Parse VDIF frame and output data.
  * */
 __global__ void vdif_reader(
-	uint32_t *vdif_frames, 
-	uint32_t *fid_out, 
-	uint32_t *cid_out, 
-	uint32_t *bcount_out, 
+	int32_t *vdif_frames, 
+	int32_t *fid_out, 
+	int32_t *cid_out, 
+	int32_t *bcount_out, 
 	cufftComplex *beng_data_out_0, 
 	cufftComplex *beng_data_out_1, 
-	uint32_t *beng_frame_completion,
+	int32_t *beng_frame_completion,
 	int32_t num_vdif_frames, 
 	int blocks_per_grid)
 {
 	// VDIF header
-	//~ __shared__ uint32_t vdif_header[VDIF_INT_SIZE_HEADER][THREADS_PER_BLOCK_Y];
-	uint32_t cid,fid;
-	uint32_t bcount; // we don't need very large bcount, just keep lower 32bits
+	//~ __shared__ int32_t vdif_header[VDIF_INT_SIZE_HEADER][THREADS_PER_BLOCK_Y];
+	int32_t cid,fid;
+	int32_t bcount; // we don't need very large bcount, just keep lower 32bits
 	
 	// VDIF data
-	const uint32_t *vdif_frame_start; // pointer to start of the VDIF frame handled by this thread
-	uint32_t samples_per_snapshot_half_0, samples_per_snapshot_half_1; // 4byte collections of 16 samples (2sums * (1real + 1imag) * 4xeng_parallel_chan) each
+	const int32_t *vdif_frame_start; // pointer to start of the VDIF frame handled by this thread
+	int32_t samples_per_snapshot_half_0, samples_per_snapshot_half_1; // 4byte collections of 16 samples (2sums * (1real + 1imag) * 4xeng_parallel_chan) each
 	float sample_real, sample_imag; // real and imaginary components from 2bit samples
-	uint32_t idx_beng_data_out; // index into beng_data_out
+	int32_t idx_beng_data_out; // index into beng_data_out
 	
 	// misc
-	uint32_t iframe; // VDIF frame sized index into VDIF data buffer currently processed by this thread
+	int32_t iframe; // VDIF frame sized index into VDIF data buffer currently processed by this thread
 	int idata; // uint64_t sized index into VDIF data currently processed by this thread
 	int isample; // 2bit sized index into the 8 consecutive channels of a single snapshot contained in each B-engine packet
 	
@@ -574,7 +691,7 @@ __global__ void vdif_reader(
 				if ( DEBUG_GPU_CONDITION )
 				{
 			#endif // DEBUG_GPU_CONDITION
-			printf("blk(thx,thy)=%d(%d,%d): #frame = %d + %d + %d*%d = %d < %d ? %s\n",blockIdx.x,threadIdx.x,threadIdx.y,
+			printf("blk(thx,thy)=%3d(%3d,%3d): #frame = %d + %d + %d*%d = %d < %d ? %s\n",blockIdx.x,threadIdx.x,threadIdx.y,
 			iframe , threadIdx.y , blockIdx.x , THREADS_PER_BLOCK_Y,
 			iframe + threadIdx.y + blockIdx.x*THREADS_PER_BLOCK_Y,num_vdif_frames,
 			iframe + threadIdx.y + blockIdx.x*THREADS_PER_BLOCK_Y < num_vdif_frames ? "OK" : "NO");
@@ -606,6 +723,17 @@ __global__ void vdif_reader(
 			bcount = ((*(vdif_frame_start + BENG_VDIF_HDR_1_OFFSET_INT)&0xFF000000)>>24) + ((*(vdif_frame_start + BENG_VDIF_HDR_0_OFFSET_INT)&0x00FFFFFF)<<8);
 			bcount_out[iframe + threadIdx.y + blockIdx.x*THREADS_PER_BLOCK_Y] = bcount;
 			
+			#ifdef DEBUG_SINGLE_FRAME
+				if (cid == DEBUG_SINGLE_FRAME_CID && fid == DEBUG_SINGLE_FRAME_FID && bcount == DEBUG_SINGLE_FRAME_BCOUNT)
+				{
+					// do nothing
+				}
+				else
+				{
+					continue;
+				}
+			#endif
+			
 			/* Set the offset into the B-engine data buffer. Channels for 
 			 * a single snapshot are consecutive in memory, consecutive 
 			 * snapshots are separated by one spectrum, and consecutive
@@ -614,13 +742,13 @@ __global__ void vdif_reader(
 			idx_beng_data_out  = BENG_CHANNELS*BENG_SNAPSHOTS*(bcount&BENG_BUFFER_INDEX_MASK); // offset given the masked B-engine counter value
 			idx_beng_data_out += SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid); // offset given the cid and fid
 			/* Add offset based on the threadIdx.x. Consecutive x-threads
-			 * read consecutive 2-uint32_t (8byte) data chunks, which means
+			 * read consecutive 2-int32_t (8byte) data chunks, which means
 			 * that the target index for consecutive x-threads are separated
 			 * as consecutive snapshots, i.e. single spectrum.
 			 * */
 			idx_beng_data_out += threadIdx.x*BENG_CHANNELS; // offset given the threadIdx.x
 			
-			/* idata increases by the number of uint32_t handled simultaneously
+			/* idata increases by the number of int32_t handled simultaneously
 			 * by all x-threads. Each thread handles B-engine packet data 
 			 * for a single snapshot per iteration.
 			 * */
@@ -636,31 +764,66 @@ __global__ void vdif_reader(
 				samples_per_snapshot_half_1 = *(vdif_frame_start + VDIF_INT_SIZE_HEADER + idata + BENG_VDIF_INT_PER_SNAPSHOT*threadIdx.x + 1);
 				for (isample=0; isample<SWARM_XENG_PARALLEL_CHAN/2; isample++)
 				{
+					#ifdef DEBUG_SINGLE_FRAME
+						int32_t tmp_s0 = samples_per_snapshot_half_0;
+						int32_t tmp_s1 = samples_per_snapshot_half_1;
+					#endif
+					
 					// channels a-d
-					sample_real = (float)(samples_per_snapshot_half_0 & 0x03); // phased sum 0, real: b1b0
+					sample_imag = __int2float_rd(samples_per_snapshot_half_0 & 0x03) - BENG_VDIF_SAMPLE_VALUE_OFFSET; // phased sum 1, imag: b1b0
 					samples_per_snapshot_half_0 = samples_per_snapshot_half_0 >> VDIF_BIT_DEPTH;
-					sample_imag = (float)(samples_per_snapshot_half_0 & 0x03); // phased sum 0, imag: b3b2
+					sample_real = __int2float_rd(samples_per_snapshot_half_0 & 0x03) - BENG_VDIF_SAMPLE_VALUE_OFFSET; // phased sum 1, real: b3b2
 					samples_per_snapshot_half_0 = samples_per_snapshot_half_0 >> VDIF_BIT_DEPTH;
-					beng_data_out_0[idx_beng_data_out] = make_cuFloatComplex(sample_real, sample_imag);
-					sample_real = (float)(samples_per_snapshot_half_0 & 0x03); // phased sum 1, real: b5b4
+					#ifdef DEBUG_SINGLE_FRAME
+						float r1 = sample_real;
+						float i1 = sample_imag;
+					#endif
+					beng_data_out_1[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)] = make_cuFloatComplex(sample_real, sample_imag);
+					sample_imag = __int2float_rd(samples_per_snapshot_half_0 & 0x03) - BENG_VDIF_SAMPLE_VALUE_OFFSET; // phased sum 0, imag: b5b4
 					samples_per_snapshot_half_0 = samples_per_snapshot_half_0 >> VDIF_BIT_DEPTH;
-					sample_imag = (float)(samples_per_snapshot_half_0 & 0x03); // phased sum 1, imag: b7b6
+					sample_real = __int2float_rd(samples_per_snapshot_half_0 & 0x03) - BENG_VDIF_SAMPLE_VALUE_OFFSET; // phased sum 0, real: b7b6
 					samples_per_snapshot_half_0 = samples_per_snapshot_half_0 >> VDIF_BIT_DEPTH;
-					beng_data_out_1[idx_beng_data_out] = make_cuFloatComplex(sample_real, sample_imag);
+					#ifdef DEBUG_SINGLE_FRAME
+						float r2 = sample_real;
+						float i2 = sample_imag;
+					#endif
+					beng_data_out_0[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)] = make_cuFloatComplex(sample_real, sample_imag);
 					
 					// channels e-h
-					sample_real = (float)(samples_per_snapshot_half_1 & 0x03); // phased sum 0, real: b1b0
+					sample_imag = __int2float_rd(samples_per_snapshot_half_1 & 0x03) - BENG_VDIF_SAMPLE_VALUE_OFFSET; // phased sum 1, imag: b1b0
 					samples_per_snapshot_half_1 = samples_per_snapshot_half_1 >> VDIF_BIT_DEPTH;
-					sample_imag = (float)(samples_per_snapshot_half_1 & 0x03); // phased sum 0, imag: b3b2
+					sample_real = __int2float_rd(samples_per_snapshot_half_1 & 0x03) - BENG_VDIF_SAMPLE_VALUE_OFFSET; // phased sum 1, real: b3b2
 					samples_per_snapshot_half_1 = samples_per_snapshot_half_1 >> VDIF_BIT_DEPTH;
-					beng_data_out_0[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2] = make_cuFloatComplex(sample_real, sample_imag);
-					sample_real = (float)(samples_per_snapshot_half_1 & 0x03); // phased sum 1, real: b5b4
+					#ifdef DEBUG_SINGLE_FRAME
+						float r3 = sample_real;
+						float i3 = sample_imag;
+					#endif
+					beng_data_out_1[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2] = make_cuFloatComplex(sample_real, sample_imag);
+					sample_imag = __int2float_rd(samples_per_snapshot_half_1 & 0x03) - BENG_VDIF_SAMPLE_VALUE_OFFSET; // phased sum 0, imag: b5b4
 					samples_per_snapshot_half_1 = samples_per_snapshot_half_1 >> VDIF_BIT_DEPTH;
-					sample_imag = (float)(samples_per_snapshot_half_1 & 0x03); // phased sum 1, imag: b7b6
+					sample_real = __int2float_rd(samples_per_snapshot_half_1 & 0x03) - BENG_VDIF_SAMPLE_VALUE_OFFSET; // phased sum 0, real: b7b6
 					samples_per_snapshot_half_1 = samples_per_snapshot_half_1 >> VDIF_BIT_DEPTH;
-					beng_data_out_1[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2] = make_cuFloatComplex(sample_real, sample_imag);
+					#ifdef DEBUG_SINGLE_FRAME
+						float r4 = sample_real;
+						float i4 = sample_imag;
+					#endif
+					beng_data_out_0[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2] = make_cuFloatComplex(sample_real, sample_imag);
 					
-					idx_beng_data_out++; // next channel a,e -> b,f etc
+					#ifdef DEBUG_GPU
+						#ifdef DEBUG_GPU_CONDITION
+							if ( DEBUG_GPU_CONDITION )
+							{
+						#endif // DEBUG_GPU_CONDITION
+						printf("blk(thx,thy)=%3d(%3d,%3d): cid=%3d, fid=%d, bcount=%8d (masked=%3d); 0x%02x = %3u -> (%2d,%2d) (%2d,%2d) ; 0x%02x = %3u -> (%2d,%2d) (%2d,%2d) \n",
+							blockIdx.x,threadIdx.x,threadIdx.y,cid,fid,bcount,bcount&BENG_BUFFER_INDEX_MASK,
+							tmp_s0&0xFF,tmp_s0&0xFF,(int)r1,(int)i1,(int)r2,(int)i2,
+							tmp_s1&0xFF,tmp_s1&0xFF,(int)r3,(int)i3,(int)r4,(int)i4);
+						#ifdef DEBUG_GPU_CONDITION
+							}
+						#endif // DEBUG_GPU_CONDITION
+					#endif // DEBUG_GPU
+					
+					//idx_beng_data_out++; // next channel a,e -> b,f etc
 				} // for (isample=0; ...)
 				/* The next snapshot handled by this thread will increment
 				 * by the number of x-threads, so index into B-engine data
@@ -674,7 +837,7 @@ __global__ void vdif_reader(
 					if ( DEBUG_GPU_CONDITION )
 					{
 				#endif // DEBUG_GPU_CONDITION
-				printf("blk(thx,thy)=%d(%d,%d): cid=%3d, fid=%d, bcount=%8d (masked=%3d); idx_beng_data_out = %d*%d*%d + %d*(%3d*%d+%d) + %d*%d =  %9d + %9d + %9d = %9d --> %9d.\n",
+				printf("blk(thx,thy)=%3d(%3d,%3d): cid=%3d, fid=%d, bcount=%8d (masked=%3d); idx_beng_data_out = %d*%d*%d + %d*(%3d*%d+%d) + %d*%d =  %9d + %9d + %9d = %9d --> %9d.\n",
 					blockIdx.x,threadIdx.x,threadIdx.y,cid,fid,bcount,bcount & BENG_BUFFER_INDEX_MASK,
 					BENG_CHANNELS,BENG_SNAPSHOTS,(bcount & BENG_BUFFER_INDEX_MASK),
 					SWARM_XENG_PARALLEL_CHAN , cid , SWARM_N_FIDS , fid,
@@ -690,7 +853,7 @@ __global__ void vdif_reader(
 			#endif // DEBUG_GPU
 			
 			// reset completion counter for two B-engine frames behind
-			beng_frame_completion[(bcount-2)&BENG_BUFFER_INDEX_MASK] = 0;
+			//beng_frame_completion[(bcount+BENG_BUFFER_IN_COUNTS-3)&BENG_BUFFER_INDEX_MASK] = 0;
 			
 			// increment completion counter for this B-engine frame
 			old = atomicAdd(beng_frame_completion + (bcount&BENG_BUFFER_INDEX_MASK), 1);
@@ -735,16 +898,16 @@ __global__ void vdif_reader(
  * Tests whether the CUDA error code returned is an error or success. In
  * case of error a message is displayed and the program exits.
  */
-void error_check(void)
+inline void error_check(const char *f, const int l)
 {
 	cudaError_t err = cudaGetLastError();
-	error_check(err);
+	error_check(err, f, l);
 }
-void error_check(cudaError_t err)
+inline void error_check(cudaError_t err, const char *f, const int l)
 {
 	if (err != cudaSuccess)
 	{
-		fprintf(stderr, "CUDA error: %s\n", cudaGetErrorString(err));
+		fprintf(stderr, "CUDA error:%s.%d: %s\n", f, l, cudaGetErrorString(err));
 		exit(EXIT_FAILURE);
 	}
 }
