@@ -42,8 +42,8 @@ class DBEFrame(VDIFFrame):
         # thus our data order is (p1i3,p1r3,p0i3,p0r3,p1i2...p0r0)
         # and the next four ch   (p1i7,p1r7,p0i6,p0i6,p1i5...p0r4)
         # + .5 to remove dc offset
-        p1 = array(inst.data[1::4]+1j*inst.data[0::4])+.5*(1+1j)
-        p0 = array(inst.data[3::4]+1j*inst.data[2::4])+.5*(1+1j)
+        p1 = array(inst.data[1::4]+1j*inst.data[0::4])#+.5*(1+1j)
+        p0 = array(inst.data[3::4]+1j*inst.data[2::4])#+.5*(1+1j)
         
         # data is in channel order: 3 2 1 0 7 6 5 4 3 2 1 0...
         ch_start = [3, 2, 1, 0, 7, 6, 5, 4]
