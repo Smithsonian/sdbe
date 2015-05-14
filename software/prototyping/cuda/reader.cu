@@ -127,12 +127,15 @@ int main(int argc, char **argv)
 	int repeats = 1, ir;
 	int ii,ij,ik,il;
 	time_t wall_clock;
+	int32_t tmp_vdif[VDIF_INT_SIZE];
+	int32_t tmp_bcount_prev,tmp_bcount_curr;
 	
 	// input (host)
 	FILE *fh = NULL;
 	char filename_input[0x100] = "\0";
 	int32_t num_vdif_frames = 0;
 	int32_t *vdif_buf = NULL;
+	int32_t beng_frame_offset = -1;
 	
 	// input (device)
 	int32_t *gpu_vdif_buf = NULL;
@@ -184,10 +187,11 @@ int main(int argc, char **argv)
 			{ "repeats", required_argument, NULL, 'r' },
 			{"datafile", required_argument, NULL, 'd' },
 			{    "help",       no_argument, NULL, 'h' },
+			{"boundary", optional_argument, NULL, 'B' },
 			{         0,                 0, 0,   0 }
 		};
 		
-		c = getopt_long(argc, argv, "i:c:vb:l:r:d:h", long_options, &option_index);
+		c = getopt_long(argc, argv, "b:B::c:d:hi:l:r:v", long_options, &option_index);
 		
 		if (c == -1)
 		{
@@ -196,16 +200,43 @@ int main(int argc, char **argv)
 		
 		switch (c)
 		{
-			case 'i':
+			case 'b':
 				#ifdef DEBUG
-				printf("\tInput file is", long_options[option_index].name);
+				printf("\tUsing ");
 				if (optarg)
 				{
-					printf(" '%s'.", optarg);
+					printf(" %d", atoi(optarg));
 				}
-				printf("\n");
+				printf(" blocks per grid.\n");
 				#endif
-				snprintf(filename_input, sizeof(filename_input), "%s", optarg);
+				blocks_per_grid = atoi(optarg);
+				break;
+			case 'B':
+				#ifdef DEBUG
+				printf("Staring on beginning of ");
+				if (optarg)
+				{
+					printf("%d",atoi(optarg));
+				}
+				else
+				{
+					printf("0");
+				}
+				printf("th full B-engine frame.\n");
+				#endif
+				if (optarg)
+				{
+					beng_frame_offset = atoi(optarg);
+				}
+				else
+				{
+					beng_frame_offset = 1;
+				}
+				if (beng_frame_offset < 1)
+				{
+					fprintf(stderr,"B-engine frame offset should be positive, but given as %d.\n",beng_frame_offset);
+					exit(EXIT_FAILURE);
+				}
 				break;
 			case 'c':
 				#ifdef DEBUG
@@ -218,22 +249,41 @@ int main(int argc, char **argv)
 				#endif
 				num_vdif_frames = atoi(optarg);
 				break;
-			case 'v':
+			case 'd':
 				#ifdef DEBUG
-				printf("\tVerbose output.\n");
-				#endif
-				verbose_output = 1;
-				break;
-			case 'b':
-				#ifdef DEBUG
-				printf("\tUsing ");
+				printf("\tDatafile is", long_options[option_index].name);
 				if (optarg)
 				{
-					printf(" %d", atoi(optarg));
+					printf(" '%s'.", optarg);
 				}
-				printf(" blocks per grid.\n");
+				printf("\n");
 				#endif
-				blocks_per_grid = atoi(optarg);
+				snprintf(filename_data, sizeof(filename_data), "%s", optarg);
+				data_to_file = 1;
+				break;
+			case 'h':
+				printf("Usage: %s [OPTIONS] -i <input_file>\n",argv[0]);
+				printf("Options:\n");
+				printf("  -b M, --blocks=M     Use <M> thread blocks for GPU kernel execution.\n");
+				printf("  -B B, --boundary=B   Start reading VDIF packets offset by <B> B-engine frame counter values relative to the first encountered. <B> should be greater than 0.\n");
+				printf("  -c N, --count=N      Read <N> VDIF frames from file <input_file>.\n");
+				printf("  -d F, --datafile=F   Write B-engine data to <F>.\n");
+				printf("  -l F, --logfile=F    Activate logging to <F>.\n");
+				printf("  -r R, --repeats=R    Repeat call to GPU kernel <R> times.\n");
+				printf("  -v  , --verbose      Verbose output.\n");
+				printf("\n");
+				exit(EXIT_SUCCESS);
+				break;
+			case 'i':
+				#ifdef DEBUG
+				printf("\tInput file is", long_options[option_index].name);
+				if (optarg)
+				{
+					printf(" '%s'.", optarg);
+				}
+				printf("\n");
+				#endif
+				snprintf(filename_input, sizeof(filename_input), "%s", optarg);
 				break;
 			case 'l':
 				#ifdef DEBUG
@@ -258,29 +308,11 @@ int main(int argc, char **argv)
 				#endif
 				repeats = atoi(optarg);
 				break;
-			case 'd':
+			case 'v':
 				#ifdef DEBUG
-				printf("\tDatafile is", long_options[option_index].name);
-				if (optarg)
-				{
-					printf(" '%s'.", optarg);
-				}
-				printf("\n");
+				printf("\tVerbose output.\n");
 				#endif
-				snprintf(filename_data, sizeof(filename_data), "%s", optarg);
-				data_to_file = 1;
-				break;
-			case 'h':
-				printf("Usage: %s [OPTIONS] -i <input_file>\n",argv[0]);
-				printf("Options:\n");
-				printf("  -b B, --blocks=B     Use <B> thread blocks for GPU kernel execution.\n");
-				printf("  -c N, --count=N      Read <N> VDIF frames from file <input_file>.\n");
-				printf("  -d F, --datafile=F   Write B-engine data to <F>.\n");
-				printf("  -l F, --logfile=F    Activate logging to <F>.\n");
-				printf("  -r R, --repeats=R    Repeat call to GPU kernel <R> times.\n");
-				printf("  -v  , --verbose      Verbose output.\n");
-				printf("\n");
-				exit(EXIT_SUCCESS);
+				verbose_output = 1;
 				break;
 			default:
 				fprintf(stderr,"?? getopt returned character code 0%o ??\n.",c);
@@ -377,6 +409,25 @@ int main(int argc, char **argv)
 		fh = fopen(filename_input,"r");
 		if (fh != NULL)
 		{
+			// if we start at some specified B-engine frame boundary
+			if (beng_frame_offset > 0)
+			{
+				fread((void *)tmp_vdif, VDIF_BYTE_SIZE, 1, fh);
+				tmp_bcount_prev = get_bcount_from_vdif(tmp_vdif);
+				tmp_bcount_curr = tmp_bcount_prev;
+				while (tmp_bcount_curr-tmp_bcount_prev < beng_frame_offset)
+				{
+					#ifdef DEBUG
+						printf("reader:DEBUG:B-count = %d < %d, skipping.\n",tmp_bcount_curr,tmp_bcount_prev+beng_frame_offset);
+					#endif
+					fread((void *)tmp_vdif, VDIF_BYTE_SIZE, 1, fh);
+					tmp_bcount_curr = get_bcount_from_vdif(tmp_vdif);
+				}
+				#ifdef DEBUG
+					printf("reader:DEBUG:B-count = %d = %d, seeking one frame back.\n",tmp_bcount_curr,tmp_bcount_prev+beng_frame_offset);
+				#endif
+				fseek(fh,-1*VDIF_BYTE_SIZE,SEEK_CUR);
+			}
 			// read file
 			vdif_buf = (int32_t *)malloc(num_vdif_bytes);
 			if (vdif_buf == NULL)
