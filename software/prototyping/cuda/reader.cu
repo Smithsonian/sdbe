@@ -176,14 +176,14 @@ int main(int argc, char **argv)
 		int option_index = 0;
 		static struct option long_options[] =
 		{
-			{   "input", required_argument, 0, 'i' },
-			{   "count", required_argument, 0, 'c' },
-			{ "verbose",       no_argument, 0, 'v' },
-			{  "blocks", required_argument, 0, 'b' },
-			{ "logfile", required_argument, 0, 'l' },
-			{ "repeats", required_argument, 0, 'r' },
-			{"datafile", required_argument, 0, 'd' },
-			{    "help",       no_argument, 0, 'h' },
+			{   "input", required_argument, NULL, 'i' },
+			{   "count", required_argument, NULL, 'c' },
+			{ "verbose",       no_argument, NULL, 'v' },
+			{  "blocks", required_argument, NULL, 'b' },
+			{ "logfile", required_argument, NULL, 'l' },
+			{ "repeats", required_argument, NULL, 'r' },
+			{"datafile", required_argument, NULL, 'd' },
+			{    "help",       no_argument, NULL, 'h' },
 			{         0,                 0, 0,   0 }
 		};
 		
@@ -289,7 +289,10 @@ int main(int argc, char **argv)
 		}
 	}
 	#ifdef DEBUG
-	printf("reader:DEBUG:Opening file '%s' for logging.\n",filename_log);
+	if (logging)
+	{
+		printf("reader:DEBUG:Opening file '%s' for logging.\n",filename_log);
+	}
 	#endif
 	
 	// open logfile
@@ -322,7 +325,10 @@ int main(int argc, char **argv)
 	}
 	
 	#ifdef DEBUG
-	printf("reader:DEBUG:Opening file '%s' for data output.\n",filename_data);
+	if (data_to_file)
+	{
+		printf("reader:DEBUG:Opening file '%s' for data output.\n",filename_data);
+	}
 	#endif
 	
 	// open datafile
