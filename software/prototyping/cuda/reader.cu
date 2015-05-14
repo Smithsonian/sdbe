@@ -61,7 +61,7 @@
  *  Forward declarations
  */
 // GPU kernels
-__global__ void vdif_reader(
+__global__ void vdif_to_beng(
 	int32_t *vdif_frames, 
 	int32_t *fid_out, 
 	int32_t *cid_out, 
@@ -465,7 +465,7 @@ int main(int argc, char **argv)
 		cudaEventRecord(start);
 		cudaEventSynchronize(start);
 		clock_gettime(CLOCK_PROCESS_CPUTIME_ID,&t0);
-		vdif_reader<<<blocksPerGrid,threadsPerBlock>>>(gpu_vdif_buf,gpu_fid,gpu_cid,gpu_bcount,gpu_beng_data_0,gpu_beng_data_1,gpu_beng_frame_completion,num_vdif_frames,blocks_per_grid);
+		vdif_to_beng<<<blocksPerGrid,threadsPerBlock>>>(gpu_vdif_buf,gpu_fid,gpu_cid,gpu_bcount,gpu_beng_data_0,gpu_beng_data_1,gpu_beng_frame_completion,num_vdif_frames,blocks_per_grid);
 		cudaDeviceSynchronize();
 		clock_gettime(CLOCK_PROCESS_CPUTIME_ID,&t1);
 		cudaEventRecord(stop);
@@ -649,7 +649,7 @@ int main(int argc, char **argv)
 /*
  * Parse VDIF frame and output data.
  * */
-__global__ void vdif_reader(
+__global__ void vdif_to_beng(
 	int32_t *vdif_frames, 
 	int32_t *fid_out, 
 	int32_t *cid_out, 
