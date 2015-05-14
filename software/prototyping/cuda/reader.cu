@@ -176,49 +176,22 @@ int main(int argc, char **argv)
 		int option_index = 0;
 		static struct option long_options[] =
 		{
-			{   "input", required_argument, 0, 0 },
-			{   "count", required_argument, 0, 0 },
-			{ "verbose",       no_argument, 0, 0 },
-			{  "blocks", required_argument, 0, 0 },
-			{ "logfile", required_argument, 0, 0 },
-			{ "repeats", required_argument, 0, 0 },
-			{"datafile", required_argument, 0, 0 },
-			{         0,                 0, 0, 0 }
+			{   "input", required_argument, 0, 'i' },
+			{   "count", required_argument, 0, 'c' },
+			{ "verbose",       no_argument, 0, 'v' },
+			{  "blocks", required_argument, 0, 'b' },
+			{ "logfile", required_argument, 0, 'l' },
+			{ "repeats", required_argument, 0, 'r' },
+			{"datafile", required_argument, 0, 'd' },
+			{    "help",       no_argument, 0, 'h' },
+			{         0,                 0, 0,   0 }
 		};
 		
-		c = getopt_long(argc, argv, "i:c:vb:l:r:d:", long_options, &option_index);
+		c = getopt_long(argc, argv, "i:c:vb:l:r:d:h", long_options, &option_index);
 		
 		if (c == -1)
 		{
 			break;
-		}
-		
-		if (c == 0)
-		{
-			switch (option_index)
-			{
-				case 0:
-					c = 'i';
-					break;
-				case 1:
-					c = 'c';
-					break;
-				case 2:
-					c = 'v';
-					break;
-				case 3:
-					c = 'b';
-					break;
-				case 4:
-					c = 'l';
-					break;
-				case 5:
-					c = 'r';
-					break;
-				case 6:
-					c = 'd';
-					break;
-			}
 		}
 		
 		switch (c)
@@ -297,9 +270,22 @@ int main(int argc, char **argv)
 				snprintf(filename_data, sizeof(filename_data), "%s", optarg);
 				data_to_file = 1;
 				break;
+			case 'h':
+				printf("Usage: %s [OPTIONS] -i <input_file>\n",argv[0]);
+				printf("Options:\n");
+				printf("  -b B, --blocks=B     Use <B> thread blocks for GPU kernel execution.\n");
+				printf("  -c N, --count=N      Read <N> VDIF frames from file <input_file>.\n");
+				printf("  -d F, --datafile=F   Write B-engine data to <F>.\n");
+				printf("  -l F, --logfile=F    Activate logging to <F>.\n");
+				printf("  -r R, --repeats=R    Repeat call to GPU kernel <R> times.\n");
+				printf("  -v  , --verbose      Verbose output.\n");
+				printf("\n");
+				exit(EXIT_SUCCESS);
+				break;
 			default:
 				fprintf(stderr,"?? getopt returned character code 0%o ??\n.",c);
 				exit(EXIT_FAILURE);
+				
 		}
 	}
 	#ifdef DEBUG
@@ -613,10 +599,6 @@ int main(int argc, char **argv)
 	}
 	
 	#ifdef DEBUG_SINGLE_FRAME
-				
-			#endif
-	
-	#ifdef DEBUG_SINGLE_FRAME
 		for (ii=0; ii<num_vdif_frames; ii++)
 		{
 			if (cid[ii] == DEBUG_SINGLE_FRAME_CID && fid[ii] == DEBUG_SINGLE_FRAME_FID && bcount[ii] == DEBUG_SINGLE_FRAME_BCOUNT)
@@ -693,7 +675,7 @@ int main(int argc, char **argv)
 }
 
 /*
- * Parse VDIF frame and output data.
+ * Parse VDIF frame and store B-engine frames in buffer.
  * */
 __global__ void vdif_to_beng(
 	int32_t *vdif_frames, 
@@ -707,14 +689,12 @@ __global__ void vdif_to_beng(
 	int blocks_per_grid)
 {
 	// VDIF header
-	//~ __shared__ int32_t vdif_header[VDIF_INT_SIZE_HEADER][THREADS_PER_BLOCK_Y];
 	int32_t cid,fid;
 	int32_t bcount; // we don't need very large bcount, just keep lower 32bits
 	
 	// VDIF data
 	const int32_t *vdif_frame_start; // pointer to start of the VDIF frame handled by this thread
-	int32_t samples_per_snapshot_half_0, samples_per_snapshot_half_1; // 4byte collections of 16 samples (2sums * (1real + 1imag) * 4xeng_parallel_chan) each
-	//~ float sample_real, sample_imag; // real and imaginary components from 2bit samples
+	int32_t samples_per_snapshot_half_0, samples_per_snapshot_half_1; // 4byte collections of 16 2bit samples (2sums * (1real + 1imag) * 4xeng_parallel_chan) each
 	int32_t idx_beng_data_out; // index into beng_data_out
 	
 	// misc
@@ -733,17 +713,24 @@ __global__ void vdif_to_beng(
 	{ 
 		
 		#ifdef DEBUG_GPU
-			#ifdef DEBUG_GPU_CONDITION
-				if ( DEBUG_GPU_CONDITION )
+			#ifdef DEBUG_SINGLE_FRAME
+				if (cid == DEBUG_SINGLE_FRAME_CID && fid == DEBUG_SINGLE_FRAME_FID && bcount == DEBUG_SINGLE_FRAME_BCOUNT)
 				{
-			#endif // DEBUG_GPU_CONDITION
-			printf("blk(thx,thy)=%3d(%3d,%3d): #frame = %d + %d + %d*%d = %d < %d ? %s\n",blockIdx.x,threadIdx.x,threadIdx.y,
-			iframe , threadIdx.y , blockIdx.x , THREADS_PER_BLOCK_Y,
-			iframe + threadIdx.y + blockIdx.x*THREADS_PER_BLOCK_Y,num_vdif_frames,
-			iframe + threadIdx.y + blockIdx.x*THREADS_PER_BLOCK_Y < num_vdif_frames ? "OK" : "NO");
+			#endif // DEBUG_SINGLE_FRAME
 			#ifdef DEBUG_GPU_CONDITION
-				}
+					if ( DEBUG_GPU_CONDITION )
+					{
 			#endif // DEBUG_GPU_CONDITION
+						printf("blk(thx,thy)=%3d(%3d,%3d): #frame = %d + %d + %d*%d = %d < %d ? %s\n",blockIdx.x,threadIdx.x,threadIdx.y,
+						iframe , threadIdx.y , blockIdx.x , THREADS_PER_BLOCK_Y,
+						iframe + threadIdx.y + blockIdx.x*THREADS_PER_BLOCK_Y,num_vdif_frames,
+						iframe + threadIdx.y + blockIdx.x*THREADS_PER_BLOCK_Y < num_vdif_frames ? "OK" : "NO");
+			#ifdef DEBUG_GPU_CONDITION
+					}
+			#endif // DEBUG_GPU_CONDITION
+			#ifdef DEBUG_SINGLE_FRAME
+				}
+			#endif // DEBUG_SINGLE_FRAME
 		#endif // DEBUG_GPU
 		
 		/* Set the start of the VDIF frame handled by this thread. VDIF 
@@ -827,17 +814,24 @@ __global__ void vdif_to_beng(
 					if (cid == DEBUG_SINGLE_FRAME_CID && fid == DEBUG_SINGLE_FRAME_FID && bcount == DEBUG_SINGLE_FRAME_BCOUNT)
 					{
 						#ifdef DEBUG_GPU
-							#ifdef DEBUG_GPU_CONDITION
-								if ( DEBUG_GPU_CONDITION )
+							#ifdef DEBUG_SINGLE_FRAME
+								if (cid == DEBUG_SINGLE_FRAME_CID && fid == DEBUG_SINGLE_FRAME_FID && bcount == DEBUG_SINGLE_FRAME_BCOUNT)
 								{
-							#endif // DEBUG_GPU_CONDITION
-							printf("blk(thx,thy)=%3d(%3d,%3d): cid=%3d, fid=%d, bcount=%8d (masked=%3d); 0x%08x: 0x%02x = %3u -> (%2d,%2d) (%2d,%2d) ; 0x%08x: 0x%02x = %3u -> (%2d,%2d) (%2d,%2d) \n",
-								blockIdx.x,threadIdx.x,threadIdx.y,cid,fid,bcount,bcount&BENG_BUFFER_INDEX_MASK,
-								tmp_s0,tmp_s0&0xFF,tmp_s0&0xFF,r1,i1,r2,i2,
-								tmp_s1,tmp_s1&0xFF,tmp_s1&0xFF,r3,i3,r4,i4);
+							#endif // DEBUG_SINGLE_FRAME
 							#ifdef DEBUG_GPU_CONDITION
-								}
+									if ( DEBUG_GPU_CONDITION )
+									{
 							#endif // DEBUG_GPU_CONDITION
+										printf("blk(thx,thy)=%3d(%3d,%3d): cid=%3d, fid=%d, bcount=%8d (masked=%3d); 0x%08x: 0x%02x = %3u -> (%2d,%2d) (%2d,%2d) ; 0x%08x: 0x%02x = %3u -> (%2d,%2d) (%2d,%2d) \n",
+												blockIdx.x,threadIdx.x,threadIdx.y,cid,fid,bcount,bcount&BENG_BUFFER_INDEX_MASK,
+												tmp_s0,tmp_s0&0xFF,tmp_s0&0xFF,r1,i1,r2,i2,
+												tmp_s1,tmp_s1&0xFF,tmp_s1&0xFF,r3,i3,r4,i4);
+							#ifdef DEBUG_GPU_CONDITION
+									}
+							#endif // DEBUG_GPU_CONDITION
+							#ifdef DEBUG_SINGLE_FRAME
+								}
+							#endif // DEBUG_SINGLE_FRAME
 						#endif // DEBUG_GPU
 					} // DEBUG_SINGLE_FRAME condition
 				#endif // DEBUG_SINGLE_FRAME
@@ -851,40 +845,54 @@ __global__ void vdif_to_beng(
 		} // for (idata=0; ...)
 		
 		#ifdef DEBUG_GPU
-			#ifdef DEBUG_GPU_CONDITION
-				if ( DEBUG_GPU_CONDITION )
+			#ifdef DEBUG_SINGLE_FRAME
+				if (cid == DEBUG_SINGLE_FRAME_CID && fid == DEBUG_SINGLE_FRAME_FID && bcount == DEBUG_SINGLE_FRAME_BCOUNT)
 				{
-			#endif // DEBUG_GPU_CONDITION
-			printf("blk(thx,thy)=%3d(%3d,%3d): cid=%3d, fid=%d, bcount=%8d (masked=%3d); idx_beng_data_out = %d*%d*%d + %d*(%3d*%d+%d) + %d*%d =  %9d + %9d + %9d = %9d --> %9d.\n",
-				blockIdx.x,threadIdx.x,threadIdx.y,cid,fid,bcount,bcount & BENG_BUFFER_INDEX_MASK,
-				BENG_CHANNELS,BENG_SNAPSHOTS,(bcount & BENG_BUFFER_INDEX_MASK),
-				SWARM_XENG_PARALLEL_CHAN , cid , SWARM_N_FIDS , fid,
-				threadIdx.x,BENG_CHANNELS,
-				BENG_CHANNELS*BENG_SNAPSHOTS*(bcount & BENG_BUFFER_INDEX_MASK),
-				SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid),
-				threadIdx.x*BENG_CHANNELS,
-				BENG_CHANNELS*BENG_SNAPSHOTS*(bcount & BENG_BUFFER_INDEX_MASK)+SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid)+threadIdx.x*BENG_CHANNELS,
-				idx_beng_data_out);
+			#endif // DEBUG_SINGLE_FRAME
 			#ifdef DEBUG_GPU_CONDITION
-				}
+					if ( DEBUG_GPU_CONDITION )
+					{
 			#endif // DEBUG_GPU_CONDITION
+						printf("blk(thx,thy)=%3d(%3d,%3d): cid=%3d, fid=%d, bcount=%8d (masked=%3d); idx_beng_data_out = %d*%d*%d + %d*(%3d*%d+%d) + %d*%d =  %9d + %9d + %9d = %9d --> %9d.\n",
+								blockIdx.x,threadIdx.x,threadIdx.y,cid,fid,bcount,bcount & BENG_BUFFER_INDEX_MASK,
+								BENG_CHANNELS,BENG_SNAPSHOTS,(bcount & BENG_BUFFER_INDEX_MASK),
+								SWARM_XENG_PARALLEL_CHAN , cid , SWARM_N_FIDS , fid,
+								threadIdx.x,BENG_CHANNELS,
+								BENG_CHANNELS*BENG_SNAPSHOTS*(bcount & BENG_BUFFER_INDEX_MASK),
+								SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid),
+								threadIdx.x*BENG_CHANNELS,
+								BENG_CHANNELS*BENG_SNAPSHOTS*(bcount & BENG_BUFFER_INDEX_MASK)+SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid)+threadIdx.x*BENG_CHANNELS,
+								idx_beng_data_out);
+			#ifdef DEBUG_GPU_CONDITION
+					}
+			#endif // DEBUG_GPU_CONDITION
+			#ifdef DEBUG_SINGLE_FRAME
+				}
+			#endif // DEBUG_SINGLE_FRAME
 		#endif // DEBUG_GPU
 		
-		// reset completion counter for two B-engine frames behind
-		//beng_frame_completion[(bcount+BENG_BUFFER_IN_COUNTS-3)&BENG_BUFFER_INDEX_MASK] = 0;
+		//~ // TODO: reset completion counter for two B-engine frames behind, something like:
+		//~ beng_frame_completion[(bcount+BENG_BUFFER_IN_COUNTS-3)&BENG_BUFFER_INDEX_MASK] = 0;
 		
 		// increment completion counter for this B-engine frame
 		old = atomicAdd(beng_frame_completion + (bcount&BENG_BUFFER_INDEX_MASK), 1);
 		#ifdef DEBUG_GPU
-			#ifdef DEBUG_GPU_CONDITION
-				if ( DEBUG_GPU_CONDITION )
+			#ifdef DEBUG_SINGLE_FRAME
+				if (cid == DEBUG_SINGLE_FRAME_CID && fid == DEBUG_SINGLE_FRAME_FID && bcount == DEBUG_SINGLE_FRAME_BCOUNT)
 				{
-			#endif // DEBUG_GPU_CONDITION
-			printf("blk(thx,thy)=%d(%d,%d): B-engine frame bcount=%8d (masked=%3d) completion increment: %6d --> %6d (FULL = %6d).\n",
-				blockIdx.x,threadIdx.x,threadIdx.y,bcount,bcount & BENG_BUFFER_INDEX_MASK,old,old+1,BENG_FRAME_COMPLETION_COMPLETE);
+			#endif // DEBUG_SINGLE_FRAME
 			#ifdef DEBUG_GPU_CONDITION
-				}
+					if ( DEBUG_GPU_CONDITION )
+					{
 			#endif // DEBUG_GPU_CONDITION
+						printf("blk(thx,thy)=%d(%d,%d): B-engine frame bcount=%8d (masked=%3d) completion increment: %6d --> %6d (FULL = %6d).\n",
+								blockIdx.x,threadIdx.x,threadIdx.y,bcount,bcount & BENG_BUFFER_INDEX_MASK,old,old+1,BENG_FRAME_COMPLETION_COMPLETE);
+			#ifdef DEBUG_GPU_CONDITION
+					}
+			#endif // DEBUG_GPU_CONDITION
+			#ifdef DEBUG_SINGLE_FRAME
+				}
+			#endif // DEBUG_SINGLE_FRAME
 		#endif // DEBUG_GPU
 		
 		/* Vote to see if the frame is complete. This will be indicated
@@ -895,15 +903,22 @@ __global__ void vdif_to_beng(
 		{
 			// do something...
 			#ifdef DEBUG_GPU
-				#ifdef DEBUG_GPU_CONDITION
-					if ( DEBUG_GPU_CONDITION )
+				#ifdef DEBUG_SINGLE_FRAME
+					if (cid == DEBUG_SINGLE_FRAME_CID && fid == DEBUG_SINGLE_FRAME_FID && bcount == DEBUG_SINGLE_FRAME_BCOUNT)
 					{
-				#endif // DEBUG_GPU_CONDITION
-				printf("blk(thx,thy)=%d(%d,%d): B-engine frame bcount=%8d (masked=%3d) complete.\n",
-					blockIdx.x,threadIdx.x,threadIdx.y,bcount,bcount & BENG_BUFFER_INDEX_MASK);
+				#endif // DEBUG_SINGLE_FRAME
 				#ifdef DEBUG_GPU_CONDITION
-					}
+						if ( DEBUG_GPU_CONDITION )
+						{
 				#endif // DEBUG_GPU_CONDITION
+							printf("blk(thx,thy)=%d(%d,%d): B-engine frame bcount=%8d (masked=%3d) complete.\n",
+									blockIdx.x,threadIdx.x,threadIdx.y,bcount,bcount & BENG_BUFFER_INDEX_MASK);
+				#ifdef DEBUG_GPU_CONDITION
+						}
+				#endif // DEBUG_GPU_CONDITION
+				#ifdef DEBUG_SINGLE_FRAME
+					}
+				#endif // DEBUG_SINGLE_FRAME
 			#endif // DEBUG_GPU
 		}
 	} // for (iframe=0; ...)
