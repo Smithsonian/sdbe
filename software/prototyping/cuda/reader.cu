@@ -264,15 +264,14 @@ int main(int argc, char **argv)
 				exit(EXIT_FAILURE);
 		}
 	}
-	
 	#ifdef DEBUG
-	printf("reader:DEBUG:Reading %d VDIF frames from '%s'.\n",num_vdif_frames,filename_input);
+	printf("reader:DEBUG:Opening file '%s' for logging.\n",num_vdif_frames,filename_log);
 	#endif
 	
 	// open logfile
 	if (logging)
 	{
-		if (strlen(filename_input) == 0)
+		if (strlen(filename_log) == 0)
 		{
 			fprintf(stderr,"Log filename not specified.\n");
 			exit(EXIT_FAILURE);
@@ -298,10 +297,14 @@ int main(int argc, char **argv)
 		}
 	}
 	
+	#ifdef DEBUG
+	printf("reader:DEBUG:Opening file '%s' for data output.\n",num_vdif_frames,filename_data);
+	#endif
+	
 	// open datafile
 	if (data_to_file)
 	{
-		if (strlen(filename_input) == 0)
+		if (strlen(filename_data) == 0)
 		{
 			fprintf(stderr,"Data filename not specified.\n");
 			exit(EXIT_FAILURE);
@@ -317,11 +320,16 @@ int main(int argc, char **argv)
 			}
 			else
 			{
-				fprintf(stderr,"Unable to open datafile '%s'.\n",filename_log);
+				fprintf(stderr,"Unable to open datafile '%s'.\n",filename_data);
 				exit(EXIT_FAILURE);
 			}
 		}
 	}
+	
+	#ifdef DEBUG
+	printf("reader:DEBUG:Reading %d VDIF frames from '%s'.\n",num_vdif_frames,filename_input);
+	#endif
+	
 	// read requested number of VDIF frames from input file
 	if (num_vdif_frames < 1)
 	{
