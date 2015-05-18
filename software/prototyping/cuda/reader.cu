@@ -26,9 +26,14 @@
 #define VDIF_BIT_DEPTH 2 // bits-per-sample
 
 // GPU Controls
-#define THREADS_PER_BLOCK_X 8 // set specifically so that each thread reads one int32_t in header
-#define THREADS_PER_BLOCK_Y 4 // set so there is one warp per block, not necessarily optimal
+#ifndef THREADS_PER_BLOCK_X
+	#define THREADS_PER_BLOCK_X 32 //8 // set specifically so that each thread reads one int32_t in header
+#endif
+#ifndef THREADS_PER_BLOCK_Y
+	#define THREADS_PER_BLOCK_Y 32 //4 // set so there is one warp per block, not necessarily optimal
+#endif
 //~ #define BLOCKS_PER_GRID 128 // arbitrary power of 2
+//~ #define GPUCTRL_SHARED_RAW_VDIF
 
 // Data structure
 #define BENG_CHANNELS_ 16384
@@ -38,6 +43,7 @@
 #define BENG_BUFFER_INDEX_MASK (BENG_BUFFER_IN_COUNTS-1) // mask used to convert B-engine counter to index into buffer
 #define SWARM_N_FIDS 8
 #define SWARM_XENG_PARALLEL_CHAN 8
+#define BENG_FRAMES_OUT_CONSECUTIVE_SNAPSHOTS // if defined, B-engine frames are stored such that the same spectral channel for consecutive snapshots are adjacent in memory
 
 // VDIF packed B-engine packet
 #define BENG_VDIF_HDR_0_OFFSET_INT 4 // b1 b2 b3 b4
@@ -54,8 +60,8 @@
 //~ #define DEBUG_GPU_CONDITION (blockIdx.x == 0 && threadIdx.x == 7 && threadIdx.y == 3)
 //~ #define DEBUG_SINGLE_FRAME
 #define DEBUG_SINGLE_FRAME_CID 128
-#define DEBUG_SINGLE_FRAME_FID 7
-#define DEBUG_SINGLE_FRAME_BCOUNT 376263
+#define DEBUG_SINGLE_FRAME_FID 6
+#define DEBUG_SINGLE_FRAME_BCOUNT 376264
 
 /*
  *  Forward declarations
@@ -70,6 +76,7 @@ __global__ void vdif_to_beng(
 	cufftComplex *beng_data_out_1, 
 	int32_t *beng_frame_completion,
 	int32_t num_vdif_frames, 
+	int32_t bcount_offset,
 	int blocks_per_grid);
 // host utilities
 inline void error_check(const char *f, const int l);
@@ -136,6 +143,7 @@ int main(int argc, char **argv)
 	int32_t num_vdif_frames = 0;
 	int32_t *vdif_buf = NULL;
 	int32_t beng_frame_offset = -1;
+	int32_t bcount_offset = 0;
 	
 	// input (device)
 	int32_t *gpu_vdif_buf = NULL;
@@ -317,7 +325,6 @@ int main(int argc, char **argv)
 			default:
 				fprintf(stderr,"?? getopt returned character code 0%o ??\n.",c);
 				exit(EXIT_FAILURE);
-				
 		}
 	}
 	#ifdef DEBUG
@@ -346,13 +353,13 @@ int main(int argc, char **argv)
 					fprintf(fh_log,"#log-file created: %s",ctime(&wall_clock)); // ctime returns string with \n included
 					fprintf(fh_log,"#    CPU [ms]    CUDA [ms]\n");
 				}
-				fprintf(fh_log,"#Repeats: %d\n#Blocks per grid: %d\n",repeats,blocks_per_grid);
 			}
 			else
 			{
 				fprintf(stderr,"Unable to open logfile '%s'.\n",filename_log);
 				exit(EXIT_FAILURE);
 			}
+			fprintf(fh_log,"#Repeats: %d\n#Blocks per grid: %d\n#Threads-per-block (x,y): %d,%d\n",repeats,blocks_per_grid,THREADS_PER_BLOCK_X,THREADS_PER_BLOCK_Y);
 		}
 	}
 	
@@ -410,11 +417,11 @@ int main(int argc, char **argv)
 		if (fh != NULL)
 		{
 			// if we start at some specified B-engine frame boundary
+			fread((void *)tmp_vdif, VDIF_BYTE_SIZE, 1, fh);
+			tmp_bcount_curr = get_bcount_from_vdif(tmp_vdif);
 			if (beng_frame_offset > 0)
 			{
-				fread((void *)tmp_vdif, VDIF_BYTE_SIZE, 1, fh);
-				tmp_bcount_prev = get_bcount_from_vdif(tmp_vdif);
-				tmp_bcount_curr = tmp_bcount_prev;
+				tmp_bcount_prev = tmp_bcount_curr;
 				while (tmp_bcount_curr-tmp_bcount_prev < beng_frame_offset)
 				{
 					#ifdef DEBUG
@@ -426,10 +433,16 @@ int main(int argc, char **argv)
 				#ifdef DEBUG
 					printf("reader:DEBUG:B-count = %d = %d, seeking one frame back.\n",tmp_bcount_curr,tmp_bcount_prev+beng_frame_offset);
 				#endif
-				fseek(fh,-1*VDIF_BYTE_SIZE,SEEK_CUR);
 			}
+			fseek(fh,-1*VDIF_BYTE_SIZE,SEEK_CUR);
+			bcount_offset = tmp_bcount_curr;
+			#ifdef DEBUG
+			printf("reader:DEBUG:First B-engine counter value is %d.\n",bcount_offset);
+			#endif
 			// read file
-			vdif_buf = (int32_t *)malloc(num_vdif_bytes);
+			//~ vdif_buf = (int32_t *)malloc(num_vdif_bytes);
+			err = cudaHostAlloc((void **)&vdif_buf,num_vdif_bytes,cudaHostAllocDefault);
+			error_check(err,__FILE__,__LINE__);
 			if (vdif_buf == NULL)
 			{
 				fprintf(stderr,"Unable to allocate memory for input data.\n");
@@ -510,8 +523,13 @@ int main(int argc, char **argv)
 	#ifdef DEBUG
 	printf("reader:DEBUG:Allocating %d bytes for B-engine buffer.\n",2*beng_data_bytes);
 	#endif
-	beng_data_0 = (cufftComplex *)malloc(beng_data_bytes);
-	beng_data_1 = (cufftComplex *)malloc(beng_data_bytes);
+	//~ beng_data_0 = (cufftComplex *)malloc(beng_data_bytes);
+	err = cudaHostAlloc((void **)&beng_data_0,beng_data_bytes,cudaHostAllocDefault);
+	error_check(err,__FILE__,__LINE__);
+	//~ beng_data_1 = (cufftComplex *)malloc(beng_data_bytes);
+	err = cudaHostAlloc((void **)&beng_data_1,beng_data_bytes,cudaHostAllocDefault);
+	error_check(err,__FILE__,__LINE__);
+	
 	err = cudaMalloc((void **)&gpu_cid, num_vdif_frames*sizeof(int32_t));
 	error_check(err,__FILE__,__LINE__);
 	err = cudaMemset((void *)gpu_cid, 0, num_vdif_frames*sizeof(int32_t));
@@ -554,7 +572,7 @@ int main(int argc, char **argv)
 		cudaEventRecord(start);
 		cudaEventSynchronize(start);
 		clock_gettime(CLOCK_PROCESS_CPUTIME_ID,&t0);
-		vdif_to_beng<<<blocksPerGrid,threadsPerBlock>>>(gpu_vdif_buf,gpu_fid,gpu_cid,gpu_bcount,gpu_beng_data_0,gpu_beng_data_1,gpu_beng_frame_completion,num_vdif_frames,blocks_per_grid);
+		vdif_to_beng<<<blocksPerGrid,threadsPerBlock>>>(gpu_vdif_buf,gpu_fid,gpu_cid,gpu_bcount,gpu_beng_data_0,gpu_beng_data_1,gpu_beng_frame_completion,num_vdif_frames,bcount_offset,blocks_per_grid);
 		cudaDeviceSynchronize();
 		clock_gettime(CLOCK_PROCESS_CPUTIME_ID,&t1);
 		cudaEventRecord(stop);
@@ -608,52 +626,6 @@ int main(int argc, char **argv)
 		fwrite((void *)beng_data_1, sizeof(cufftComplex), BENG_CHANNELS*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS, fh_data);
 	}
 	
-	if (verbose_output)
-	{
-		cufftComplex beng_sample;
-		for (ii=0; ii<num_vdif_frames; ii++)
-		{
-			fprintf(stdout,"B-engine packet: fid=%d, cid=%d, bcount=%d\n",fid[ii],cid[ii],bcount[ii]);
-		}
-		for (il=0; il<2; il++) // loop over 2 phased sums
-		{
-			fprintf(stdout,"Phased sum %d:\n",il);
-			for (ii=0; ii<BENG_BUFFER_IN_COUNTS; ii++) // for each B-engine frame
-			{
-				fprintf(stdout,"\tB-eng buffer %d:\n",ii);
-				for (ij=0; ij<BENG_SNAPSHOTS; ij++) // for each snapshot
-				{
-					fprintf(stdout,"\t\tB-eng snapshot %d:\n",ij);
-					fprintf(stdout,"\t\t\tData:\n");
-					for (ik=0; ik<BENG_CHANNELS; ik++) // for each channel
-					{
-						if (ik<3 || ik>BENG_CHANNELS-4 || (ik>BENG_CHANNELS/2 && ik<BENG_CHANNELS/2+5)) // only display data for first 10 and last 10 channels
-						{
-							int idx_beng = ik + ij*BENG_CHANNELS + ii*BENG_SNAPSHOTS*BENG_CHANNELS;
-							if (il == 0)
-							{
-								beng_sample = beng_data_0[idx_beng];
-							}
-							else if (il == 1)
-							{
-								beng_sample = beng_data_1[idx_beng];
-							}
-							fprintf(stdout,"%2d+%2dj",(int)cuCrealf(beng_sample),(int)cuCimagf(beng_sample));
-							if (ik < BENG_CHANNELS-1)
-							{
-								fprintf(stdout,", ");
-							}
-							if (ik == 2 || ik == BENG_CHANNELS/2+4)
-							{
-								fprintf(stdout,"... , ");
-							}
-						}
-					}
-				}
-				fprintf(stdout,"\n");
-			}
-		}
-	}
 	
 	#ifdef DEBUG_SINGLE_FRAME
 		for (ii=0; ii<num_vdif_frames; ii++)
@@ -668,18 +640,31 @@ int main(int argc, char **argv)
 					printf("    %5d",ch_a+ij);
 				}
 				printf("\n");
-				int idx_beng = BENG_CHANNELS*BENG_SNAPSHOTS*(bcount[ii]&BENG_BUFFER_INDEX_MASK) + ch_a;
+				#ifdef BENG_FRAMES_OUT_CONSECUTIVE_SNAPSHOTS
+					int idx_beng = ch_a*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS + ((bcount[ii]-bcount_offset)&BENG_BUFFER_INDEX_MASK)*BENG_SNAPSHOTS;
+				#else
+					int idx_beng = BENG_CHANNELS*BENG_SNAPSHOTS*((bcount[ii]-bcount_offset)&BENG_BUFFER_INDEX_MASK) + ch_a;
+				#endif
 				for (ij=0; ij<BENG_SNAPSHOTS; ij++)
 				{
 					printf("\tSnapshot #%3d:\n",ij);
 					for (ik=0; ik<SWARM_XENG_PARALLEL_CHAN; ik++)
 					{
-						printf("   %2d%+2dj",(int)cuCrealf(beng_data_0[idx_beng+BENG_CHANNELS*ij+ik]),(int)cuCimagf(beng_data_0[idx_beng+BENG_CHANNELS*ij+ik]));
+						#ifdef BENG_FRAMES_OUT_CONSECUTIVE_SNAPSHOTS
+							printf("   %2d%+2dj",(int)cuCrealf(beng_data_0[idx_beng+ij+BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS*ik]),(int)cuCimagf(beng_data_0[idx_beng+ij+BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS*ik]));
+						#else
+							printf("   %2d%+2dj",(int)cuCrealf(beng_data_0[idx_beng+BENG_CHANNELS*ij+ik]),(int)cuCimagf(beng_data_0[idx_beng+BENG_CHANNELS*ij+ik]));
+						#endif
+						
 					}
 					printf("\n");
 					for (ik=0; ik<SWARM_XENG_PARALLEL_CHAN; ik++)
 					{
-						printf("   %2d%+2dj",(int)cuCrealf(beng_data_1[idx_beng+BENG_CHANNELS*ij+ik]),(int)cuCimagf(beng_data_1[idx_beng+BENG_CHANNELS*ij+ik]));
+						#ifdef BENG_FRAMES_OUT_CONSECUTIVE_SNAPSHOTS
+							printf("   %2d%+2dj",(int)cuCrealf(beng_data_1[idx_beng+ij+BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS*ik]),(int)cuCimagf(beng_data_1[idx_beng+ij+BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS*ik]));
+						#else
+							printf("   %2d%+2dj",(int)cuCrealf(beng_data_1[idx_beng+BENG_CHANNELS*ij+ik]),(int)cuCimagf(beng_data_1[idx_beng+BENG_CHANNELS*ij+ik]));
+						#endif
 					}
 					printf("\n");
 				}
@@ -702,12 +687,15 @@ int main(int argc, char **argv)
 	#ifdef DEBUG
 	printf("reader:DEBUG:Free host memory.\n");
 	#endif
-	free(vdif_buf);
+	//~ free(vdif_buf);
+	cudaFreeHost((void *)vdif_buf);
 	free(cid);
 	free(fid);
 	free(bcount);
-	free(beng_data_0);
-	free(beng_data_1);
+	//~ free(beng_data_0);
+	cudaFreeHost((void *)beng_data_0);
+	//~ free(beng_data_1);
+	cudaFreeHost((void *)beng_data_1);
 	free(beng_frame_completion);
 	
 	// Reset the device and exit
@@ -743,6 +731,7 @@ __global__ void vdif_to_beng(
 	cufftComplex *beng_data_out_1, 
 	int32_t *beng_frame_completion,
 	int32_t num_vdif_frames, 
+	int32_t bcount_offset,
 	int blocks_per_grid)
 {
 	// VDIF header
@@ -753,6 +742,10 @@ __global__ void vdif_to_beng(
 	const int32_t *vdif_frame_start; // pointer to start of the VDIF frame handled by this thread
 	int32_t samples_per_snapshot_half_0, samples_per_snapshot_half_1; // 4byte collections of 16 2bit samples (2sums * (1real + 1imag) * 4xeng_parallel_chan) each
 	int32_t idx_beng_data_out; // index into beng_data_out
+	
+	#ifdef GPUCTRL_SHARED_RAW_VDIF
+		__shared__ int32_t vdif_shared[THREADS_PER_BLOCK_Y][VDIF_INT_SIZE];
+	#endif
 	
 	// misc
 	int32_t iframe; // VDIF frame sized index into VDIF data buffer currently processed by this thread
@@ -797,14 +790,26 @@ __global__ void vdif_to_beng(
 		 * */
 		vdif_frame_start = vdif_frames + (iframe + threadIdx.y + blockIdx.x*THREADS_PER_BLOCK_Y)*VDIF_INT_SIZE;
 		
-		// B-engine c
-		cid = get_cid_from_vdif(vdif_frame_start);
+		#ifdef GPUCTRL_SHARED_RAW_VDIF
+			for (idata=threadIdx.x; idata<VDIF_INT_SIZE; idata+=THREADS_PER_BLOCK_X)
+			{
+				vdif_shared[threadIdx.y][idata] = *(vdif_frame_start + idata);
+			}
+			__syncthreads();
+		#endif
+		
+		#ifdef GPUCTRL_SHARED_RAW_VDIF
+			cid = get_cid_from_vdif(vdif_shared[threadIdx.y]);
+			fid = get_fid_from_vdif(vdif_shared[threadIdx.y]);
+			bcount = get_bcount_from_vdif(vdif_shared[threadIdx.y]);
+		#else
+			cid = get_cid_from_vdif(vdif_frame_start);
+			fid = get_fid_from_vdif(vdif_frame_start);
+			bcount = get_bcount_from_vdif(vdif_frame_start);
+		#endif
+		
 		cid_out[iframe + threadIdx.y + blockIdx.x*THREADS_PER_BLOCK_Y] = cid;
-		// B-engine f
-		fid = get_fid_from_vdif(vdif_frame_start);
 		fid_out[iframe + threadIdx.y + blockIdx.x*THREADS_PER_BLOCK_Y] = fid;
-		// B-engine b
-		bcount = get_bcount_from_vdif(vdif_frame_start);
 		bcount_out[iframe + threadIdx.y + blockIdx.x*THREADS_PER_BLOCK_Y] = bcount;
 		
 		#ifdef DEBUG_SINGLE_FRAME
@@ -818,19 +823,78 @@ __global__ void vdif_to_beng(
 			}
 		#endif
 		
-		/* Set the offset into the B-engine data buffer. Channels for 
-		 * a single snapshot are consecutive in memory, consecutive 
-		 * snapshots are separated by one spectrum, and consecutive
-		 * B-engine frames are separated by 128 snapshots (128 spectra).
-		 * */
-		idx_beng_data_out  = BENG_CHANNELS*BENG_SNAPSHOTS*(bcount&BENG_BUFFER_INDEX_MASK); // offset given the masked B-engine counter value
-		idx_beng_data_out += SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid); // offset given the cid and fid
-		/* Add offset based on the threadIdx.x. Consecutive x-threads
-		 * read consecutive 2-int32_t (8byte) data chunks, which means
-		 * that the target index for consecutive x-threads are separated
-		 * as consecutive snapshots, i.e. single spectrum.
-		 * */
-		idx_beng_data_out += threadIdx.x*BENG_CHANNELS; // offset given the threadIdx.x
+		#ifdef BENG_FRAMES_OUT_CONSECUTIVE_SNAPSHOTS
+			/* Reorder to have snapshots contiguous and consecutive channels
+			 * separated by 128 snapshots times the number of B-engine frames
+			 * in buffer.
+			 */
+			idx_beng_data_out = SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid)*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS;
+			idx_beng_data_out += ((bcount-bcount_offset)&BENG_BUFFER_INDEX_MASK)*BENG_SNAPSHOTS;
+		#else
+			/* Set the offset into the B-engine data buffer. Channels for 
+			 * a single snapshot are consecutive in memory, consecutive 
+			 * snapshots are separated by one spectrum, and consecutive
+			 * B-engine frames are separated by 128 snapshots (128 spectra).
+			 * */
+			idx_beng_data_out  = BENG_CHANNELS*BENG_SNAPSHOTS*((bcount-bcount_offset)&BENG_BUFFER_INDEX_MASK); // offset given the masked B-engine counter value
+			idx_beng_data_out += SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid); // offset given the cid and fid
+		#endif
+		
+		#ifdef BENG_FRAMES_OUT_CONSECUTIVE_SNAPSHOTS
+			/* Reorder to have snapshots contiguous and consecutive channels
+			 * separated by 128 snapshots times the number of B-engine frames
+			 * in buffer. This means consecutive threads along x will handle
+			 * consecutive snapshots.
+			 */
+			idx_beng_data_out += threadIdx.x;
+		#else
+			/* Add offset based on the threadIdx.x. Consecutive x-threads
+			 * read consecutive 2-int32_t (8byte) data chunks, which means
+			 * that the target index for consecutive x-threads are separated
+			 * as consecutive snapshots, i.e. single spectrum.
+			 * */
+			idx_beng_data_out += threadIdx.x*BENG_CHANNELS; // offset given the threadIdx.x
+		#endif
+		
+		#ifdef DEBUG_GPU
+			#ifdef DEBUG_SINGLE_FRAME
+				if (cid == DEBUG_SINGLE_FRAME_CID && fid == DEBUG_SINGLE_FRAME_FID && bcount == DEBUG_SINGLE_FRAME_BCOUNT)
+				{
+			#endif // DEBUG_SINGLE_FRAME
+			#ifdef DEBUG_GPU_CONDITION
+					if ( DEBUG_GPU_CONDITION )
+					{
+			#endif // DEBUG_GPU_CONDITION
+						#ifdef BENG_FRAMES_OUT_CONSECUTIVE_SNAPSHOTS
+							printf("blk(thx,thy)=%3d(%3d,%3d): cid=%3d, fid=%d, bcount=%8d (masked=%3d); (before data loop) idx_beng_data_out = %d*(%3d*%d+%d)*%d*%d + %d*%d + %d =  %9d + %9d + %9d = %9d --> %9d.\n",
+									blockIdx.x,threadIdx.x,threadIdx.y,cid,fid,bcount,((bcount-bcount_offset)&BENG_BUFFER_INDEX_MASK),
+									SWARM_XENG_PARALLEL_CHAN , cid , SWARM_N_FIDS , fid,BENG_BUFFER_IN_COUNTS,BENG_SNAPSHOTS,
+									((bcount-bcount_offset)&BENG_BUFFER_INDEX_MASK),BENG_SNAPSHOTS,
+									threadIdx.x,
+									SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid)*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS,
+									((bcount-bcount_offset)&BENG_BUFFER_INDEX_MASK)*BENG_SNAPSHOTS,
+									threadIdx.x,
+									SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid)*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS+((bcount-bcount_offset)&BENG_BUFFER_INDEX_MASK)*BENG_SNAPSHOTS+threadIdx.x,
+									idx_beng_data_out);
+						#else
+							printf("blk(thx,thy)=%3d(%3d,%3d): cid=%3d, fid=%d, bcount=%8d (masked=%3d); (before data loop) idx_beng_data_out = %d*%d*%d + %d*(%3d*%d+%d) + %d*%d =  %9d + %9d + %9d = %9d --> %9d.\n",
+									blockIdx.x,threadIdx.x,threadIdx.y,cid,fid,bcount,bcount & BENG_BUFFER_INDEX_MASK,
+									BENG_CHANNELS,BENG_SNAPSHOTS,(bcount & BENG_BUFFER_INDEX_MASK),
+									SWARM_XENG_PARALLEL_CHAN , cid , SWARM_N_FIDS , fid,
+									threadIdx.x,BENG_CHANNELS,
+									BENG_CHANNELS*BENG_SNAPSHOTS*(bcount & BENG_BUFFER_INDEX_MASK),
+									SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid),
+									threadIdx.x*BENG_CHANNELS,
+									BENG_CHANNELS*BENG_SNAPSHOTS*(bcount & BENG_BUFFER_INDEX_MASK)+SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid)+threadIdx.x*BENG_CHANNELS,
+									idx_beng_data_out);
+						#endif
+			#ifdef DEBUG_GPU_CONDITION
+					}
+			#endif // DEBUG_GPU_CONDITION
+			#ifdef DEBUG_SINGLE_FRAME
+				}
+			#endif // DEBUG_SINGLE_FRAME
+		#endif // DEBUG_GPU
 		
 		/* idata increases by the number of int32_t handled simultaneously
 		 * by all x-threads. Each thread handles B-engine packet data 
@@ -844,8 +908,13 @@ __global__ void vdif_to_beng(
 			 * particular snapshot offset for THIS x-thread 
 			 * (BENG_VDIF_INT_PER_SNAPSHOT*threadIdx.x).
 			 * */
-			samples_per_snapshot_half_0 = *(vdif_frame_start + VDIF_INT_SIZE_HEADER + idata + BENG_VDIF_INT_PER_SNAPSHOT*threadIdx.x);
-			samples_per_snapshot_half_1 = *(vdif_frame_start + VDIF_INT_SIZE_HEADER + idata + BENG_VDIF_INT_PER_SNAPSHOT*threadIdx.x + 1);
+			#ifdef GPUCTRL_SHARED_RAW_VDIF
+				samples_per_snapshot_half_0 = *(vdif_shared[threadIdx.y] + VDIF_INT_SIZE_HEADER + idata + BENG_VDIF_INT_PER_SNAPSHOT*threadIdx.x);
+				samples_per_snapshot_half_1 = *(vdif_shared[threadIdx.y] + VDIF_INT_SIZE_HEADER + idata + BENG_VDIF_INT_PER_SNAPSHOT*threadIdx.x + 1);
+			#else
+				samples_per_snapshot_half_0 = *(vdif_frame_start + VDIF_INT_SIZE_HEADER + idata + BENG_VDIF_INT_PER_SNAPSHOT*threadIdx.x);
+				samples_per_snapshot_half_1 = *(vdif_frame_start + VDIF_INT_SIZE_HEADER + idata + BENG_VDIF_INT_PER_SNAPSHOT*threadIdx.x + 1);
+			#endif
 			for (isample=0; isample<SWARM_XENG_PARALLEL_CHAN/2; isample++)
 			{
 				#ifdef DEBUG_SINGLE_FRAME
@@ -853,21 +922,40 @@ __global__ void vdif_to_beng(
 					int32_t tmp_s1 = samples_per_snapshot_half_1;
 				#endif
 				
-				beng_data_out_1[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)] = read_complex_sample(&samples_per_snapshot_half_0);
-				beng_data_out_0[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)] = read_complex_sample(&samples_per_snapshot_half_0);
-				beng_data_out_1[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2] = read_complex_sample(&samples_per_snapshot_half_1);
-				beng_data_out_0[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2] = read_complex_sample(&samples_per_snapshot_half_1);
+				#ifdef BENG_FRAMES_OUT_CONSECUTIVE_SNAPSHOTS
+					beng_data_out_1[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1))*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS] = read_complex_sample(&samples_per_snapshot_half_0);
+					beng_data_out_0[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1))*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS] = read_complex_sample(&samples_per_snapshot_half_0);
+					beng_data_out_1[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2)*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS] = read_complex_sample(&samples_per_snapshot_half_1);
+					beng_data_out_0[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2)*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS] = read_complex_sample(&samples_per_snapshot_half_1);
+				#else
+					beng_data_out_1[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)] = read_complex_sample(&samples_per_snapshot_half_0);
+					beng_data_out_0[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)] = read_complex_sample(&samples_per_snapshot_half_0);
+					beng_data_out_1[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2] = read_complex_sample(&samples_per_snapshot_half_1);
+					beng_data_out_0[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2] = read_complex_sample(&samples_per_snapshot_half_1);
+				#endif
 				
 				#ifdef DEBUG_SINGLE_FRAME
 					int r1,r2,r3,r4,i1,i2,i3,i4;
-					r1 = (int)(beng_data_out_1[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)].x);
-					i1 = (int)(beng_data_out_1[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)].y);
-					r2 = (int)(beng_data_out_0[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)].x);
-					i2 = (int)(beng_data_out_0[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)].y);
-					r3 = (int)(beng_data_out_1[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2].x);
-					i3 = (int)(beng_data_out_1[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2].y);
-					r4 = (int)(beng_data_out_0[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2].x);
-					i4 = (int)(beng_data_out_0[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2].y);
+					#ifdef BENG_FRAMES_OUT_CONSECUTIVE_SNAPSHOTS
+						r1 = (int)(beng_data_out_1[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1))*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS].x);
+						i1 = (int)(beng_data_out_1[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1))*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS].y);
+						r2 = (int)(beng_data_out_0[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1))*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS].x);
+						i2 = (int)(beng_data_out_0[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1))*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS].y);
+						r3 = (int)(beng_data_out_1[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2)*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS].x);
+						i3 = (int)(beng_data_out_1[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2)*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS].y);
+						r4 = (int)(beng_data_out_0[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2)*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS].x);
+						i4 = (int)(beng_data_out_0[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2)*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS].y);
+					#else
+						r1 = (int)(beng_data_out_1[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)].x);
+						i1 = (int)(beng_data_out_1[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)].y);
+						r2 = (int)(beng_data_out_0[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)].x);
+						i2 = (int)(beng_data_out_0[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)].y);
+						r3 = (int)(beng_data_out_1[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2].x);
+						i3 = (int)(beng_data_out_1[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2].y);
+						r4 = (int)(beng_data_out_0[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2].x);
+						i4 = (int)(beng_data_out_0[idx_beng_data_out+SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2].y);
+					#endif
+					
 					if (cid == DEBUG_SINGLE_FRAME_CID && fid == DEBUG_SINGLE_FRAME_FID && bcount == DEBUG_SINGLE_FRAME_BCOUNT)
 					{
 						#ifdef DEBUG_GPU
@@ -880,7 +968,7 @@ __global__ void vdif_to_beng(
 									{
 							#endif // DEBUG_GPU_CONDITION
 										printf("blk(thx,thy)=%3d(%3d,%3d): cid=%3d, fid=%d, bcount=%8d (masked=%3d); 0x%08x: 0x%02x = %3u -> (%2d,%2d) (%2d,%2d) ; 0x%08x: 0x%02x = %3u -> (%2d,%2d) (%2d,%2d) \n",
-												blockIdx.x,threadIdx.x,threadIdx.y,cid,fid,bcount,bcount&BENG_BUFFER_INDEX_MASK,
+												blockIdx.x,threadIdx.x,threadIdx.y,cid,fid,bcount,(bcount-bcount_offset)&BENG_BUFFER_INDEX_MASK,
 												tmp_s0,tmp_s0&0xFF,tmp_s0&0xFF,r1,i1,r2,i2,
 												tmp_s1,tmp_s1&0xFF,tmp_s1&0xFF,r3,i3,r4,i4);
 							#ifdef DEBUG_GPU_CONDITION
@@ -894,11 +982,19 @@ __global__ void vdif_to_beng(
 				#endif // DEBUG_SINGLE_FRAME
 				
 			} // for (isample=0; ...)
-			/* The next snapshot handled by this thread will increment
-			 * by the number of x-threads, so index into B-engine data
-			 * should increment by that many spectra.
-			 * */
-			idx_beng_data_out += THREADS_PER_BLOCK_X*BENG_CHANNELS;
+			#ifdef BENG_FRAMES_OUT_CONSECUTIVE_SNAPSHOTS
+				/* The next snapshot handled by this thread will increment
+				 * by the number of x-threads, so index into B-engine data
+				 * should increment by that number.
+				 */
+				idx_beng_data_out += THREADS_PER_BLOCK_X;
+			#else
+				/* The next snapshot handled by this thread will increment
+				 * by the number of x-threads, so index into B-engine data
+				 * should increment by that many spectra.
+				 * */
+				idx_beng_data_out += THREADS_PER_BLOCK_X*BENG_CHANNELS;
+			#endif
 		} // for (idata=0; ...)
 		
 		#ifdef DEBUG_GPU
@@ -910,16 +1006,29 @@ __global__ void vdif_to_beng(
 					if ( DEBUG_GPU_CONDITION )
 					{
 			#endif // DEBUG_GPU_CONDITION
-						printf("blk(thx,thy)=%3d(%3d,%3d): cid=%3d, fid=%d, bcount=%8d (masked=%3d); idx_beng_data_out = %d*%d*%d + %d*(%3d*%d+%d) + %d*%d =  %9d + %9d + %9d = %9d --> %9d.\n",
-								blockIdx.x,threadIdx.x,threadIdx.y,cid,fid,bcount,bcount & BENG_BUFFER_INDEX_MASK,
-								BENG_CHANNELS,BENG_SNAPSHOTS,(bcount & BENG_BUFFER_INDEX_MASK),
-								SWARM_XENG_PARALLEL_CHAN , cid , SWARM_N_FIDS , fid,
-								threadIdx.x,BENG_CHANNELS,
-								BENG_CHANNELS*BENG_SNAPSHOTS*(bcount & BENG_BUFFER_INDEX_MASK),
-								SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid),
-								threadIdx.x*BENG_CHANNELS,
-								BENG_CHANNELS*BENG_SNAPSHOTS*(bcount & BENG_BUFFER_INDEX_MASK)+SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid)+threadIdx.x*BENG_CHANNELS,
-								idx_beng_data_out);
+						#ifdef BENG_FRAMES_OUT_CONSECUTIVE_SNAPSHOTS
+							printf("blk(thx,thy)=%3d(%3d,%3d): cid=%3d, fid=%d, bcount=%8d (masked=%3d); (after data loop) idx_beng_data_out = %d*(%3d*%d+%d)*%d*%d + %d*%d + %d =  %9d + %9d + %9d = %9d --> %9d.\n",
+									blockIdx.x,threadIdx.x,threadIdx.y,cid,fid,bcount,((bcount-bcount_offset)&BENG_BUFFER_INDEX_MASK),
+									SWARM_XENG_PARALLEL_CHAN , cid , SWARM_N_FIDS , fid,BENG_BUFFER_IN_COUNTS,BENG_SNAPSHOTS,
+									((bcount-bcount_offset)&BENG_BUFFER_INDEX_MASK),BENG_SNAPSHOTS,
+									threadIdx.x,
+									SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid)*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS,
+									((bcount-bcount_offset)&BENG_BUFFER_INDEX_MASK)*BENG_SNAPSHOTS,
+									threadIdx.x,
+									SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid)*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS+((bcount-bcount_offset)&BENG_BUFFER_INDEX_MASK)*BENG_SNAPSHOTS+threadIdx.x,
+									idx_beng_data_out);
+						#else
+							printf("blk(thx,thy)=%3d(%3d,%3d): cid=%3d, fid=%d, bcount=%8d (masked=%3d); (after data loop) idx_beng_data_out = %d*%d*%d + %d*(%3d*%d+%d) + %d*%d =  %9d + %9d + %9d = %9d --> %9d.\n",
+									blockIdx.x,threadIdx.x,threadIdx.y,cid,fid,bcount,bcount & BENG_BUFFER_INDEX_MASK,
+									BENG_CHANNELS,BENG_SNAPSHOTS,(bcount & BENG_BUFFER_INDEX_MASK),
+									SWARM_XENG_PARALLEL_CHAN , cid , SWARM_N_FIDS , fid,
+									threadIdx.x,BENG_CHANNELS,
+									BENG_CHANNELS*BENG_SNAPSHOTS*(bcount & BENG_BUFFER_INDEX_MASK),
+									SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid),
+									threadIdx.x*BENG_CHANNELS,
+									BENG_CHANNELS*BENG_SNAPSHOTS*(bcount & BENG_BUFFER_INDEX_MASK)+SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid)+threadIdx.x*BENG_CHANNELS,
+									idx_beng_data_out);
+						#endif
 			#ifdef DEBUG_GPU_CONDITION
 					}
 			#endif // DEBUG_GPU_CONDITION
@@ -929,10 +1038,10 @@ __global__ void vdif_to_beng(
 		#endif // DEBUG_GPU
 		
 		//~ // TODO: reset completion counter for two B-engine frames behind, something like:
-		//~ beng_frame_completion[(bcount+BENG_BUFFER_IN_COUNTS-3)&BENG_BUFFER_INDEX_MASK] = 0;
+		//~ beng_frame_completion[(bcount-bcount_offset+BENG_BUFFER_IN_COUNTS-3)&BENG_BUFFER_INDEX_MASK] = 0;
 		
 		// increment completion counter for this B-engine frame
-		old = atomicAdd(beng_frame_completion + (bcount&BENG_BUFFER_INDEX_MASK), 1);
+		old = atomicAdd(beng_frame_completion + ((bcount-bcount_offset)&BENG_BUFFER_INDEX_MASK), 1);
 		#ifdef DEBUG_GPU
 			#ifdef DEBUG_SINGLE_FRAME
 				if (cid == DEBUG_SINGLE_FRAME_CID && fid == DEBUG_SINGLE_FRAME_FID && bcount == DEBUG_SINGLE_FRAME_BCOUNT)
@@ -943,7 +1052,7 @@ __global__ void vdif_to_beng(
 					{
 			#endif // DEBUG_GPU_CONDITION
 						printf("blk(thx,thy)=%d(%d,%d): B-engine frame bcount=%8d (masked=%3d) completion increment: %6d --> %6d (FULL = %6d).\n",
-								blockIdx.x,threadIdx.x,threadIdx.y,bcount,bcount & BENG_BUFFER_INDEX_MASK,old,old+1,BENG_FRAME_COMPLETION_COMPLETE);
+								blockIdx.x,threadIdx.x,threadIdx.y,bcount,((bcount-bcount_offset)&BENG_BUFFER_INDEX_MASK),old,old+1,BENG_FRAME_COMPLETION_COMPLETE);
 			#ifdef DEBUG_GPU_CONDITION
 					}
 			#endif // DEBUG_GPU_CONDITION
@@ -969,7 +1078,7 @@ __global__ void vdif_to_beng(
 						{
 				#endif // DEBUG_GPU_CONDITION
 							printf("blk(thx,thy)=%d(%d,%d): B-engine frame bcount=%8d (masked=%3d) complete.\n",
-									blockIdx.x,threadIdx.x,threadIdx.y,bcount,bcount & BENG_BUFFER_INDEX_MASK);
+									blockIdx.x,threadIdx.x,threadIdx.y,bcount,((bcount-bcount_offset)&BENG_BUFFER_INDEX_MASK));
 				#ifdef DEBUG_GPU_CONDITION
 						}
 				#endif // DEBUG_GPU_CONDITION
