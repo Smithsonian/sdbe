@@ -127,7 +127,7 @@ int main(int argc, char **argv)
 	#endif
 	
 	// misc
-	bool verbose_output = 0, logging = 0;
+	bool verbose_output = 0, logging = 0, input_is_batch = 0;
 	int blocks_per_grid = 128;
 	char filename_log[0x100] = "\0";
 	FILE *fh_log = NULL;
@@ -163,6 +163,27 @@ int main(int argc, char **argv)
 	int32_t *gpu_bcount;
 	cufftComplex *gpu_beng_data_0,*gpu_beng_data_1;
 	
+	// iFFT module (host)
+	cufftHandle ifft_plan;
+	int ifft_rank = 1;
+	int ifft_size = BENG_CHANNELS_*2;
+	int ifft_inembed[1] = {ifft_size}; 
+	#ifdef BENG_FRAMES_OUT_CONSECUTIVE_SNAPSHOTS
+		int ifft_istride = BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS;
+		int ifft_idist = 1;
+	#else
+		int ifft_istride = 1;
+		int ifft_idist = BENG_CHANNELS;
+	#endif
+	int ifft_onembed[1] = {ifft_size};
+	int ifft_ostride = 1;
+	int ifft_odist = BENG_CHANNELS_*2;
+	cufftReal *time_series_0,*time_series_1;
+	cufftResult cures = CUFFT_SUCCESS;
+	
+	// iFFT module (device)
+	cufftReal *gpu_time_series_0,*gpu_time_series_1;
+	
 	// control (host)
 	int32_t *beng_frame_completion; // counts number of packets received per b-count value
 	
@@ -187,19 +208,20 @@ int main(int argc, char **argv)
 		int option_index = 0;
 		static struct option long_options[] =
 		{
-			{   "input", required_argument, NULL, 'i' },
-			{   "count", required_argument, NULL, 'c' },
-			{ "verbose",       no_argument, NULL, 'v' },
 			{  "blocks", required_argument, NULL, 'b' },
-			{ "logfile", required_argument, NULL, 'l' },
-			{ "repeats", required_argument, NULL, 'r' },
+			{"boundary", optional_argument, NULL, 'B' },
+			{   "count", required_argument, NULL, 'c' },
 			{"datafile", required_argument, NULL, 'd' },
 			{    "help",       no_argument, NULL, 'h' },
-			{"boundary", optional_argument, NULL, 'B' },
-			{         0,                 0, 0,   0 }
+			{   "input", required_argument, NULL, 'i' },
+			{ "ingroup", required_argument, NULL, 'I' },
+			{ "logfile", required_argument, NULL, 'l' },
+			{ "repeats", required_argument, NULL, 'r' },
+			{ "verbose",       no_argument, NULL, 'v' },
+			{         0,                 0,    0,   0 }
 		};
 		
-		c = getopt_long(argc, argv, "b:B::c:d:hi:l:r:v", long_options, &option_index);
+		c = getopt_long(argc, argv, "b:B::c:d:hi:I:l:r:v", long_options, &option_index);
 		
 		if (c == -1)
 		{
@@ -248,7 +270,7 @@ int main(int argc, char **argv)
 				break;
 			case 'c':
 				#ifdef DEBUG
-				printf("\tReading", long_options[option_index].name);
+				printf("\tReading");
 				if (optarg)
 				{
 					printf(" %d", atoi(optarg));
@@ -259,7 +281,7 @@ int main(int argc, char **argv)
 				break;
 			case 'd':
 				#ifdef DEBUG
-				printf("\tDatafile is", long_options[option_index].name);
+				printf("\tDatafile is");
 				if (optarg)
 				{
 					printf(" '%s'.", optarg);
@@ -276,6 +298,8 @@ int main(int argc, char **argv)
 				printf("  -B B, --boundary=B   Start reading VDIF packets offset by <B> B-engine frame counter values relative to the first encountered. <B> should be greater than 0.\n");
 				printf("  -c N, --count=N      Read <N> VDIF frames from file <input_file>.\n");
 				printf("  -d F, --datafile=F   Write B-engine data to <F>.\n");
+				printf("  -i F, --input=F      Read data from file <F>.\n");
+				printf("  -I F, --ingroup=F    Read data from group of files with prefix <F>.\n");
 				printf("  -l F, --logfile=F    Activate logging to <F>.\n");
 				printf("  -r R, --repeats=R    Repeat call to GPU kernel <R> times.\n");
 				printf("  -v  , --verbose      Verbose output.\n");
@@ -284,7 +308,7 @@ int main(int argc, char **argv)
 				break;
 			case 'i':
 				#ifdef DEBUG
-				printf("\tInput file is", long_options[option_index].name);
+				printf("\tInput file is");
 				if (optarg)
 				{
 					printf(" '%s'.", optarg);
@@ -293,9 +317,25 @@ int main(int argc, char **argv)
 				#endif
 				snprintf(filename_input, sizeof(filename_input), "%s", optarg);
 				break;
+			case 'I':
+				#ifdef DEBUG
+				printf("\tInput group is");
+				if (optarg)
+				{
+					printf(" '%s'.", optarg);
+				}
+				printf(" The following files will be read:\n");
+				for (ii=2; ii<6; ii++)
+				{
+					printf("\t\t%s_eth%d.vdif\n",optarg,ii);
+				}
+				#endif
+				snprintf(filename_input, sizeof(filename_input), "%s", optarg);
+				input_is_batch = 1;
+				break;
 			case 'l':
 				#ifdef DEBUG
-				printf("\tLogfile is", long_options[option_index].name);
+				printf("\tLogfile is");
 				if (optarg)
 				{
 					printf(" '%s'.", optarg);
@@ -413,59 +453,118 @@ int main(int argc, char **argv)
 	}
 	else
 	{
-		fh = fopen(filename_input,"r");
-		if (fh != NULL)
+		//~ vdif_buf = (int32_t *)malloc(num_vdif_bytes);
+		err = cudaHostAlloc((void **)&vdif_buf,num_vdif_bytes,cudaHostAllocDefault);
+		error_check(err,__FILE__,__LINE__);
+		if (vdif_buf == NULL)
 		{
-			// if we start at some specified B-engine frame boundary
-			fread((void *)tmp_vdif, VDIF_BYTE_SIZE, 1, fh);
-			tmp_bcount_curr = get_bcount_from_vdif(tmp_vdif);
-			if (beng_frame_offset > 0)
-			{
-				tmp_bcount_prev = tmp_bcount_curr;
-				while (tmp_bcount_curr-tmp_bcount_prev < beng_frame_offset)
-				{
-					#ifdef DEBUG
-						printf("reader:DEBUG:B-count = %d < %d, skipping.\n",tmp_bcount_curr,tmp_bcount_prev+beng_frame_offset);
-					#endif
-					fread((void *)tmp_vdif, VDIF_BYTE_SIZE, 1, fh);
-					tmp_bcount_curr = get_bcount_from_vdif(tmp_vdif);
-				}
-				#ifdef DEBUG
-					printf("reader:DEBUG:B-count = %d = %d, seeking one frame back.\n",tmp_bcount_curr,tmp_bcount_prev+beng_frame_offset);
-				#endif
-			}
-			fseek(fh,-1*VDIF_BYTE_SIZE,SEEK_CUR);
-			bcount_offset = tmp_bcount_curr;
-			#ifdef DEBUG
-			printf("reader:DEBUG:First B-engine counter value is %d.\n",bcount_offset);
-			#endif
-			// read file
-			//~ vdif_buf = (int32_t *)malloc(num_vdif_bytes);
-			err = cudaHostAlloc((void **)&vdif_buf,num_vdif_bytes,cudaHostAllocDefault);
-			error_check(err,__FILE__,__LINE__);
-			if (vdif_buf == NULL)
-			{
-				fprintf(stderr,"Unable to allocate memory for input data.\n");
-				fclose(fh);
-				exit(EXIT_FAILURE);
-			}
-			#ifdef DEBUG
-			printf("reader:DEBUG:Reading %d x %d = %d bytes from file.\n",num_vdif_frames,num_vdif_bytes/num_vdif_frames,num_vdif_bytes);
-			#endif
-			size_t num_elem = fread((void *)vdif_buf, VDIF_BYTE_SIZE, num_vdif_frames, fh); 
-			if (num_elem != num_vdif_frames)
-			{
-				fprintf(stderr,"Unable to read all the requested data.\n");
-				fclose(fh);
-				exit(EXIT_FAILURE);
-			}
+			fprintf(stderr,"Unable to allocate memory for input data.\n");
 			fclose(fh);
-		}
-		else
-		{
-			fprintf(stderr,"Unable to open input file '%s'.\n",filename_input);
 			exit(EXIT_FAILURE);
 		}
+		if (!input_is_batch)
+		{
+			fh = fopen(filename_input,"r");
+			if (fh != NULL)
+			{
+				// if we start at some specified B-engine frame boundary
+				fread((void *)tmp_vdif, VDIF_BYTE_SIZE, 1, fh);
+				tmp_bcount_curr = get_bcount_from_vdif(tmp_vdif);
+				if (beng_frame_offset > 0)
+				{
+					tmp_bcount_prev = tmp_bcount_curr;
+					while (tmp_bcount_curr-tmp_bcount_prev < beng_frame_offset)
+					{
+						#ifdef DEBUG
+							printf("reader:DEBUG:B-count = %d < %d, skipping.\n",tmp_bcount_curr,tmp_bcount_prev+beng_frame_offset);
+						#endif
+						fread((void *)tmp_vdif, VDIF_BYTE_SIZE, 1, fh);
+						tmp_bcount_curr = get_bcount_from_vdif(tmp_vdif);
+					}
+					#ifdef DEBUG
+						printf("reader:DEBUG:B-count = %d = %d, seeking one frame back.\n",tmp_bcount_curr,tmp_bcount_prev+beng_frame_offset);
+					#endif
+				}
+				fseek(fh,-1*VDIF_BYTE_SIZE,SEEK_CUR);
+				bcount_offset = tmp_bcount_curr;
+				#ifdef DEBUG
+				printf("reader:DEBUG:First B-engine counter value is %d.\n",bcount_offset);
+				#endif
+				// read file
+				#ifdef DEBUG
+				printf("reader:DEBUG:Reading %d x %d = %d bytes from file.\n",num_vdif_frames,num_vdif_bytes/num_vdif_frames,num_vdif_bytes);
+				#endif
+				size_t num_elem = fread((void *)vdif_buf, VDIF_BYTE_SIZE, num_vdif_frames, fh); 
+				if (num_elem != num_vdif_frames)
+				{
+					fprintf(stderr,"Unable to read all the requested data.\n");
+					fclose(fh);
+					exit(EXIT_FAILURE);
+				}
+				fclose(fh);
+			}
+			else
+			{
+				fprintf(stderr,"Unable to open input file '%s'.\n",filename_input);
+				exit(EXIT_FAILURE);
+			}
+		} // if (input_is_batch)...
+		else
+		{
+			for (ii=2; ii<6; ii++)
+			{
+				char tmp_filename[0x100] = "\0";
+				snprintf(tmp_filename, sizeof(tmp_filename), "%s_eth%d.vdif", filename_input,ii);
+				#ifdef DEBUG
+				printf("reader:DEBUG:Reading from %s in batch.\n",tmp_filename);
+				#endif
+				fh = fopen(tmp_filename,"r");
+				if (fh != NULL)
+				{
+					// if we start at some specified B-engine frame boundary
+					fread((void *)tmp_vdif, VDIF_BYTE_SIZE, 1, fh);
+					tmp_bcount_curr = get_bcount_from_vdif(tmp_vdif);
+					if (beng_frame_offset > 0)
+					{
+						tmp_bcount_prev = tmp_bcount_curr;
+						while (tmp_bcount_curr-tmp_bcount_prev < beng_frame_offset)
+						{
+							#ifdef DEBUG
+								printf("reader:DEBUG:B-count = %d < %d, skipping.\n",tmp_bcount_curr,tmp_bcount_prev+beng_frame_offset);
+							#endif
+							fread((void *)tmp_vdif, VDIF_BYTE_SIZE, 1, fh);
+							tmp_bcount_curr = get_bcount_from_vdif(tmp_vdif);
+						}
+						#ifdef DEBUG
+							printf("reader:DEBUG:B-count = %d = %d, seeking one frame back.\n",tmp_bcount_curr,tmp_bcount_prev+beng_frame_offset);
+						#endif
+					}
+					fseek(fh,-1*VDIF_BYTE_SIZE,SEEK_CUR);
+					bcount_offset = tmp_bcount_curr;
+					#ifdef DEBUG
+					printf("reader:DEBUG:First B-engine counter value is %d.\n",bcount_offset);
+					#endif
+					// read file
+					#ifdef DEBUG
+					printf("reader:DEBUG:Reading %d x %d = %d bytes from file.\n",num_vdif_frames/4,num_vdif_bytes/num_vdif_frames/4,num_vdif_bytes/4);
+					printf("\tOffset is %d.\n",VDIF_INT_SIZE*num_vdif_frames/4);
+					#endif
+					size_t num_elem = fread((void *)(vdif_buf + (ii-2)*VDIF_INT_SIZE*num_vdif_frames/4), VDIF_BYTE_SIZE, num_vdif_frames/4, fh); 
+					if (num_elem != num_vdif_frames/4)
+					{
+						fprintf(stderr,"Unable to read all the requested data.\n");
+						fclose(fh);
+						exit(EXIT_FAILURE);
+					}
+					fclose(fh);
+				}
+				else
+				{
+					fprintf(stderr,"Unable to open input file '%s'.\n",filename_input);
+					exit(EXIT_FAILURE);
+				}
+			}
+		} // if (input_is_batch) {} else ...
 	}
 	
 	#ifdef DEBUG
@@ -519,7 +618,7 @@ int main(int argc, char **argv)
 	fid = (int32_t *)malloc(num_vdif_frames*sizeof(int32_t));
 	bcount = (int32_t *)malloc(num_vdif_frames*sizeof(int32_t));
 	
-	size_t beng_data_bytes = BENG_CHANNELS*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS*sizeof(cuComplex);
+	size_t beng_data_bytes = BENG_CHANNELS*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS*sizeof(cufftComplex);
 	#ifdef DEBUG
 	printf("reader:DEBUG:Allocating %d bytes for B-engine buffer.\n",2*beng_data_bytes);
 	#endif
@@ -528,6 +627,13 @@ int main(int argc, char **argv)
 	error_check(err,__FILE__,__LINE__);
 	//~ beng_data_1 = (cufftComplex *)malloc(beng_data_bytes);
 	err = cudaHostAlloc((void **)&beng_data_1,beng_data_bytes,cudaHostAllocDefault);
+	error_check(err,__FILE__,__LINE__);
+	
+	// allocate memory for iFFT (host)
+	size_t time_series_bytes = 2*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS*sizeof(cufftReal);
+	err = cudaHostAlloc((void **)&time_series_0,time_series_bytes,cudaHostAllocDefault);
+	error_check(err,__FILE__,__LINE__);
+	err = cudaHostAlloc((void **)&time_series_1,time_series_bytes,cudaHostAllocDefault);
 	error_check(err,__FILE__,__LINE__);
 	
 	err = cudaMalloc((void **)&gpu_cid, num_vdif_frames*sizeof(int32_t));
@@ -551,6 +657,30 @@ int main(int argc, char **argv)
 	err = cudaMemset((void *)gpu_beng_data_1, 0, beng_data_bytes);
 	error_check(err,__FILE__,__LINE__);
 	cudaDeviceSynchronize(); // make sure the memset is done
+	
+	// allocate memory for iFFT (device)
+	err = cudaMalloc((void **)&gpu_time_series_0, time_series_bytes);
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMemset((void *)gpu_time_series_0, 0, time_series_bytes);
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMalloc((void **)&gpu_time_series_1, time_series_bytes);
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMemset((void *)gpu_time_series_1, 0, time_series_bytes);
+	error_check(err,__FILE__,__LINE__);
+	
+	// make iFFT plan
+	#ifdef DEBUG
+	printf("reader:DEBUG:Creating CUFFT plan. %d-dimensional %d-element iFFT in batch of %d.\n",ifft_rank,ifft_size,BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS);
+	#endif
+	cures = cufftPlanMany(&ifft_plan, ifft_rank, &ifft_size, 
+			ifft_inembed, ifft_istride, ifft_idist,
+			ifft_onembed, ifft_ostride, ifft_odist,
+			CUFFT_C2R, BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS);
+	if (cures != CUFFT_SUCCESS)
+	{
+		fprintf(stderr,"CUFFT error:Could not create plan.\n");
+		exit(EXIT_FAILURE);
+	}
 	
 	#ifdef DEBUG
 	printf("reader:DEBUG:Defining threads and blocks.\n");
@@ -616,6 +746,49 @@ int main(int argc, char **argv)
 	printf(" done.\n");
 	#endif
 	
+	// iFFT
+	for (ir=0; ir<repeats; ir++)
+	{
+		#ifdef DEBUG
+		printf("reader:DEBUG:Call to GPU kernel.\n");
+		#endif
+		cudaEventRecord(start);
+		cudaEventSynchronize(start);
+		clock_gettime(CLOCK_PROCESS_CPUTIME_ID,&t0);
+		cures = cufftExecC2R(ifft_plan, gpu_beng_data_0, gpu_time_series_0);
+		cudaDeviceSynchronize();
+		if (cures != CUFFT_SUCCESS)
+		{
+			fprintf(stderr,"CUFFT error:Could not execute iFFT on phased sum 0.\n");
+			exit(EXIT_FAILURE);
+		}
+		cures = cufftExecC2R(ifft_plan, gpu_beng_data_1, gpu_time_series_1);
+		cudaDeviceSynchronize();
+		if (cures != CUFFT_SUCCESS)
+		{
+			fprintf(stderr,"CUFFT error:Could not execute iFFT on phased sum 1.\n");
+			exit(EXIT_FAILURE);
+		}
+		cudaDeviceSynchronize();
+		clock_gettime(CLOCK_PROCESS_CPUTIME_ID,&t1);
+		cudaEventRecord(stop);
+		cudaEventSynchronize(stop);
+		cudaEventElapsedTime(&time_spent, start, stop);
+		printf("iFFT finished in:\n\tCUDA: %10.6fms\n",time_spent);
+		printf("\t CPU: %10.6fms\n",1e6*(double)(t1.tv_sec - t0.tv_sec) + 1e-6*(double)(t1.tv_nsec - t0.tv_nsec));
+	}
+	
+	#ifdef DEBUG
+	printf("reader:DEBUG:Copying data from device to host...");
+	#endif
+	err = cudaMemcpy(time_series_0, gpu_time_series_0, time_series_bytes, cudaMemcpyDeviceToHost);
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMemcpy(time_series_1, gpu_time_series_1, time_series_bytes, cudaMemcpyDeviceToHost);
+	error_check(err,__FILE__,__LINE__);
+	#ifdef DEBUG
+	printf(" done.\n");
+	#endif
+	
 	if (data_to_file)
 	{
 		// write B-engine completion counters
@@ -624,8 +797,11 @@ int main(int argc, char **argv)
 		fwrite((void *)beng_data_0, sizeof(cufftComplex), BENG_CHANNELS*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS, fh_data);
 		// write B-engine data for phased sum 1
 		fwrite((void *)beng_data_1, sizeof(cufftComplex), BENG_CHANNELS*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS, fh_data);
+		// write time series data for phased sum 0
+		fwrite((void *)time_series_0, sizeof(cufftReal), 2*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS, fh_data);
+		// write time series data for phased sum 1
+		fwrite((void *)time_series_1, sizeof(cufftReal), 2*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS, fh_data);
 	}
-	
 	
 	#ifdef DEBUG_SINGLE_FRAME
 		for (ii=0; ii<num_vdif_frames; ii++)
@@ -697,6 +873,13 @@ int main(int argc, char **argv)
 	//~ free(beng_data_1);
 	cudaFreeHost((void *)beng_data_1);
 	free(beng_frame_completion);
+	
+	// Destroy cufft plan and free memory
+	cufftDestroy(ifft_plan);
+	cudaFreeHost(time_series_0);
+	cudaFreeHost(time_series_1);
+	cudaFree(gpu_time_series_0);
+	cudaFree(gpu_time_series_1);
 	
 	// Reset the device and exit
 	#ifdef DEBUG
