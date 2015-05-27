@@ -51,7 +51,8 @@
 #define BENG_VDIF_CHANNELS_PER_INT 4 // a-d in a single int32_t, and e-h in a single int32_t
 #define BENG_VDIF_INT_PER_SNAPSHOT (SWARM_XENG_PARALLEL_CHAN/BENG_VDIF_CHANNELS_PER_INT)
 #define BENG_PACKETS_PER_FRAME (BENG_CHANNELS_/SWARM_XENG_PARALLEL_CHAN)
-#define BENG_FRAME_COMPLETION_COMPLETE (BENG_PACKETS_PER_FRAME*THREADS_PER_BLOCK_X) // value of completion counter when B-engine frame complete, multiplication by THREADS_PER_BLOCK_x required since all x-threads increment counter
+#define BENG_FRAME_COMPLETION_COMPLETE_ON_GPU (BENG_PACKETS_PER_FRAME*blockDim.x) // value of completion counter when B-engine frame complete, multiplication by THREADS_PER_BLOCK_x required since all x-threads increment counter
+#define BENG_FRAME_COMPLETION_COMPLETE_ON_CPU (BENG_PACKETS_PER_FRAME*num_x_threads) // value of completion counter when B-engine frame complete, multiplication by THREADS_PER_BLOCK_x required since all x-threads increment counter
 #define BENG_VDIF_SAMPLE_VALUE_OFFSET 2.0f
 
 // Debugging
@@ -136,6 +137,7 @@ int main(int argc, char **argv)
 	time_t wall_clock;
 	int32_t tmp_vdif[VDIF_INT_SIZE];
 	int32_t tmp_bcount_prev,tmp_bcount_curr;
+	int num_x_threads = THREADS_PER_BLOCK_X, num_y_threads = THREADS_PER_BLOCK_Y;
 	
 	// input (host)
 	FILE *fh = NULL;
@@ -218,10 +220,12 @@ int main(int argc, char **argv)
 			{ "logfile", required_argument, NULL, 'l' },
 			{ "repeats", required_argument, NULL, 'r' },
 			{ "verbose",       no_argument, NULL, 'v' },
+			{"xthreads",       no_argument, NULL, 'x' },
+			{"ythreads",       no_argument, NULL, 'y' },
 			{         0,                 0,    0,   0 }
 		};
 		
-		c = getopt_long(argc, argv, "b:B::c:d:hi:I:l:r:v", long_options, &option_index);
+		c = getopt_long(argc, argv, "b:B::c:d:hi:I:l:r:vx:y:", long_options, &option_index);
 		
 		if (c == -1)
 		{
@@ -362,6 +366,28 @@ int main(int argc, char **argv)
 				#endif
 				verbose_output = 1;
 				break;
+			case 'x':
+				#ifdef DEBUG
+				printf("\tUsing ");
+				if (optarg)
+				{
+					printf(" %d", atoi(optarg));
+				}
+				printf(" x-threads.\n");
+				#endif
+				num_x_threads = atoi(optarg);
+				break;
+			case 'y':
+				#ifdef DEBUG
+				printf("\tUsing ");
+				if (optarg)
+				{
+					printf(" %d", atoi(optarg));
+				}
+				printf(" y-threads.\n");
+				#endif
+				num_y_threads = atoi(optarg);
+				break;
 			default:
 				fprintf(stderr,"?? getopt returned character code 0%o ??\n.",c);
 				exit(EXIT_FAILURE);
@@ -399,7 +425,7 @@ int main(int argc, char **argv)
 				fprintf(stderr,"Unable to open logfile '%s'.\n",filename_log);
 				exit(EXIT_FAILURE);
 			}
-			fprintf(fh_log,"#Repeats: %d\n#Blocks per grid: %d\n#Threads-per-block (x,y): %d,%d\n",repeats,blocks_per_grid,THREADS_PER_BLOCK_X,THREADS_PER_BLOCK_Y);
+			fprintf(fh_log,"#Repeats: %d\n#Blocks per grid: %d\n#Threads-per-block (x,y): %d,%d\n",repeats,blocks_per_grid,num_x_threads,num_y_threads);
 		}
 	}
 	
@@ -685,7 +711,7 @@ int main(int argc, char **argv)
 	#ifdef DEBUG
 	printf("reader:DEBUG:Defining threads and blocks.\n");
 	#endif
-	dim3 threadsPerBlock(THREADS_PER_BLOCK_X,THREADS_PER_BLOCK_Y);
+	dim3 threadsPerBlock(num_x_threads,num_y_threads);
 	#ifdef DEBUG
 	printf("\tthreads-per-block = (%d,%d,%d)\n",threadsPerBlock.x,threadsPerBlock.y,threadsPerBlock.z);
 	#endif
@@ -927,7 +953,7 @@ __global__ void vdif_to_beng(
 	int32_t idx_beng_data_out; // index into beng_data_out
 	
 	#ifdef GPUCTRL_SHARED_RAW_VDIF
-		__shared__ int32_t vdif_shared[THREADS_PER_BLOCK_Y][VDIF_INT_SIZE];
+		__shared__ int32_t vdif_shared[blockDim.y][VDIF_INT_SIZE];
 	#endif
 	
 	// misc
@@ -939,10 +965,10 @@ __global__ void vdif_to_beng(
 	int old; // old value for B-engine completion counter
 	
 	/* iframe increases by the number of frames handled by a single grid.
-	 * There are blocks_per_grid*THREADS_PER_BLOCK_Y frames handled simultaneously
+	 * There are blocks_per_grid*blockDim.y frames handled simultaneously
 	 * withing the grid.
 	 * */
-	for (iframe=0; iframe + threadIdx.y + blockIdx.x*THREADS_PER_BLOCK_Y<num_vdif_frames; iframe+=blocks_per_grid*THREADS_PER_BLOCK_Y)
+	for (iframe=0; iframe + threadIdx.y + blockIdx.x*blockDim.y<num_vdif_frames; iframe+=blocks_per_grid*blockDim.y)
 	{ 
 		
 		#ifdef DEBUG_GPU
@@ -955,9 +981,9 @@ __global__ void vdif_to_beng(
 					{
 			#endif // DEBUG_GPU_CONDITION
 						printf("blk(thx,thy)=%3d(%3d,%3d): #frame = %d + %d + %d*%d = %d < %d ? %s\n",blockIdx.x,threadIdx.x,threadIdx.y,
-						iframe , threadIdx.y , blockIdx.x , THREADS_PER_BLOCK_Y,
-						iframe + threadIdx.y + blockIdx.x*THREADS_PER_BLOCK_Y,num_vdif_frames,
-						iframe + threadIdx.y + blockIdx.x*THREADS_PER_BLOCK_Y < num_vdif_frames ? "OK" : "NO");
+						iframe , threadIdx.y , blockIdx.x , blockDim.y,
+						iframe + threadIdx.y + blockIdx.x*blockDim.y,num_vdif_frames,
+						iframe + threadIdx.y + blockIdx.x*blockDim.y < num_vdif_frames ? "OK" : "NO");
 			#ifdef DEBUG_GPU_CONDITION
 					}
 			#endif // DEBUG_GPU_CONDITION
@@ -969,12 +995,12 @@ __global__ void vdif_to_beng(
 		/* Set the start of the VDIF frame handled by this thread. VDIF 
 		 * frames are just linearly packed in memory. Consecutive y-threads
 		 * read consecutive VDIF frames, and each x-block reads consecutive
-		 * blocks of THREADS_PER_BLOCK_Y VDIF frames.
+		 * blocks of blockDim.y VDIF frames.
 		 * */
-		vdif_frame_start = vdif_frames + (iframe + threadIdx.y + blockIdx.x*THREADS_PER_BLOCK_Y)*VDIF_INT_SIZE;
+		vdif_frame_start = vdif_frames + (iframe + threadIdx.y + blockIdx.x*blockDim.y)*VDIF_INT_SIZE;
 		
 		#ifdef GPUCTRL_SHARED_RAW_VDIF
-			for (idata=threadIdx.x; idata<VDIF_INT_SIZE; idata+=THREADS_PER_BLOCK_X)
+			for (idata=threadIdx.x; idata<VDIF_INT_SIZE; idata+=blockDim.x)
 			{
 				vdif_shared[threadIdx.y][idata] = *(vdif_frame_start + idata);
 			}
@@ -991,9 +1017,9 @@ __global__ void vdif_to_beng(
 			bcount = get_bcount_from_vdif(vdif_frame_start);
 		#endif
 		
-		cid_out[iframe + threadIdx.y + blockIdx.x*THREADS_PER_BLOCK_Y] = cid;
-		fid_out[iframe + threadIdx.y + blockIdx.x*THREADS_PER_BLOCK_Y] = fid;
-		bcount_out[iframe + threadIdx.y + blockIdx.x*THREADS_PER_BLOCK_Y] = bcount;
+		cid_out[iframe + threadIdx.y + blockIdx.x*blockDim.y] = cid;
+		fid_out[iframe + threadIdx.y + blockIdx.x*blockDim.y] = fid;
+		bcount_out[iframe + threadIdx.y + blockIdx.x*blockDim.y] = bcount;
 		
 		#ifdef DEBUG_SINGLE_FRAME
 			if (cid == DEBUG_SINGLE_FRAME_CID && fid == DEBUG_SINGLE_FRAME_FID && bcount == DEBUG_SINGLE_FRAME_BCOUNT)
@@ -1083,7 +1109,7 @@ __global__ void vdif_to_beng(
 		 * by all x-threads. Each thread handles B-engine packet data 
 		 * for a single snapshot per iteration.
 		 * */
-		for (idata=0; idata<VDIF_INT_SIZE_DATA; idata+=BENG_VDIF_INT_PER_SNAPSHOT*THREADS_PER_BLOCK_X)
+		for (idata=0; idata<VDIF_INT_SIZE_DATA; idata+=BENG_VDIF_INT_PER_SNAPSHOT*blockDim.x)
 		{
 			/* Get sample data out of global memory. Offset from the 
 			 * VDIF frame start by the header, the number of snapshots
@@ -1170,13 +1196,13 @@ __global__ void vdif_to_beng(
 				 * by the number of x-threads, so index into B-engine data
 				 * should increment by that number.
 				 */
-				idx_beng_data_out += THREADS_PER_BLOCK_X;
+				idx_beng_data_out += blockDim.x;
 			#else
 				/* The next snapshot handled by this thread will increment
 				 * by the number of x-threads, so index into B-engine data
 				 * should increment by that many spectra.
 				 * */
-				idx_beng_data_out += THREADS_PER_BLOCK_X*BENG_CHANNELS;
+				idx_beng_data_out += blockDim.x*BENG_CHANNELS;
 			#endif
 		} // for (idata=0; ...)
 		
@@ -1235,7 +1261,7 @@ __global__ void vdif_to_beng(
 					{
 			#endif // DEBUG_GPU_CONDITION
 						printf("blk(thx,thy)=%d(%d,%d): B-engine frame bcount=%8d (masked=%3d) completion increment: %6d --> %6d (FULL = %6d).\n",
-								blockIdx.x,threadIdx.x,threadIdx.y,bcount,((bcount-bcount_offset)&BENG_BUFFER_INDEX_MASK),old,old+1,BENG_FRAME_COMPLETION_COMPLETE);
+								blockIdx.x,threadIdx.x,threadIdx.y,bcount,((bcount-bcount_offset)&BENG_BUFFER_INDEX_MASK),old,old+1,BENG_FRAME_COMPLETION_COMPLETE_ON_GPU);
 			#ifdef DEBUG_GPU_CONDITION
 					}
 			#endif // DEBUG_GPU_CONDITION
@@ -1248,7 +1274,7 @@ __global__ void vdif_to_beng(
 		 * by the old value of the counter being one less than what indicates
 		 * a full frame in one of the threads.
 		 * */
-		if (__any(old == BENG_FRAME_COMPLETION_COMPLETE-1))
+		if (__any(old == BENG_FRAME_COMPLETION_COMPLETE_ON_GPU-1))
 		{
 			// do something...
 			#ifdef DEBUG_GPU
