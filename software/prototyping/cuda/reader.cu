@@ -56,7 +56,7 @@
 #define BENG_VDIF_SAMPLE_VALUE_OFFSET 2.0f
 
 // Debugging
-//~ #define DEBUG
+//#define DEBUG
 //~ #define DEBUG_GPU
 //~ #define DEBUG_GPU_CONDITION (blockIdx.x == 0 && threadIdx.x == 7 && threadIdx.y == 3)
 //~ #define DEBUG_SINGLE_FRAME
@@ -737,12 +737,12 @@ int main(int argc, char **argv)
 		if (logging)
 		{
 			fprintf(fh_log,"   %10.6f",time_spent);
-			fprintf(fh_log,"   %10.6f\n",1e6*(double)(t1.tv_sec - t0.tv_sec) + 1e-6*(double)(t1.tv_nsec - t0.tv_nsec));
+			fprintf(fh_log,"   %10.6f\n",1e3*(double)(t1.tv_sec - t0.tv_sec) + 1e-6*(double)(t1.tv_nsec - t0.tv_nsec));
 		}
 		else
 		{
 			printf("Reading VDIF frames finished in:\n\tCUDA: %10.6fms\n",time_spent);
-			printf("\t CPU: %10.6fms\n",1e6*(double)(t1.tv_sec - t0.tv_sec) + 1e-6*(double)(t1.tv_nsec - t0.tv_nsec));
+			printf("\t CPU: %10.6fms\n",1e3*(double)(t1.tv_sec - t0.tv_sec) + 1e-6*(double)(t1.tv_nsec - t0.tv_nsec));
 		}
 	}
 	
@@ -801,7 +801,7 @@ int main(int argc, char **argv)
 		cudaEventSynchronize(stop);
 		cudaEventElapsedTime(&time_spent, start, stop);
 		printf("iFFT finished in:\n\tCUDA: %10.6fms\n",time_spent);
-		printf("\t CPU: %10.6fms\n",1e6*(double)(t1.tv_sec - t0.tv_sec) + 1e-6*(double)(t1.tv_nsec - t0.tv_nsec));
+		printf("\t CPU: %10.6fms\n",1e3*(double)(t1.tv_sec - t0.tv_sec) + 1e-6*(double)(t1.tv_nsec - t0.tv_nsec));
 	}
 	
 	#ifdef DEBUG
