@@ -88,12 +88,15 @@ __global__ void shift_transpose_beng(cufftComplex *beng_data_in, cufftComplex *b
 }
 """
 
+# two timers for speed-testing
+tic = cuda.Event()
+toc = cuda.Event()
+
 kernel_module = SourceModule(kernel_source)
 
 # generate fake B-frames
-#num_vdif_frames = 39
-num_vdif_frames = 64
-data_shape = (num_vdif_frames*16384,128)
+num_beng_frames = 39
+data_shape = (num_beng_frames*16384,128)
 #cpu_beng_data = (np.random.standard_normal(data_shape) + \
 #		1j*np.random.standard_normal(data_shape)).astype(np.complex64)
 cpu_beng_data = np.arange(data_shape[0] * data_shape[1])
@@ -109,11 +112,16 @@ cuda.memcpy_htod(gpu_beng_data_1,cpu_beng_data)
 shift_snapshots = kernel_module.get_function('shift_snapshots')
 gpu_beng_data_2 = cuda.mem_alloc(cpu_beng_data.nbytes)
 
-tic = get_process_cpu_time()
+tick = get_process_cpu_time()
+tic.record()
 shift_snapshots(gpu_beng_data_1,gpu_beng_data_2,\
-		block=(128,4,1),grid=(16384/4*num_vdif_frames,1))
-toc = get_process_cpu_time()
-time_gpu = toc - tic
+		block=(128,4,1),grid=(16384/4*num_beng_frames,1))
+#cuda.Stream().synchronize()
+toc.record()
+toc.synchronize()
+tock = get_process_cpu_time()
+time_gpu = tic.time_till(toc)
+time_cpu = tock - tick
 
 shift_snapshots_result = np.zeros_like(cpu_beng_data)
 cuda.memcpy_dtoh(shift_snapshots_result,gpu_beng_data_2)
@@ -124,7 +132,9 @@ diff1 = cpu_beng_data - shift_snapshots_result
 print '\nshift_snapshots test results:'
 print 'shifted:',np.allclose([la.norm(diff0[i::8,:]) for i in range(4)], [0,0,0,0])
 print 'same:',np.allclose([la.norm(diff1[4+i::8,:]) for i in range(4)], [0,0,0,0])
-print 'shift_snapshots time:',time_gpu.nanoseconds*1e-6,' ms'
+print 'shift_snapshots time:'
+print 'CPU:',time_cpu.nanoseconds*1e-6,' ms'
+print 'GPU:',time_gpu,' ms'
 
 #####################################################
 
@@ -134,11 +144,15 @@ cuda.memcpy_htod(gpu_beng_data_1,cpu_beng_data)
 # test shift_snapshots_inplace
 shift_snapshots_inplace = kernel_module.get_function('shift_snapshots_inplace')
 
-tic = get_process_cpu_time()
+tick = get_process_cpu_time()
+tic.record()
 shift_snapshots_inplace(gpu_beng_data_1,\
-		block=(128,4,1),grid=(16384/8*num_vdif_frames,1))
-toc = get_process_cpu_time()
-time_gpu = toc - tic
+		block=(128,4,1),grid=(16384/8*num_beng_frames,1))
+toc.record()
+toc.synchronize()
+tock = get_process_cpu_time()
+time_cpu = tock - tick
+time_gpu = tic.time_till(toc)
 
 cuda.memcpy_dtoh(shift_snapshots_result,gpu_beng_data_1)
 
@@ -148,18 +162,24 @@ diff1 = cpu_beng_data - shift_snapshots_result
 print '\nshift_snapshots_inplace test results:'
 print 'shifted:',np.allclose([la.norm(diff0[i::8,:]) for i in range(4)], [0,0,0,0])
 print 'same:',np.allclose([la.norm(diff1[4+i::8,:]) for i in range(4)], [0,0,0,0])
-print 'shift_snapshots_inplace time:',time_gpu.nanoseconds*1e-6,' ms'
+print 'shift_snapshots_inplace time:'
+print 'CPU:',time_cpu.nanoseconds*1e-6,' ms'
+print 'GPU:',time_gpu,' ms'
 
 #####################################################
 
 # test shift_beng
 shift_beng = kernel_module.get_function('shift_beng')
 
-tic = get_process_cpu_time()
+tick = get_process_cpu_time()
+tic.record()
 shift_beng(gpu_beng_data_1,gpu_beng_data_2,\
-		block=(128,8,1),grid=((num_vdif_frames-1)*16384/8,1))
-toc = get_process_cpu_time()
-time_gpu = toc - tic
+		block=(128,8,1),grid=((num_beng_frames-1)*16384/8,1))
+toc.record()
+toc.synchronize()
+tock = get_process_cpu_time()
+time_cpu = tock - tick
+time_gpu = tic.time_till(toc)
 
 shift_beng_result = np.zeros_like(cpu_beng_data)
 cuda.memcpy_dtoh(shift_beng_result,gpu_beng_data_2)
@@ -168,24 +188,32 @@ cuda.memcpy_dtoh(shift_beng_result,gpu_beng_data_2)
 print '\nshift_beng test results:'
 print 'shifted:',np.allclose(shift_snapshots_result[16384:,69:],shift_beng_result[:-16384,69:])
 print 'same:',np.allclose(shift_snapshots_result[:-16384,:69],shift_beng_result[:-16384,:69])
-print 'shift_beng time:',time_gpu.nanoseconds*1e-6,' ms'
+print 'shift_beng time:'
+print 'CPU:',time_cpu.nanoseconds*1e-6,' ms'
+print 'GPU:',time_gpu,' ms'
 
 #####################################################
 
 # test shift_beng_transpose
 shift_transpose_beng = kernel_module.get_function('shift_transpose_beng')
 
-tic = get_process_cpu_time()
+tick = get_process_cpu_time()
+tic.record()
 shift_transpose_beng(gpu_beng_data_1,gpu_beng_data_2,\
-		block=(16,16,1),grid=((16384/16) * 128*(num_vdif_frames-1)/16,1))
-toc = get_process_cpu_time()
-time_gpu = toc - tic
+		block=(16,16,1),grid=((16384/16) * 128*(num_beng_frames-1)/16,1))
+toc.record()
+toc.synchronize()
+tock = get_process_cpu_time()
+time_cpu = tock - tick
+time_gpu = tic.time_till(toc)
 
-shift_transpose_beng_result = np.zeros((num_vdif_frames*128,16384),dtype=np.complex64)
+shift_transpose_beng_result = np.zeros((num_beng_frames*128,16384),dtype=np.complex64)
 cuda.memcpy_dtoh(shift_transpose_beng_result,gpu_beng_data_2)
 
 print '\nshift_beng_tranpose test results:'
-print np.sum([np.allclose(shift_transpose_beng_result[128*i:128*(i+1),:].T,shift_beng_result[16384*i:16384*(i+1),:]) for i in range(num_vdif_frames-1)]) == num_vdif_frames-1
-print 'shift_beng_transpose time:',time_gpu.nanoseconds*1e-6,' ms'
+print np.sum([np.allclose(shift_transpose_beng_result[128*i:128*(i+1),:].T,shift_beng_result[16384*i:16384*(i+1),:]) for i in range(num_beng_frames-1)]) == num_beng_frames-1
+print 'shift_beng_transpose time:'
+print 'CPU:',time_cpu.nanoseconds*1e-6,' ms'
+print 'GPU:',time_gpu,' ms'
 
-print '\ncovering ', 1.680 * num_vdif_frames, ' ms'
+print '\ncovering ', 1.680 * num_beng_frames, ' ms'

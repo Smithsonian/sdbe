@@ -127,9 +127,9 @@ VDIF_PER_BENG = 2048
 BENG_CHANNELS_ = 16384
 BENG_CHANNELS = (BENG_CHANNELS_ + 1)
 BENG_SNAPSHOTS = 128
-#BENG_BUFFER_IN_COUNTS = 4
+BENG_BUFFER_IN_COUNTS = 4
 #BENG_BUFFER_IN_COUNTS = 64
-BENG_BUFFER_IN_COUNTS = 40
+#BENG_BUFFER_IN_COUNTS = 40
 
 def meminfo(kernel):
   print "Registers: %d" % kernel.num_regs
@@ -167,6 +167,7 @@ def read_vdif(filename_input,num_vdif_frames,beng_frame_offset=1,batched=True):
   return vdif_buf,bcount_offset
 
 def read_datafile(filename_data):
+  print 'reading:', filename_data
   fh_data = open(filename_data,'r')
   # read buffer_size
   beng_buffer_in_counts = unpack('I1',fh_data.read(4))[0]
@@ -185,6 +186,9 @@ def read_datafile(filename_data):
   fh_data.close()
   return {'beng_buffer_in_counts':beng_buffer_in_counts,'beng_data_0':beng_data_0,'beng_data_1':beng_data_1}
 
+# event timers
+tic = cuda.Event()
+toc = cuda.Event()
 
 ########################################################################
 
@@ -198,6 +202,7 @@ repeats = 2
 # ./reader.out -I /home/shared/sdbe_preprocessed/prep6_test1_local_swarmdbe -B 1 -v -c 16384 -d c16384_B1.bin 
 #filename_data = 'c16384_B1.bin'
 filename_data = ''
+filename_data = 'c%d_B1.bin' % (num_vdif_frames,)
 
 # read in vdif
 vdif_buf,bcount_offset = read_vdif(filename_input,num_vdif_frames,beng_frame_offset,batched=True)
@@ -226,17 +231,17 @@ cuda.memcpy_htod(gpu_beng_frame_completion,beng_frame_completion)
 
 blocks_per_grid = 128
 for ir in arange(repeats): 
-  tic = get_process_cpu_time()
-  tick = time()
+  tick = get_process_cpu_time()
+  tic.record()
   vdif_to_beng(gpu_vdif_buf, gpu_fid, gpu_cid, gpu_bcount, gpu_beng_data_0, gpu_beng_data_1, gpu_beng_frame_completion,int32(num_vdif_frames),int32(bcount_offset),int32(blocks_per_grid),
   	block=(32,32,1), grid=(blocks_per_grid,1,1))
-  cuda.Stream(0).synchronize()
-  toc = get_process_cpu_time()
-  tock = time()
-  time_gpu = toc - tic
-  print 'CPU:',time_gpu.nanoseconds*1e-6,' ms'
-  time_gpu = tock - tick
-  print 'python:',time_gpu*1e3,' ms'
+  toc.record()
+  toc.synchronize()
+  tock = get_process_cpu_time()
+  time_cpu = tock - tick
+  time_gpu = tic.time_till(toc)
+  print 'CPU:',time_cpu.nanoseconds*1e-6,' ms'
+  print 'GPU:',time_gpu,' ms'
 
 # retrieve depacketized B-engine
 beng_data_0 = empty(beng_data_bytes/8,dtype=complex64)
