@@ -58,8 +58,7 @@ __global__ void vdif_to_beng(
  cufftComplex *beng_data_out_1,
  int32_t *beng_frame_completion,
  int32_t num_vdif_frames,
- int32_t bcount_offset,
- int blocks_per_grid)
+ int32_t bcount_offset)
 {
 
  int32_t cid,fid;
@@ -72,7 +71,7 @@ __global__ void vdif_to_beng(
  int isample;
  int old;
 
- for (iframe=0; iframe + threadIdx.y + blockIdx.x*blockDim.y<num_vdif_frames; iframe+=blocks_per_grid*blockDim.y)
+ for (iframe=0; iframe + threadIdx.y + blockIdx.x*blockDim.y<num_vdif_frames; iframe+=gridDim.x*gridDim.y*blockDim.y)
  {
 # 1000 "reader.cu"
   vdif_frame_start = vdif_frames + (iframe + threadIdx.y + blockIdx.x*blockDim.y)*(1056/4);
@@ -233,7 +232,7 @@ blocks_per_grid = 128
 for ir in arange(repeats): 
   tick = get_process_cpu_time()
   tic.record()
-  vdif_to_beng(gpu_vdif_buf, gpu_fid, gpu_cid, gpu_bcount, gpu_beng_data_0, gpu_beng_data_1, gpu_beng_frame_completion,int32(num_vdif_frames),int32(bcount_offset),int32(blocks_per_grid),
+  vdif_to_beng(gpu_vdif_buf, gpu_fid, gpu_cid, gpu_bcount, gpu_beng_data_0, gpu_beng_data_1, gpu_beng_frame_completion,int32(num_vdif_frames),int32(bcount_offset),
   	block=(32,32,1), grid=(blocks_per_grid,1,1))
   toc.record()
   toc.synchronize()

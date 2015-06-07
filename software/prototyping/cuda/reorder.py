@@ -68,7 +68,7 @@ __global__ void shift_transpose_beng(cufftComplex *beng_data_in, cufftComplex *b
 	// Assumes same spectral channel for consecutive snapshots are adjacent in memory.
 	// Outputs with consectutive channels for same snapshot adjacent in memory (conducive for batched FT).
 	// blockDim.x = 16, blockDim.y = 16
-	// This should use shared memory....?
+	// This should use shared memory.
 
 	// global thread id
 	int gid = blockIdx.x * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x;
@@ -85,6 +85,22 @@ __global__ void shift_transpose_beng(cufftComplex *beng_data_in, cufftComplex *b
 	} else {
 	  beng_data_out[128 * 16384 * fid + 16384 * sid + cid] = beng_data_in[ (fid+1) * 128 * 16384 + cid * 128 + sid];
 	}
+}
+
+__global__ void zero_pad(cufftComplex *beng_data_in, cufftComplex *beng_data_out, int32_t num_vdif_frames, int32_t n){
+  int32_t idata, iframe;
+  // thread y index loops over snapshots.
+  for (iframe=threadIdx.y; iframe<num_vdif_frames; iframe+=blockDim.y){	  
+    // thread x index loops over output channels.
+    for (idata=threadIdx.x+blockIdx.x*blockDim.x; idata<n; idata+=gridDim.x*blockDim.x){
+      if (idata < 16384){
+        beng_data_out[iframe*n+idata] = beng_data_in[iframe*16384 + idata];
+      }
+      else {
+        beng_data_out[iframe*n+idata] = make_cuComplex(0.,0.);
+      }
+    }
+  }
 }
 """
 
@@ -132,7 +148,6 @@ diff1 = cpu_beng_data - shift_snapshots_result
 print '\nshift_snapshots test results:'
 print 'shifted:',np.allclose([la.norm(diff0[i::8,:]) for i in range(4)], [0,0,0,0])
 print 'same:',np.allclose([la.norm(diff1[4+i::8,:]) for i in range(4)], [0,0,0,0])
-print 'shift_snapshots time:'
 print 'CPU:',time_cpu.nanoseconds*1e-6,' ms'
 print 'GPU:',time_gpu,' ms'
 
@@ -141,6 +156,8 @@ print 'GPU:',time_gpu,' ms'
 # reload fake B-frames
 cuda.memcpy_htod(gpu_beng_data_1,cpu_beng_data)
 
+#####################################################
+print '\nshift_snapshots_inplace test results:'
 # test shift_snapshots_inplace
 shift_snapshots_inplace = kernel_module.get_function('shift_snapshots_inplace')
 
@@ -159,16 +176,15 @@ cuda.memcpy_dtoh(shift_snapshots_result,gpu_beng_data_1)
 # chatter
 diff0 = np.roll(cpu_beng_data,-2,axis=-1) - shift_snapshots_result
 diff1 = cpu_beng_data - shift_snapshots_result
-print '\nshift_snapshots_inplace test results:'
 print 'shifted:',np.allclose([la.norm(diff0[i::8,:]) for i in range(4)], [0,0,0,0])
 print 'same:',np.allclose([la.norm(diff1[4+i::8,:]) for i in range(4)], [0,0,0,0])
-print 'shift_snapshots_inplace time:'
 print 'CPU:',time_cpu.nanoseconds*1e-6,' ms'
 print 'GPU:',time_gpu,' ms'
 
 #####################################################
 
 # test shift_beng
+print '\nshift_beng test results:'
 shift_beng = kernel_module.get_function('shift_beng')
 
 tick = get_process_cpu_time()
@@ -184,23 +200,21 @@ time_gpu = tic.time_till(toc)
 shift_beng_result = np.zeros_like(cpu_beng_data)
 cuda.memcpy_dtoh(shift_beng_result,gpu_beng_data_2)
 
-# chatter
-print '\nshift_beng test results:'
 print 'shifted:',np.allclose(shift_snapshots_result[16384:,69:],shift_beng_result[:-16384,69:])
 print 'same:',np.allclose(shift_snapshots_result[:-16384,:69],shift_beng_result[:-16384,:69])
-print 'shift_beng time:'
 print 'CPU:',time_cpu.nanoseconds*1e-6,' ms'
 print 'GPU:',time_gpu,' ms'
 
 #####################################################
 
 # test shift_beng_transpose
+print '\nshift_beng_tranpose test results:'
 shift_transpose_beng = kernel_module.get_function('shift_transpose_beng')
 
 tick = get_process_cpu_time()
 tic.record()
 shift_transpose_beng(gpu_beng_data_1,gpu_beng_data_2,\
-		block=(16,16,1),grid=((16384/16) * 128*(num_beng_frames-1)/16,1))
+		block=(16,16,1),grid=((16384/16)*128*(num_beng_frames-1)/16,1))
 toc.record()
 toc.synchronize()
 tock = get_process_cpu_time()
@@ -210,10 +224,35 @@ time_gpu = tic.time_till(toc)
 shift_transpose_beng_result = np.zeros((num_beng_frames*128,16384),dtype=np.complex64)
 cuda.memcpy_dtoh(shift_transpose_beng_result,gpu_beng_data_2)
 
-print '\nshift_beng_tranpose test results:'
 print np.sum([np.allclose(shift_transpose_beng_result[128*i:128*(i+1),:].T,shift_beng_result[16384*i:16384*(i+1),:]) for i in range(num_beng_frames-1)]) == num_beng_frames-1
-print 'shift_beng_transpose time:'
 print 'CPU:',time_cpu.nanoseconds*1e-6,' ms'
 print 'GPU:',time_gpu,' ms'
+
+#####################################################
+# test shift_beng_transpose
+print '\nzero_pad results'
+
+zero_pad = kernel_module.get_function('zero_pad')
+blocks_per_grid = 128
+num_vdif_frames = np.int32(num_beng_frames*128)
+
+for ir in range(5):
+
+  for n in np.array([16400,16416,16385]):
+
+    gpu_beng_data_3 = cuda.mem_alloc(8*num_vdif_frames*n)
+
+    tic.record()
+    zero_pad(gpu_beng_data_2,gpu_beng_data_3,num_vdif_frames,np.int32(n),
+		block=(32,32,1),grid=(blocks_per_grid,1))
+    toc.record()
+    toc.synchronize()
+    time_gpu = tic.time_till(toc)
+    print 'GPU:',time_gpu,' ms'
+    gpu_beng_data_3.free()
+
+  #zero_pad_result = np.empty((num_vdif_frames,n),dtype=np.complex64)
+  #cuda.memcpy_dtoh(zero_pad_result,gpu_beng_data_3)
+  #print np.sum(zero_pad_result != np.hstack([ shift_transpose_beng_result, np.zeros((num_vdif_frames, n - 16384), dtype=np.complex64)])) == 0
 
 print '\ncovering ', 1.680 * num_beng_frames, ' ms'
