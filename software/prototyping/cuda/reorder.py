@@ -74,6 +74,7 @@ __global__ void reorderT(cufftComplex *beng_data_in, cufftComplex *beng_data_out
     }
     beng_data_out[128*16384*fid_out + 16384*sid_out + cid] = beng_data_in[128*16384*fid_in + 128*cid + sid_in];
   }
+
 }
 """
 
@@ -110,15 +111,23 @@ result = result.reshape((num_beng_frames,16384,128))[:-1,:,:]
 
 #####################################################
 
-reorderT = kernel_module.get_function('reorder')
+nchan = 16384
+gpu_beng_data_3 = cuda.mem_alloc(8*num_beng_frames*nchan*128)
+
+reorderT = kernel_module.get_function('reorderT')
 tic.record()
-reorderT(gpu_beng_data_1,gpu_beng_data_2,np.int32(num_beng_frames),
+reorderT(gpu_beng_data_1,gpu_beng_data_3,np.int32(num_beng_frames),
 	block=(16,16,1),grid=(8,1024,1),)
+#	block=(32,32,1),grid=(128/32,16384/32,1),)
 toc.record()
 toc.synchronize()
 time_gpu = tic.time_till(toc)
 print 'reorderT time:',time_gpu,' ms'
 
-resultT = np.zeros((num_beng_frames*128,16384),dtype=np.complex64)
-cuda.memcpy_dtoh(resultT,gpu_beng_data_2)
-resultT = resultT.reshape((num_beng_frames,128,16384))[:-1,:,:]
+resultT = np.zeros((num_beng_frames*128,nchan),dtype=np.complex64)
+cuda.memcpy_dtoh(resultT,gpu_beng_data_3)
+resultT = resultT.reshape((num_beng_frames,128,nchan))[:-1,:,:]
+
+#reorder time: 0.64563202858  ms
+#reorderT time: 1.34713602066  ms
+
