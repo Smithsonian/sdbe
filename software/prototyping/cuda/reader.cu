@@ -303,11 +303,14 @@ int main(int argc, char **argv)
 				printf("  -B B, --boundary=B   Start reading VDIF packets offset by <B> B-engine frame counter values relative to the first encountered. <B> should be greater than 0.\n");
 				printf("  -c N, --count=N      Read <N> VDIF frames from file <input_file>.\n");
 				printf("  -d F, --datafile=F   Write B-engine data to <F>.\n");
+				printf("  -h,   --help         Display this message.\");
 				printf("  -i F, --input=F      Read data from file <F>.\n");
 				printf("  -I F, --ingroup=F    Read data from group of files with prefix <F>.\n");
 				printf("  -l F, --logfile=F    Activate logging to <F>.\n");
 				printf("  -r R, --repeats=R    Repeat call to GPU kernel <R> times.\n");
 				printf("  -v  , --verbose      Verbose output.\n");
+				printf("  -x X, --xthreads=X   Use <X> number of x-threads.\n");
+				printf("  -y Y, --xthreads=Y   Use <Y> number of y-threads.\n");
 				printf("\n");
 				exit(EXIT_SUCCESS);
 				break;
