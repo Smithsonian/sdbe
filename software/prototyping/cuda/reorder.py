@@ -86,8 +86,8 @@ kernel_module = SourceModule(kernel_source)
 
 # generate fake B-frames
 num_beng_frames = 4
-data_shape = (num_beng_frames*16384,128)
-cpu_beng_data = np.arange(data_shape[0] * data_shape[1])
+data_shape = (num_beng_frames,16384,128)
+cpu_beng_data = np.arange(np.prod(data_shape))
 cpu_beng_data = cpu_beng_data.reshape(data_shape).astype(np.complex64)
 
 gpu_beng_data_1 = cuda.mem_alloc(cpu_beng_data.nbytes)
@@ -109,6 +109,8 @@ result = np.zeros((num_beng_frames*16384,128),dtype=np.complex64)
 cuda.memcpy_dtoh(result,gpu_beng_data_2)
 result = result.reshape((num_beng_frames,16384,128))[:-1,:,:]
 
+#reorder time: 0.64563202858  ms
+
 #####################################################
 
 nchan = 16384
@@ -117,7 +119,7 @@ gpu_beng_data_3 = cuda.mem_alloc(8*num_beng_frames*nchan*128)
 reorderT = kernel_module.get_function('reorderT')
 tic.record()
 reorderT(gpu_beng_data_1,gpu_beng_data_3,np.int32(num_beng_frames),
-	block=(16,16,1),grid=(8,1024,1),)
+	block=(16,16,1),grid=(128/16,16384/16,1),)
 #	block=(32,32,1),grid=(128/32,16384/32,1),)
 toc.record()
 toc.synchronize()
@@ -128,6 +130,27 @@ resultT = np.zeros((num_beng_frames*128,nchan),dtype=np.complex64)
 cuda.memcpy_dtoh(resultT,gpu_beng_data_3)
 resultT = resultT.reshape((num_beng_frames,128,nchan))[:-1,:,:]
 
-#reorder time: 0.64563202858  ms
 #reorderT time: 1.34713602066  ms
+
+#####################################################
+
+# compute on CPU
+cpu_result = np.empty_like(cpu_beng_data)
+
+# shift by two snapshots 
+for i in range(4):
+  cpu_result[:,i::8,:] = np.roll(cpu_beng_data[:,i::8,:],-2,axis=-1)
+  cpu_result[:,i+4::8,:] = cpu_beng_data[:,i+4::8,:]
+
+# then by one B-engine
+cpu_result[:,:,69:] = np.roll(cpu_result[:,:,69:],-1,axis=0)
+cpu_result = cpu_result[:-1,:,:]
+
+cpu_resultT = np.empty_like(resultT)
+for i in range(num_beng_frames-1):
+  cpu_resultT[i,:,:] = result[i,:,:].T
+
+print 'reorder test result:', 'pass' if np.allclose(cpu_result,result) else 'fail'
+print 'reorderT test result:', 'pass' if np.allclose(cpu_resultT,resultT) else 'fail'
+
 

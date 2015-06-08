@@ -57,6 +57,7 @@
 
 // Debugging
 //#define DEBUG
+//#define KR_DEBUG
 //~ #define DEBUG_GPU
 //~ #define DEBUG_GPU_CONDITION (blockIdx.x == 0 && threadIdx.x == 7 && threadIdx.y == 3)
 //~ #define DEBUG_SINGLE_FRAME
@@ -435,6 +436,11 @@ int main(int argc, char **argv)
 		printf("reader:DEBUG:Opening file '%s' for data output.\n",filename_data);
 	}
 	#endif
+
+	#ifdef KR_DEBUG
+	printf("sizeof(int32_t): %d\n",sizeof(int32_t));
+	printf("sizeof(cufftComplex): %d\n",sizeof(cufftComplex));
+	#endif
 	
 	// open datafile
 	if (data_to_file)
@@ -582,6 +588,13 @@ int main(int argc, char **argv)
 						fclose(fh);
 						exit(EXIT_FAILURE);
 					}
+					#ifdef KR_DEBUG
+					fseek(fh, -1*VDIF_BYTE_SIZE, SEEK_CUR);
+					fread((void *)tmp_vdif, VDIF_BYTE_SIZE, 1, fh);
+					tmp_bcount_curr = get_bcount_from_vdif(tmp_vdif);
+					printf("reader:KR_DEBUG:Last B-engine counter value is %d.\n",tmp_bcount_curr);
+					#endif
+					// End KR Debug
 					fclose(fh);
 				}
 				else

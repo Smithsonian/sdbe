@@ -381,7 +381,7 @@ def scenario_contiguous_snapshots(batch,tic,toc):
 tic = cuda.Event()
 toc = cuda.Event()
 
-batch = 4 * 39
+batch = 9 * 39
 print '\nTiming scenarios are for a single side-band'
 
 '''
