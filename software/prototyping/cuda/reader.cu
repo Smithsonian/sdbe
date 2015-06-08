@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <time.h>
+#include <math.h>
 
 // CUDA runtime
 #include <cuda_runtime.h>
@@ -55,6 +56,11 @@
 #define BENG_FRAME_COMPLETION_COMPLETE_ON_CPU (BENG_PACKETS_PER_FRAME*num_x_threads) // value of completion counter when B-engine frame complete, multiplication by THREADS_PER_BLOCK_x required since all x-threads increment counter
 #define BENG_VDIF_SAMPLE_VALUE_OFFSET 2.0f
 
+// Output 
+#define OUTPUT_BITS_PER_SAMPLE 2
+#define OUTPUT_MAX_VALUE_MASK ((int)pow((double) 2,OUTPUT_BITS_PER_SAMPLE) - 1)
+#define OUTPUT_SAMPLES_PER_INT (32/OUTPUT_BITS_PER_SAMPLE)
+
 // Debugging
 //#define DEBUG
 //#define KR_DEBUG
@@ -80,9 +86,16 @@ __global__ void vdif_to_beng(
 	int32_t num_vdif_frames, 
 	int32_t bcount_offset,
 	int blocks_per_grid);
+//
+__global__ void quantize2bit(
+	const float *in,
+	unsigned int *out,
+	int N,
+	float thresh);
 // host utilities
 inline void error_check(const char *f, const int l);
 inline void error_check(cudaError_t err, const char *f, const int l);
+float standard_deviation(cufftReal *data, int n);
 
 /*
  * Data handling inlines.
@@ -124,6 +137,8 @@ __host__ __device__ inline cufftComplex read_complex_sample(int32_t *samples_int
 
 int main(int argc, char **argv)
 {
+	
+	printf("%d,%d\n",OUTPUT_MAX_VALUE_MASK,(int)(5>0.5));
 	#ifdef DEBUG
 	printf("reader:DEBUG:Start\n");
 	#endif
@@ -186,6 +201,12 @@ int main(int argc, char **argv)
 	
 	// iFFT module (device)
 	cufftReal *gpu_time_series_0,*gpu_time_series_1;
+	
+	// Output module (host)
+	uint32_t *quantized_0, *quantized_1;
+	
+	// Output module (device)
+	uint32_t *gpu_quantized_0, *gpu_quantized_1;
 	
 	// control (host)
 	int32_t *beng_frame_completion; // counts number of packets received per b-count value
@@ -698,7 +719,6 @@ int main(int argc, char **argv)
 	error_check(err,__FILE__,__LINE__);
 	err = cudaMemset((void *)gpu_beng_data_1, 0, beng_data_bytes);
 	error_check(err,__FILE__,__LINE__);
-	cudaDeviceSynchronize(); // make sure the memset is done
 	
 	// allocate memory for iFFT (device)
 	err = cudaMalloc((void **)&gpu_time_series_0, time_series_bytes);
@@ -709,6 +729,26 @@ int main(int argc, char **argv)
 	error_check(err,__FILE__,__LINE__);
 	err = cudaMemset((void *)gpu_time_series_1, 0, time_series_bytes);
 	error_check(err,__FILE__,__LINE__);
+	
+	size_t quantized_bytes = 2*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS/OUTPUT_SAMPLES_PER_INT*sizeof(uint32_t);
+	// allocate memory for output (host)
+	err = cudaHostAlloc((void **)&quantized_0, quantized_bytes,cudaHostAllocDefault);
+	error_check(err,__FILE__,__LINE__);
+	err = cudaHostAlloc((void **)&quantized_1, quantized_bytes,cudaHostAllocDefault);
+	error_check(err,__FILE__,__LINE__);
+	
+	// allocate memory for output (device)
+	err = cudaMalloc((void **)&gpu_quantized_0, quantized_bytes);
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMemset((void *)gpu_quantized_0, 0, quantized_bytes);
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMalloc((void **)&gpu_quantized_1, quantized_bytes);
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMemset((void *)gpu_quantized_1, 0, quantized_bytes);
+	error_check(err,__FILE__,__LINE__);
+	
+	// make sure the memset is done
+	cudaDeviceSynchronize();
 	
 	// make iFFT plan
 	#ifdef DEBUG
@@ -831,6 +871,65 @@ int main(int argc, char **argv)
 	printf(" done.\n");
 	#endif
 	
+	#ifdef DEBUG
+	printf("reader:DEBUG:Compute threshold value...");
+	#endif
+	float thresh_0 = standard_deviation(time_series_0, 2*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS);
+	float thresh_1 = standard_deviation(time_series_1, 2*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS);
+	#ifdef DEBUG
+	printf(" done. Thresholds are th0 = %f, th1 = %f.\n",thresh_0,thresh_1);
+	#endif
+	
+	#ifdef DEBUG
+	printf("reader:DEBUG:Defining threads and blocks.\n");
+	#endif
+	dim3 threadsPerBlock2(OUTPUT_SAMPLES_PER_INT,4);
+	#ifdef DEBUG
+	printf("\tthreads-per-block = (%d,%d,%d)\n",threadsPerBlock2.x,threadsPerBlock2.y,threadsPerBlock2.z);
+	#endif
+	dim3 blocksPerGrid2(64);
+	#ifdef DEBUG
+	printf("\t  blocks-per-grid = (%d,%d,%d)\n",blocksPerGrid2.x,blocksPerGrid2.y,blocksPerGrid2.z);
+	#endif
+	
+	for (ir=0; ir<repeats; ir++)
+	{
+		#ifdef DEBUG
+		printf("reader:DEBUG:Call to GPU kernel.\n");
+		#endif
+		cudaEventRecord(start);
+		cudaEventSynchronize(start);
+		clock_gettime(CLOCK_PROCESS_CPUTIME_ID,&t0);
+		quantize2bit<<<blocksPerGrid2,threadsPerBlock2>>>(gpu_time_series_0,gpu_quantized_0,2*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS,thresh_0);
+		quantize2bit<<<blocksPerGrid2,threadsPerBlock2>>>(gpu_time_series_1,gpu_quantized_1,2*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS,thresh_1);
+		cudaDeviceSynchronize();
+		clock_gettime(CLOCK_PROCESS_CPUTIME_ID,&t1);
+		cudaEventRecord(stop);
+		cudaEventSynchronize(stop);
+		cudaEventElapsedTime(&time_spent, start, stop);
+		if (logging)
+		{
+			fprintf(fh_log,"   %10.6f",time_spent);
+			fprintf(fh_log,"   %10.6f\n",1e3*(double)(t1.tv_sec - t0.tv_sec) + 1e-6*(double)(t1.tv_nsec - t0.tv_nsec));
+		}
+		else
+		{
+			printf("2-bit quantization finished in:\n\tCUDA: %10.6fms\n",time_spent);
+			printf("\t CPU: %10.6fms\n",1e3*(double)(t1.tv_sec - t0.tv_sec) + 1e-6*(double)(t1.tv_nsec - t0.tv_nsec));
+		}
+	}
+	
+	#ifdef DEBUG
+	printf("reader:DEBUG:Copying data from device to host...");
+	#endif
+	err = cudaMemcpy(quantized_0, gpu_quantized_0, quantized_bytes, cudaMemcpyDeviceToHost);
+	error_check(err,__FILE__,__LINE__);
+	err = cudaMemcpy(quantized_1, gpu_quantized_1, quantized_bytes, cudaMemcpyDeviceToHost);
+	error_check(err,__FILE__,__LINE__);
+	#ifdef DEBUG
+	printf(" done.\n");
+	#endif
+	
 	if (data_to_file)
 	{
 		// write B-engine completion counters
@@ -843,6 +942,10 @@ int main(int argc, char **argv)
 		fwrite((void *)time_series_0, sizeof(cufftReal), 2*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS, fh_data);
 		// write time series data for phased sum 1
 		fwrite((void *)time_series_1, sizeof(cufftReal), 2*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS, fh_data);
+		// write quantized time series data for phased sum 0
+		fwrite((void *)quantized_0, sizeof(uint32_t), 2*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS/OUTPUT_SAMPLES_PER_INT, fh_data);
+		// write quantized time series data for phased sum 1
+		fwrite((void *)quantized_1, sizeof(uint32_t), 2*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS/OUTPUT_SAMPLES_PER_INT, fh_data);
 	}
 	
 	#ifdef DEBUG_SINGLE_FRAME
@@ -1313,6 +1416,50 @@ __global__ void vdif_to_beng(
 			#endif // DEBUG_GPU
 		}
 	} // for (iframe=0; ...)
+}
+
+/*
+ * 2bit quantization kernel. Has to be called with 16 x-threads and any 
+ * number of y-threads, and any number of x-blocks
+ */
+__global__ void quantize2bit(const float *in, unsigned int *out, int N, float thresh)
+{
+	int idx_in = blockIdx.x*blockDim.x*blockDim.y + threadIdx.y*blockDim.x + threadIdx.x;
+	int idx_out = blockIdx.x*blockDim.y + threadIdx.y;
+	
+	for (int ii=0; (idx_in+ii)<N; ii+=gridDim.x*blockDim.x*blockDim.y)
+	{
+		int sample_2bit = ((fabsf(in[idx_in+ii]) <= thresh) | ((in[idx_in+ii] < 0)<<1)) & OUTPUT_MAX_VALUE_MASK;
+		#ifdef DEBUG
+			if (ii == 0 & blockIdx.x==0)
+			{
+				printf("(%d).(%d,%d): fabsf(in[idx_in+ii]) <= thresh: %d; ((in[idx_in+ii] < 0)<<1): %d; sample_2bit = %d (%u)\n",
+				blockIdx.x,threadIdx.y,threadIdx.x,
+				(int)(fabsf(in[idx_in+ii]) <= thresh),(int)((in[idx_in+ii] < 0)<<1),sample_2bit,(uint32_t)(sample_2bit << (threadIdx.x*2)));
+			}
+		#endif
+		sample_2bit = sample_2bit << (threadIdx.x*2);
+		atomicOr(out+idx_out, sample_2bit);
+		idx_out += gridDim.x*blockDim.y;
+	}
+}
+
+/*
+ * Compute the standard deviation of an array of floats.
+ */
+float standard_deviation(cufftReal *data, int n)
+{
+	cufftReal mean=0.0, sum_deviation=0.0;
+	for(int ii=0; ii<n; ++ii)
+	{
+		mean += data[ii];
+	}
+	mean=mean/n;
+	for(int ii=0; ii<n; ++ii)
+	{
+		sum_deviation += (data[ii] - mean)*(data[ii] - mean);
+	}
+	return sqrt((float)sum_deviation/n);
 }
 
 /*
