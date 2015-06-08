@@ -50,18 +50,16 @@ def scenario_contiguous_batched39_resample(num_snapshots,tic,toc):
   '''
   print '\nContiguous channel Fourier resampling scenario in batches of 39:'
   assert num_snapshots % 39 is 0, 'error: num_snapshots must be integer multiple of 39'
-  print 'there appears to be an issue when batch > 2' 
-
-  # problem with the last batch...
 
   # construct arrays
-  gpu_1 = cuda.mem_alloc(int(4 * (num_snapshots * 2 * BENG_CHANNELS_ * R2DBE_RATE / SWARM_RATE + 2)))
-  gpu_2 = cuda.mem_alloc(int(4 * num_snapshots * 2 * BENG_CHANNELS_ * R2DBE_RATE / SWARM_RATE))
+  batch = num_snapshots / 39
+  print 'batch: %d' % batch
+  gpu_1 = cuda.mem_alloc(int(8 * batch * (39*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE/2+1)))
+  gpu_2 = cuda.mem_alloc(int(4 * batch * (39*2 * BENG_CHANNELS_ * R2DBE_RATE / SWARM_RATE)))
   cpu_in = standard_normal(num_snapshots*BENG_CHANNELS) + 1j * standard_normal(num_snapshots*BENG_CHANNELS)
   cpu_in = cpu_in.astype(complex64)
 
   # create FFT plans
-  batch = num_snapshots / 39
   n_A = array([2*BENG_CHANNELS_],int32)
   inembed_A = array([BENG_CHANNELS],int32)
   onembed_A = array([2*BENG_CHANNELS_],int32)
@@ -71,7 +69,6 @@ def scenario_contiguous_batched39_resample(num_snapshots,tic,toc):
 
   n_B = array([39*2*BENG_CHANNELS_],int32)
   inembed_B = array([39*2*BENG_CHANNELS_],int32)
-  #onembed_B = array([39*2*BENG_CHANNELS_/2+1],int32)
   onembed_B = array([int(39*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE/2+1)],int32)
   plan_B = cufft.cufftPlanMany(1, n_B.ctypes.data,
 					inembed_B.ctypes.data,1,39*2*BENG_CHANNELS_,
@@ -91,9 +88,9 @@ def scenario_contiguous_batched39_resample(num_snapshots,tic,toc):
   zero_out = kernel_module.get_function('zero_out')
 
   # sanity check:
-  zero_out(gpu_1,int32(num_snapshots * 2 * BENG_CHANNELS_ * R2DBE_RATE / SWARM_RATE / 2 + 1),
-	block=(1024,1,1),grid=(int(ceil((num_snapshots*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE/2+1)/1024.)),1))
-  cpu_out = empty((num_snapshots * 2 * BENG_CHANNELS_ * R2DBE_RATE / SWARM_RATE/2 + 1),complex64)
+  zero_out(gpu_1,int32(batch * (39*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE/2+1)),
+	block=(1024,1,1),grid=(int(ceil(batch*(39*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE/2+1)/1024.)),1))
+  cpu_out = empty((batch * (39*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE/2+1)),complex64)
   cuda.memcpy_dtoh(cpu_out,gpu_1)
   assert len(unique(cpu_out)) == 1, 'problem with zero_out'
 
@@ -106,8 +103,8 @@ def scenario_contiguous_batched39_resample(num_snapshots,tic,toc):
   cufft.cufftExecC2R(plan_A,int(gpu_1),int(gpu_2))
 
   # zero out gpu_1
-  zero_out(gpu_1,int32(num_snapshots*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE/2+1),
-	block=(1024,1,1),grid=(int(ceil((num_snapshots*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE/2+1)/1024.)),1))
+  zero_out(gpu_1,int32(batch*(39*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE/2+1)),
+	block=(1024,1,1),grid=(int(ceil(batch*(39*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE/2+1)/1024.)),1))
 
   # Turn concatenated SWARM time series into single spectrum (already zero-padded)
   cufft.cufftExecR2C(plan_B,int(gpu_2),int(gpu_1))
@@ -125,7 +122,6 @@ def scenario_contiguous_batched39_resample(num_snapshots,tic,toc):
   cpu_out = empty(num_snapshots*2*BENG_CHANNELS_* R2DBE_RATE/SWARM_RATE,float32)
   cuda.memcpy_dtoh(cpu_out,gpu_2)
 
-  #print 'test results: ', 'pass' if allclose(cpu_C,cpu_out/(cpu_out.size*2*BENG_CHANNELS_)) else 'fail'
   print 'test results: ', 'pass' if allclose(cpu_C.flatten(),cpu_out/(cpu_C.shape[-1]*2*BENG_CHANNELS_)) else 'fail'
   print 'max residual: ',max(abs(cpu_C.flatten()-cpu_out/(cpu_C.shape[-1]*2*BENG_CHANNELS_)))
   print 'GPU time:', tic.time_till(toc),' ms = ',tic.time_till(toc)/(num_snapshots*0.5*13.128e-3),' x real (both SB)' 
@@ -278,7 +274,51 @@ def scenario_contiguous_channels(batch,tic,toc):
   print 'test results: ' 'pass' if allclose(cpu,cpu_out/(2*BENG_CHANNELS_)) else 'fail'
   print 'real time:', batch * 13.128e-3,' ms'
   print 'GPU time:', tic.time_till(toc),' ms =  ',tic.time_till(toc)/(batch*0.5*13.128e-3),' x real (both SB)' 
+
+###############################################################
+def scenario_contiguous_channels_oversampled64(batch,tic,toc):
+  '''
+  Scenario: batched IFFT of 2*2**14*64 channels
+  '''
+  fft_window_oversample = 64*2*2**14
+  n = array([fft_window_oversample],int32)
   
+  # create batched FFT plan configuration
+  inembed = array([fft_window_oversample/2+1],int32)
+  onembed = array([fft_window_oversample],int32)
+  plan = cufft.cufftPlanMany(1, n.ctypes.data, inembed.ctypes.data, 1, fft_window_oversample/2+1,
+  	                                     onembed.ctypes.data, 1, fft_window_oversample,
+  					     cufft.CUFFT_C2R, batch)
+  # construct arrays 
+  gpu_in  = cuda.mem_alloc(8*batch*(fft_window_oversample/2+1))	# complex64
+  gpu_out = cuda.mem_alloc(4*batch*fft_window_oversample)	# float32
+  data_shape = (batch,fft_window_oversample/2+1)
+  cpu_in = standard_normal(data_shape) + 1j * standard_normal(data_shape)
+  cpu_in = cpu_in.astype(complex64)
+  cuda.memcpy_htod(gpu_in,cpu_in)
+  # execute plan
+  
+  tic.record()
+  cufft.cufftExecC2R(plan,int(gpu_in),int(gpu_out))
+  toc.record()
+  toc.synchronize()
+  
+  # read out result
+  cpu_out = empty((batch,fft_window_oversample),float32)
+  cuda.memcpy_dtoh(cpu_out,gpu_out)
+  
+  # execute on CPU
+  cpu = irfft(cpu_in,axis=-1)
+  
+  # destroy plan
+  cufft.cufftDestroy(plan)
+  
+  # test
+  print '\nOversampling by x64 Scenario with batches:'
+  print '1-D %d-element C2R iFFT in batch of %d.' % (n, batch)
+  print 'test results: ' 'pass' if allclose(cpu,cpu_out/(fft_window_oversample)) else 'fail'
+  print 'real time:', batch * 13.128e-3,' ms'
+  print 'GPU time:', tic.time_till(toc),' ms =  ',tic.time_till(toc)/(batch*0.5*13.128e-3),' x real (both SB)' 
 ###############################################################
 def scenario_contiguous_channels_wpadding(batch,tic,toc):
   '''
@@ -382,6 +422,7 @@ tic = cuda.Event()
 toc = cuda.Event()
 
 batch = 9 * 39
+#batch = 39
 print '\nTiming scenarios are for a single side-band'
 
 '''
@@ -392,9 +433,10 @@ Notes:
 - Best performace for Fourier resamping (not batched) is ~4.2x real for both sidebands.
 '''
 
-#scenario_contiguous_channels(batch,tic,toc)
-scenario_contiguous_resample(batch,tic,toc)
+scenario_contiguous_channels(batch,tic,toc)
+#scenario_contiguous_resample(batch,tic,toc)
 scenario_contiguous_batched39_resample(batch,tic,toc)
+#scenario_contiguous_channels_oversampled64(batch,tic,toc)
 num_snapshots=batch
 
 print '\ndone\n'

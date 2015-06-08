@@ -130,6 +130,64 @@ __global__ void reorderT_smem(cufftComplex *beng_data_in, cufftComplex *beng_dat
   }
 }
 
+__global__ void reorderTz_smem(cufftComplex *beng_data_in, cufftComplex *beng_data_out, int num_beng_frames){
+
+  // gridDim.x = 128*16384/(16*16) = 8192;
+  // blockDim.x = 16; blockDim.y = 16;
+  // --> launches 2097152 threads
+
+  int sid_out,fid_in;
+
+  __shared__ cufftComplex tile[16][16];
+
+  // for now, let us loop the grid over B-engine frames:
+  for (int fid_out=0; fid_out<num_beng_frames-1; fid_out+=1){
+
+    // snapshot id
+    int sid_in = (blockIdx.x * blockDim.x + threadIdx.x) % 128;
+    // channel id 
+    int cid = threadIdx.y + ((blockDim.x*blockIdx.x)/128)*blockDim.y;
+
+    // shift by 2-snapshots case:
+    if (((cid / 4) & (0x1)) == 0) {
+      sid_out = (sid_in-2) & 0x7f;
+    } else {
+      sid_out = sid_in;
+    }
+
+    if (sid_out < 69){
+      fid_in = fid_out;
+    } else {
+      fid_in = fid_out+1;
+    }
+
+    tile[threadIdx.x][threadIdx.y] = beng_data_in[128*16384*fid_in + 128*cid + sid_in];
+
+    __syncthreads();
+
+    // snapshot id
+    sid_in = (blockIdx.x * blockDim.x + threadIdx.y) % 128;
+    // channel id 
+    cid = threadIdx.x + ((blockDim.x*blockIdx.x)/128)*blockDim.x;
+
+    // shift by 2-snapshots case:
+    if (((cid / 4) & (0x1)) == 0) {
+      sid_out = (sid_in-2) & 0x7f;
+    } else {
+      sid_out = sid_in;
+    }
+
+    beng_data_out[128*16385*fid_out + 16385*sid_out + cid] = tile[threadIdx.y][threadIdx.x];
+
+    // zero out nyquist: 
+    if (cid == 0) {
+      beng_data_out[128*16385*fid_out + 16385*sid_out + 16384] = make_cuComplex(0.,0.);
+    }
+
+    __syncthreads();
+  }
+}
+
 """
 
 # two timers for speed-testing
@@ -208,6 +266,26 @@ resultT_smem = resultT_smem.reshape((num_beng_frames,128,nchan))[:-1,:,:]
 
 #####################################################
 
+nchan = 16385
+gpu_beng_data_3 = cuda.mem_alloc(8*num_beng_frames*nchan*128)
+
+reorderTz_smem = kernel_module.get_function('reorderTz_smem')
+tic.record()
+reorderTz_smem(gpu_beng_data_1,gpu_beng_data_3,np.int32(num_beng_frames),
+	block=(16,16,1),grid=(16384*128/(16*16),1,1),)
+toc.record()
+toc.synchronize()
+time_gpu = tic.time_till(toc)
+print 'reorderTz_smem time:',time_gpu,' ms'
+
+resultTz_smem = np.zeros((num_beng_frames*128,nchan),dtype=np.complex64)
+cuda.memcpy_dtoh(resultTz_smem,gpu_beng_data_3)
+resultTz_smem = resultTz_smem.reshape((num_beng_frames,128,nchan))[:-1,:,:-1]
+
+#reorderTz_smem time: 0.7  ms
+
+#####################################################
+
 # compute on CPU
 cpu_result = np.empty_like(cpu_beng_data)
 cpu_resultT = np.empty_like(resultT)
@@ -232,3 +310,6 @@ print '\ncompare vs numpy calculation (%f ms):' % (time_cpu.nanoseconds*1e-6)
 print 'reorder test result:', 'pass' if np.allclose(cpu_result,result) else 'fail'
 print 'reorderT test result:', 'pass' if np.allclose(cpu_resultT,resultT) else 'fail'
 print 'reorderT_smem test result:', 'pass' if np.allclose(cpu_resultT,resultT_smem) else 'fail'
+print 'reorderTz_smem test result:', 'pass' if np.allclose(cpu_resultT,resultTz_smem) else 'fail'
+
+print '\nprocessed time: %f ms' % (1.680*(num_beng_frames-1))
