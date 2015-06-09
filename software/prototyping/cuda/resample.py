@@ -47,6 +47,23 @@ __global__ void nearest(float *a, float *b, int Nb, double c, float d){
   }
 }
 
+__global__ void linear(float *a, float *b, int Nb, double c, float d){
+  /*
+  This kernel uses a round-half-to-even tie-breaking rule which is
+  opposite that of python's interp_1d.
+  a: input_array
+  b: output_array
+  Nb: size of array b
+  c: stride for interpolation: b[i] = d*a[int(c*i)]
+  */
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  int ida = __double2int_rd(tid*c);	// round down
+  if (tid < Nb) {
+    //b[tid] = d *( a[ida]*(1.-c*(tid-ida/c)) + a[ida+1]*c*(tid-ida/c) );
+    b[tid] = d * ( a[ida]*(1.-(c*tid-ida)) + a[ida+1]*(c*tid-ida) );
+  }
+}
+
 """
 
 def fft_batched(gpu_1,gpu_2,num_snapshots,snapshots_per_batch=39,cpu_check=True):
@@ -171,6 +188,9 @@ def fft_interp(gpu_1,gpu_2,num_snapshots,interp_kind='nearest',cpu_check=True):
 
   print 'GPU time:', tic.time_till(toc),' ms = ',tic.time_till(toc)/(num_snapshots*0.5*13.128e-3),' x real (both SB)' 
 
+  # destroy plan
+  cufft.cufftDestroy(plan)
+
   # check on CPU
   if (cpu_check):
     # timestep sizes for SWARM and R2DBE rates
@@ -195,12 +215,10 @@ def fft_interp(gpu_1,gpu_2,num_snapshots,interp_kind='nearest',cpu_check=True):
     cuda.memcpy_dtoh(cpu_out,gpu_1)
 
     print 'median residual: ',median(abs(cpu_A-cpu_out))
-    cpu_A[::32] = 0
-    cpu_out[::32] = 0
+    if interp_kind is 'nearest':
+      cpu_A[::32] = 0
+      cpu_out[::32] = 0
     print 'test results: ', 'pass' if allclose(cpu_A,cpu_out) else 'fail'
-
-  # destroy plan
-  cufft.cufftDestroy(plan)
 
 
 ##################################################################################
@@ -229,3 +247,10 @@ if True:
   gpu_2 = cuda.mem_alloc(4*int(4*num_snapshots*(2*BENG_CHANNELS_)))
   cuda.memcpy_htod(gpu_1,cpu_in)
   fft_interp(gpu_1,gpu_2,num_snapshots,interp_kind='nearest',cpu_check=True)
+
+# nearest-neighbor:
+if True:
+  gpu_1 = cuda.mem_alloc(4*(int(floor(num_snapshots*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE)) - 1))
+  gpu_2 = cuda.mem_alloc(4*int(4*num_snapshots*(2*BENG_CHANNELS_)))
+  cuda.memcpy_htod(gpu_1,cpu_in)
+  fft_interp(gpu_1,gpu_2,num_snapshots,interp_kind='linear',cpu_check=True)
