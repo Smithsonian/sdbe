@@ -143,6 +143,12 @@ int main(int argc, char **argv)
 	printf("reader:DEBUG:Start\n");
 	#endif
 	
+	// output format
+	uint8_t beng_frames_consecutive_snapshots = 0;
+	#ifdef BENG_FRAMES_OUT_CONSECUTIVE_SNAPSHOTS
+		beng_frames_consecutive_snapshots = 1;
+	#endif
+	
 	// misc
 	bool verbose_output = 0, logging = 0, input_is_batch = 0;
 	int blocks_per_grid = 128;
@@ -479,6 +485,8 @@ int main(int argc, char **argv)
 			fh_data = fopen(filename_data,"w");
 			if (fh_data != NULL)
 			{
+				// write output format
+				fwrite((void *)&beng_frames_consecutive_snapshots, sizeof(uint8_t), 1, fh_data);
 				// write the buffer size
 				int32_t tmp = BENG_BUFFER_IN_COUNTS;
 				fwrite((void *)&tmp, sizeof(int32_t), 1, fh_data);
@@ -1429,15 +1437,29 @@ __global__ void quantize2bit(const float *in, unsigned int *out, int N, float th
 	
 	for (int ii=0; (idx_in+ii)<N; ii+=gridDim.x*blockDim.x*blockDim.y)
 	{
-		int sample_2bit = ((fabsf(in[idx_in+ii]) <= thresh) | ((in[idx_in+ii] < 0)<<1)) & OUTPUT_MAX_VALUE_MASK;
+		//This is is for 00 = -2, 01 = -1, 10 = 0, 11 = 1.
+		/* Assume sample x > 0, lower bit indicates above threshold. Then
+		 * test, if x < 0, XOR with 11.
+		 */
+		int sample_2bit = ( ((fabsf(in[idx_in+ii]) >= thresh) | 0x02) ^ (0x03*(in[idx_in+ii] < 0)) ) & OUTPUT_MAX_VALUE_MASK;
 		#ifdef DEBUG
 			if (ii == 0 & blockIdx.x==0)
 			{
-				printf("(%d).(%d,%d): fabsf(in[idx_in+ii]) <= thresh: %d; ((in[idx_in+ii] < 0)<<1): %d; sample_2bit = %d (%u)\n",
+				printf("(%d).(%d,%d): ((fabsf(in[idx_in+ii]) >= thresh) | 0x02): %d; (0x03*(in[idx_in+ii] >= 0)): %d; sample_2bit = %d (%u)\n",
 				blockIdx.x,threadIdx.y,threadIdx.x,
-				(int)(fabsf(in[idx_in+ii]) <= thresh),(int)((in[idx_in+ii] < 0)<<1),sample_2bit,(uint32_t)(sample_2bit << (threadIdx.x*2)));
+				(int)((fabsf(in[idx_in+ii]) >= thresh) | 0x02),(int)(0x03*(in[idx_in+ii] >= 0)),sample_2bit,(uint32_t)(sample_2bit << (threadIdx.x*2)));
 			}
 		#endif
+		//~ //This is for 11 = -2, 10 = -1, 01 = 0, 10 = 1
+		//~ int sample_2bit = ((fabsf(in[idx_in+ii]) <= thresh) | ((in[idx_in+ii] < 0)<<1)) & OUTPUT_MAX_VALUE_MASK;
+		//~ #ifdef DEBUG
+			//~ if (ii == 0 & blockIdx.x==0)
+			//~ {
+				//~ printf("(%d).(%d,%d): fabsf(in[idx_in+ii]) <= thresh: %d; ((in[idx_in+ii] < 0)<<1): %d; sample_2bit = %d (%u)\n",
+				//~ blockIdx.x,threadIdx.y,threadIdx.x,
+				//~ (int)(fabsf(in[idx_in+ii]) <= thresh),(int)((in[idx_in+ii] < 0)<<1),sample_2bit,(uint32_t)(sample_2bit << (threadIdx.x*2)));
+			//~ }
+		//~ #endif
 		sample_2bit = sample_2bit << (threadIdx.x*2);
 		atomicOr(out+idx_out, sample_2bit);
 		idx_out += gridDim.x*blockDim.y;
