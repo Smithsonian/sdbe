@@ -197,7 +197,7 @@ toc = cuda.Event()
 kernel_module = SourceModule(kernel_source)
 
 # generate fake B-frames
-num_beng_frames = 4
+num_beng_frames = 40
 data_shape = (num_beng_frames,16384,128)
 cpu_beng_data = np.arange(np.prod(data_shape))
 cpu_beng_data = cpu_beng_data.reshape(data_shape).astype(np.complex64)

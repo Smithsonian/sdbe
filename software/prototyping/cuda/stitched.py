@@ -8,8 +8,10 @@ from pycuda.compiler import SourceModule
 
 import scikits.cuda.cufft as cufft
 
-from numpy import complex64,float32,int32,uint32,array,arange,empty,zeros,ceil
+from numpy import complex64,float32,float64,int32,uint32,array,arange,empty,zeros,ceil
 from struct import unpack
+
+from numpy.fft import irfft
 
 from timing import get_process_cpu_time
 
@@ -176,13 +178,33 @@ __global__ void reorderTz_smem(cufftComplex *beng_data_in, cufftComplex *beng_da
   }
 }
 
-__global__ void zero_out(cufftComplex *a, int32_t n)
-{
-  int32_t tid = blockIdx.x*blockDim.x + threadIdx.x;
-  if (tid < n){
-    a[tid] = make_cuComplex(0.,0.);
+__global__ void linear(float *a, int Na, float *b, int Nb, double c, float d){
+ /*
+  This kernel uses a round-half-to-even tie-breaking rule which is
+  opposite that of python's interp_1d.
+  deal with extrapolation
+  a: input_array (assume padded by two floats for every SWARM snapshot)
+  b: output_array
+  Nb: size of array b
+  c: conversion factor between a and b indices. 
+  Note: type conversions are slowing this down.
+  Idea: Use texture memory to store ida and weights.
+  */
+
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (tid < Nb) {
+    int ida = __double2int_rd(tid*c); // round down
+    if (ida < Na-1){
+      b[tid] = d * ( a[(ida / 32768)*32770 + (ida %% 32768) ]*(1.-(c*tid-ida)) + 
+		     a[((ida+1) / 32768)*32770 + ((ida+1) %% 32768)]*(c*tid-ida) );
+    } else {
+      b[tid] = d * a[(ida / 32768)*32770 + (ida %% 32768) ];
+    }
   }
+
 }
+
 """
 
 
@@ -219,7 +241,7 @@ def read_vdif(filename_input,num_vdif_frames,beng_frame_offset=1,batched=True):
   return vdif_buf,bcount_offset
 
 def meminfo(kernel):
-  print "Registers: %d" % kernel.num_regs
+  print "\nRegisters: %d" % kernel.num_regs
   print "Local: %d" % kernel.local_size_bytes
   print "Shared: %d" % kernel.shared_size_bytes
   print "Const: %d" % kernel.const_size_bytes
@@ -252,6 +274,8 @@ repeats = 2
 
 # derive quantities
 num_vdif_frames = BENG_BUFFER_IN_COUNTS*VDIF_PER_BENG
+num_swarm_samples = int((BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS*2*BENG_CHANNELS_)
+num_r2dbe_samples = int(num_swarm_samples*R2DBE_RATE/SWARM_RATE)
 
 # compile CUDA kernels
 kernel_source = kernel_template % {'BENG_BUFFER_IN_COUNTS':BENG_BUFFER_IN_COUNTS}
@@ -260,23 +284,42 @@ kernel_module = SourceModule(kernel_source)
 # fetch kernel handles
 vdif_to_beng_kernel = kernel_module.get_function('vdif_to_beng')
 reorderTz_smem_kernel = kernel_module.get_function('reorderTz_smem')
-zero_out_kernel = kernel_module.get_function('zero_out')
+linear_kernel = kernel_module.get_function('linear')
 
 meminfo(vdif_to_beng_kernel)
 meminfo(reorderTz_smem_kernel)
+meminfo(linear_kernel)
 
 # read in vdif
 cpu_vdif_buf,bcount_offset = read_vdif(filename_input,num_vdif_frames,beng_frame_offset,batched=True)
 print 'bcount_offset', bcount_offset
 
-# FFT plans
-print 'IRFFT batch = %d' % ((BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS,)
-n_A = array([2*BENG_CHANNELS_],int32)
-inembed_A = array([BENG_CHANNELS],int32)
-onembed_A = array([2*BENG_CHANNELS],int32)
-plan_A = cufft.cufftPlanMany(1, n_A.ctypes.data, inembed_A.ctypes.data, 1, BENG_CHANNELS,
-	                                       onembed_A.ctypes.data, 1, 2*BENG_CHANNELS,
+# inverse in place FFT plan
+print 'IFFT batch = %d' % ((BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS,)
+n = array([2*BENG_CHANNELS_],int32)
+inembed = array([BENG_CHANNELS],int32)
+onembed = array([2*BENG_CHANNELS],int32)
+plan_A = cufft.cufftPlanMany(1, n.ctypes.data, inembed.ctypes.data, 1, BENG_CHANNELS,
+	                                       onembed.ctypes.data, 1, 2*BENG_CHANNELS,
   					       cufft.CUFFT_C2R, (BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS)
+# bandpass R2C FFT plan
+n = array([4096],int32)
+inembed = array([4096],int32)
+onembed = array([4096/2+1],int32)
+batch_B = num_r2dbe_samples / 4096 / 512
+plan_B = cufft.cufftPlanMany(1, n.ctypes.data, inembed.ctypes.data, 1, 4096,
+					       onembed.ctypes.data, 1, 4096/2+1,
+					       cufft.CUFFT_R2C, batch_B)
+
+# trimming C2R FFT plan
+n = array([2048],int32)
+inembed = array([2048/2+1],int32)
+onembed = array([2048],int32)
+batch_C = batch_B
+plan_C = cufft.cufftPlanMany(1, n.ctypes.data, inembed.ctypes.data, 1, 4096/2+1,
+					       onembed.ctypes.data, 1, 2048,
+					       cufft.CUFFT_C2R, batch_C)
+#gpumeminfo(cuda)
 
 # event timers
 tic = cuda.Event()
@@ -318,13 +361,10 @@ vdif_to_beng_kernel(	gpu_vdif_buf,
   			block=(32,32,1), grid=(blocks_per_grid,1,1))
 #gpumeminfo(cuda)
 
-# reorder SWARM snapshots
-# reordered
+# reorder and zero pad SWARM snapshots
 gpu_beng_ordered_0 = cuda.mem_alloc(8*BENG_CHANNELS*BENG_SNAPSHOTS*(BENG_BUFFER_IN_COUNTS-1))
 gpu_beng_ordered_1 = cuda.mem_alloc(8*BENG_CHANNELS*BENG_SNAPSHOTS*(BENG_BUFFER_IN_COUNTS-1))
 reorderTz_smem_kernel(gpu_beng_data_0,gpu_beng_ordered_0,np.int32(BENG_BUFFER_IN_COUNTS),
-	block=(16,16,1),grid=(BENG_CHANNELS_*BENG_SNAPSHOTS/(16*16),1,1),)
-reorderTz_smem_kernel(gpu_beng_data_1,gpu_beng_ordered_1,np.int32(BENG_BUFFER_IN_COUNTS),
 	block=(16,16,1),grid=(BENG_CHANNELS_*BENG_SNAPSHOTS/(16*16),1,1),)
 # free unpacked, unordered b-frames
 gpu_beng_data_0.free()
@@ -332,30 +372,63 @@ gpu_beng_data_1.free()
 #gpumeminfo(cuda)
 
 # Turn SWARM snapshots into timeseries
+#print 'Turn SWARM snapshots into timeseries'
 cufft.cufftExecC2R(plan_A,int(gpu_beng_ordered_0),int(gpu_beng_ordered_0))
-#cufft.cufftExecC2R(plan_A,int(gpu_beng_ordered_1),int(gpu_beng_ordered_1))
-gpumeminfo(cuda)
+# gpu_beng_ordered are now padded by two floats every 2*BENG_CHANNELS_ samples: [num_snapshots, 2*16384 + 2]
+#gpumeminfo(cuda)
 
-# now we have time series data. We can then do a linear interpolation to resample...
-# TODO: Save extra snapshots for next iteration.
+# check time series
+#cpu_out = np.empty(2*BENG_CHANNELS*BENG_SNAPSHOTS*(BENG_BUFFER_IN_COUNTS-1),dtype=float32)
+#cuda.memcpy_dtoh(cpu_out,gpu_beng_ordered_0)
+#cpu_out = cpu_out.reshape((BENG_SNAPSHOTS*(BENG_BUFFER_IN_COUNTS-1),2*BENG_CHANNELS)) / (2*BENG_CHANNELS_)
+#swarm_t = cpu_out[:,:2*BENG_CHANNELS_].flatten()
 
-# zero out gpu_1
-#zero_out_kernel(gpu_0_1,int32(BATCH*(SNAPSHOTS_PER_BATCH*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE+1)),
-#	block=(1024,1,1),
-#	grid=(int(ceil(BATCH*(SNAPSHOTS_PER_BATCH*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE+1)/1024.)),1))
-#zero_out_kernel(gpu_1_1,int32(BATCH*(SNAPSHOTS_PER_BATCH*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE+1)),
-#	block=(1024,1,1),
-#	grid=(int(ceil(BATCH*(SNAPSHOTS_PER_BATCH*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE+1)/1024.)),1))
+# Resample the entire time series using linear interpolation:
+threads_per_block = 512
+blocks_per_grid = int(ceil(1. * num_r2dbe_samples / threads_per_block))
+gpu_r2dbe = cuda.mem_alloc(4 * num_r2dbe_samples)
+linear_kernel(	gpu_beng_ordered_0,
+		int32(num_swarm_samples),
+	      	gpu_r2dbe,
+		int32(num_r2dbe_samples),
+		float64(SWARM_RATE/R2DBE_RATE),
+		float32(1./(2*BENG_CHANNELS_)),
+		block=(threads_per_block,1,1),grid=(blocks_per_grid,1))
+#gpumeminfo(cuda)
+gpu_beng_ordered_0.free()
 
-# Turn concatenated SWARM time series into single spectrum (already zero-padded)
-#cufft.cufftExecR2C(plan_B,int(gpu_0_2),int(gpu_0_1))
-#cufft.cufftExecR2C(plan_B,int(gpu_1_2),int(gpu_1_1))
+# check resampled time series
+#r2dbe_t = np.empty(num_r2dbe_samples,dtype=float32)
+#cuda.memcpy_dtoh(r2dbe_t,gpu_r2dbe)
 
-# Turn padded SWARM spectrum into time series with R2DBE sampling rate
-#cufft.cufftExecC2R(plan_C,int(gpu_0_1),int(gpu_0_2))
-#cufft.cufftExecC2R(plan_C,int(gpu_1_1),int(gpu_1_2))
+# this will be final timeseries
+gpu_r2dbe_spec = cuda.mem_alloc(8 * (4096/2+1) * batch_B)
+gpu_r2dbe_trimmed = cuda.mem_alloc(4*num_r2dbe_samples/4096*2048)
+#gpu_r2dbe_trimmed = cuda.mem_alloc(4*batch_C*2048)
 
-# TODO: Rescale  ( / 2*BENG_CHANNELS_*2*SNAPSHOTS_PER_BATCH*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE)
+# loop through time series in chunks of batch_B num_r2dbe_samples/4096/batch_B = 512 times 
+for ib in range(num_r2dbe_samples/4096/batch_B):
+
+  # compute spectrum with Fs = 4096
+  cufft.cufftExecR2C(plan_B,int(gpu_r2dbe)+int(4*ib*4096*batch_B),int(gpu_r2dbe_spec))
+
+  # grab spectrum
+  #cpu_r2dbe_spec = np.empty((batch_B,4096/2+1),dtype=complex64)
+  #cuda.memcpy_dtoh(cpu_r2dbe_spec,gpu_r2dbe_spec)
+  #r2dbe_trimmed = irfft(cpu_r2dbe_spec[:,150:-(1024-150)],axis=-1)
+
+  # invert to time series with B=1024, masking out first 150 MHz and last (1024 - 150) MHz. (MUST INDEX BY 8...)
+  cufft.cufftExecC2R(plan_C,int(gpu_r2dbe_spec)+int(8*150),int(gpu_r2dbe_trimmed) + int(4*ib*2048*batch_B))
+
+  # grab trimmed timeseries
+  #cpu_r2dbe_trimmed = np.empty(2048*batch_C,dtype=float32)
+  #cuda.memcpy_dtoh(cpu_r2dbe_trimmed,gpu_r2dbe_trimmed)
+
+# grab resampled and trimmed time series
+#cpu_r2dbe_trimmed = np.empty(2048*num_r2dbe_samples/4096,float32)
+#cuda.memcpy_dtoh(cpu_r2dbe_trimmed,gpu_r2dbe_trimmed)
+# (should be divided by 2048 to retain same scale)
+#cpu_r2dbe_trimmed /= 2048.
 
 toc.record()
 toc.synchronize()

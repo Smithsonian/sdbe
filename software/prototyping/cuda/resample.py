@@ -206,10 +206,10 @@ def fft_interp(gpu_1,gpu_2,num_snapshots,interp_kind='nearest',cpu_check=True):
     # the timespan of all SWARM data
     T_s_all = T_s*batch_size
     # get time-domain signal
-    foo = irfft(cpu_in,axis=1)
     xs_swarm_rate = irfft(cpu_in,n=2*BENG_CHANNELS_,axis=1).flatten()
     # and calculate sample points
     t_swarm_rate = arange(0,T_s_all,dt_s)
+    print t_swarm_rate[0],t_swarm_rate[-1]
     # calculate resample points (subtract one dt_s from end to avoid extrapolation)
     t_r2dbe_rate = arange(0,T_s_all-dt_s,dt_r)
     # and interpolate
@@ -229,7 +229,7 @@ def fft_interp(gpu_1,gpu_2,num_snapshots,interp_kind='nearest',cpu_check=True):
 ##################################################################################
 
 # mock data
-num_snapshots = 39*9 
+num_snapshots = 39
 data_shape = (num_snapshots,BENG_CHANNELS)
 cpu_in = standard_normal(data_shape) + 1j * standard_normal(data_shape)
 cpu_in = cpu_in.astype(complex64)
@@ -253,8 +253,8 @@ if False:
   cuda.memcpy_htod(gpu_1,cpu_in)
   fft_interp(gpu_1,gpu_2,num_snapshots,interp_kind='nearest',cpu_check=True)
 
-# nearest-neighbor:
-if False:
+# linear 
+if True: 
   gpu_1 = cuda.mem_alloc(4*(int(floor(num_snapshots*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE)) - 1))
   gpu_2 = cuda.mem_alloc(4*int(4*num_snapshots*(2*BENG_CHANNELS_)))
   cuda.memcpy_htod(gpu_1,cpu_in)
