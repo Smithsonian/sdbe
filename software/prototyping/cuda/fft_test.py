@@ -274,6 +274,62 @@ def scenario_contiguous_channels(batch,tic,toc):
   print 'test results: ' 'pass' if allclose(cpu,cpu_out/(2*BENG_CHANNELS_)) else 'fail'
   print 'real time:', batch * 13.128e-3,' ms'
   print 'GPU time:', tic.time_till(toc),' ms =  ',tic.time_till(toc)/(batch*0.5*13.128e-3),' x real (both SB)' 
+###############################################################
+def scenario_inplace_C2R(batch,tic,toc):
+
+  n = array([2*BENG_CHANNELS_],int32)
+  inembed = array([BENG_CHANNELS],int32)
+  onembed = array([2*BENG_CHANNELS],int32)
+  plan = cufft.cufftPlanMany(1, n.ctypes.data, inembed.ctypes.data, 1, BENG_CHANNELS,
+  	                                       onembed.ctypes.data, 1, 2*BENG_CHANNELS,
+  					       cufft.CUFFT_C2R, batch)
+
+  data_shape = (batch,BENG_CHANNELS)
+  cpu_data = standard_normal(data_shape) + 1j * standard_normal(data_shape)
+  cpu_data = cpu_data.astype(complex64)
+  gpu_data  = cuda.mem_alloc(8*batch*BENG_CHANNELS)		# complex64
+  cuda.memcpy_htod(gpu_data,cpu_data)
+
+  tic.record()
+  cufft.cufftExecC2R(plan,int(gpu_data),int(gpu_data))
+  toc.record()
+  toc.synchronize()
+
+  cpu_result = np.empty(batch*2*BENG_CHANNELS,dtype=np.float32)
+  cuda.memcpy_dtoh(cpu_result,gpu_data)
+  cpu_result = cpu_result.reshape((batch,2*BENG_CHANNELS))[:,:2*BENG_CHANNELS_]/(2*BENG_CHANNELS_)
+  result = irfft(cpu_data,axis=-1)
+  print 'Batched in-place scenario'
+  print 'test passed:',np.allclose(cpu_result,result)
+  print 'GPU time:', tic.time_till(toc),' ms =  ',tic.time_till(toc)/(batch*0.5*13.128e-3),' x real (both SB)' 
+###############################################################
+def scenario_inplace_padded_C2R(batch,tic,toc):
+
+  n = array([2*BENG_CHANNELS_],int32)
+  inembed = array([16*(BENG_CHANNELS//16+1)],int32)
+  onembed = array([2*inembed[0]],int32)
+  plan = cufft.cufftPlanMany(1, n.ctypes.data, inembed.ctypes.data, 1, inembed[0],
+  	                                       onembed.ctypes.data, 1, onembed[0],
+  					       cufft.CUFFT_C2R, batch)
+
+  data_shape = (batch,inembed[0])
+  cpu_data = standard_normal(data_shape) + 1j * standard_normal(data_shape)
+  cpu_data = cpu_data.astype(complex64)
+  gpu_data  = cuda.mem_alloc(8*batch*inembed[0])		# complex64
+  cuda.memcpy_htod(gpu_data,cpu_data)
+
+  tic.record()
+  cufft.cufftExecC2R(plan,int(gpu_data),int(gpu_data))
+  toc.record()
+  toc.synchronize()
+
+  cpu_result = np.empty(batch*onembed[0],dtype=np.float32)
+  cuda.memcpy_dtoh(cpu_result,gpu_data)
+  cpu_result = cpu_result.reshape((batch,onembed[0]))[:,:2*BENG_CHANNELS_]/(2*BENG_CHANNELS_)
+  result = irfft(cpu_data[:,:BENG_CHANNELS],axis=-1)
+  print 'Batched in-place scenario'
+  print 'test passed:',np.allclose(cpu_result,result)
+  print 'GPU time:', tic.time_till(toc),' ms =  ',tic.time_till(toc)/(batch*0.5*13.128e-3),' x real (both SB)' 
 
 ###############################################################
 def scenario_contiguous_channels_oversampled64(batch,tic,toc):
@@ -421,8 +477,8 @@ def scenario_contiguous_snapshots(batch,tic,toc):
 tic = cuda.Event()
 toc = cuda.Event()
 
-batch = 9 * 39
-#batch = 39
+#batch = 128 * 39
+batch = 128 * 4
 print '\nTiming scenarios are for a single side-band'
 
 '''
@@ -433,11 +489,16 @@ Notes:
 - Best performace for Fourier resamping (not batched) is ~4.2x real for both sidebands.
 '''
 
-scenario_contiguous_channels(batch,tic,toc)
+#scenario_inplace_padded_C2R(batch,tic,toc)
+scenario_inplace_C2R(batch,tic,toc)
+
+#scenario_contiguous_channels(batch,tic,toc)
+
+#scenario_contiguous_channels_wpadding(batch,tic,toc)
 #scenario_contiguous_resample(batch,tic,toc)
-scenario_contiguous_batched39_resample(batch,tic,toc)
+#scenario_contiguous_batched39_resample(batch,tic,toc)
 #scenario_contiguous_channels_oversampled64(batch,tic,toc)
-num_snapshots=batch
+#num_snapshots=batch
 
 print '\ndone\n'
 

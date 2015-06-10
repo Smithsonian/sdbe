@@ -48,18 +48,18 @@ __global__ void nearest(float *a, float *b, int Nb, double c, float d){
 }
 
 __global__ void linear(float *a, float *b, int Nb, double c, float d){
-  /*
+ /*
   This kernel uses a round-half-to-even tie-breaking rule which is
   opposite that of python's interp_1d.
   a: input_array
   b: output_array
   Nb: size of array b
-  c: stride for interpolation: b[i] = d*a[int(c*i)]
+  c: conversion factor between a and b indices. 
+  Note: type conversions are slowing this down.
   */
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
-  int ida = __double2int_rd(tid*c);	// round down
   if (tid < Nb) {
-    //b[tid] = d *( a[ida]*(1.-c*(tid-ida/c)) + a[ida+1]*c*(tid-ida/c) );
+    int ida = __double2int_rd(tid*c); // round down
     b[tid] = d * ( a[ida]*(1.-(c*tid-ida)) + a[ida+1]*(c*tid-ida) );
   }
 }
@@ -181,7 +181,12 @@ def fft_interp(gpu_1,gpu_2,num_snapshots,interp_kind='nearest',cpu_check=True):
   xs_size = int(floor(batch_size*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE)) - 1
   TPB = 512                               # threads per block
   nB = int(ceil(1. * xs_size / TPB))      # number of blocks
-  interp_1d(gpu_2,gpu_1,int32(xs_size),float64(SWARM_RATE/R2DBE_RATE),float32(1./(2*BENG_CHANNELS_)),block=(TPB,1,1),grid=(nB,1))
+  if interp_kind is 'linear':
+    interp_1d(gpu_2,gpu_1,int32(xs_size),float64(SWARM_RATE/R2DBE_RATE),float32(1./(2*BENG_CHANNELS_)),
+		block=(TPB,1,1),grid=(nB,1))
+  else:
+    interp_1d(gpu_2,gpu_1,int32(xs_size),float64(SWARM_RATE/R2DBE_RATE),float32(1./(2*BENG_CHANNELS_)),
+		block=(TPB,1,1),grid=(nB,1))
 
   toc.record()
   toc.synchronize()
@@ -230,7 +235,7 @@ cpu_in = standard_normal(data_shape) + 1j * standard_normal(data_shape)
 cpu_in = cpu_in.astype(complex64)
 
 # batched fft resample: 
-if False:
+if True:
   # move data to device
   snapshots_per_batch = 39
   batch_size = num_snapshots / snapshots_per_batch
@@ -242,14 +247,14 @@ if False:
   gpu_2.free()
 
 # nearest-neighbor:
-if True:
+if False:
   gpu_1 = cuda.mem_alloc(4*(int(floor(num_snapshots*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE)) - 1))
   gpu_2 = cuda.mem_alloc(4*int(4*num_snapshots*(2*BENG_CHANNELS_)))
   cuda.memcpy_htod(gpu_1,cpu_in)
   fft_interp(gpu_1,gpu_2,num_snapshots,interp_kind='nearest',cpu_check=True)
 
 # nearest-neighbor:
-if True:
+if False:
   gpu_1 = cuda.mem_alloc(4*(int(floor(num_snapshots*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE)) - 1))
   gpu_2 = cuda.mem_alloc(4*int(4*num_snapshots*(2*BENG_CHANNELS_)))
   cuda.memcpy_htod(gpu_1,cpu_in)
