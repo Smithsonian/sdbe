@@ -35,6 +35,8 @@ int main(int argc, char **argv)
 	struct timespec t0_inner,t1_inner,t0_outer,t1_outer;
 	uint32_t nblocks = 1;
 	FILE *fh_output = NULL;
+	uint32_t *vdif_buf = NULL;
+	uint32_t vdif_buf_size = 0;
 	
 	#if DEBUG_LEVEL >= DEBUG_LEVEL_DEBUG
 		DEBUGMSG("Start.");
@@ -95,16 +97,24 @@ int main(int argc, char **argv)
 					{
 						uint32_t *end;
 						int nl;
-						uint32_t *start = sg_pkt_by_blk(&(sgi[id]),0,&nl,&end);
+						uint32_t *start = sg_pkt_by_blk(&(sgi[id]),iblock,&nl,&end);
 						//printf("First block packets in %u --> %u\n",start,end);
 						pkt_count += (end-start)/2056;
-						//uint32_t *vdif_buf = malloc((end-start)*sizeof(uint32_t));
+						if (vdif_buf == NULL)
+						{
+							vdif_buf_size = (end-start);
+							vdif_buf = malloc(vdif_buf_size*sizeof(uint32_t));
+						}
 						uint32_t idx_out=0,idx_in;
 						//clock_gettime(CLOCK_PROCESS_CPUTIME_ID,&t0_inner);
-						//for (idx_in=0; idx_in<(uint32_t)(end-start); idx_in++)
-						//{
-						//	vdif_buf[idx_out] = start[idx_in];
-						//}
+						for (idx_in=0; idx_in<vdif_buf_size; idx_in++)
+						{
+							if (idx_in >= (uint32_t)(end-start))
+							{
+								break;
+							}
+							vdif_buf[idx_out] = start[idx_in];
+						}
 						if (fh_output != NULL)
 						{
 							if (iblock == 0 || iblock == nblocks-1)
@@ -112,7 +122,6 @@ int main(int argc, char **argv)
 								fwrite((void *)&(start[idx_in]),sizeof(uint32_t),(end-start),fh_output);
 							}
 						}
-						//free(vdif_buf);
 						//clock_gettime(CLOCK_PROCESS_CPUTIME_ID,&t1_inner);
 						//printf("\tReading done in %10.6fms\n",1e3*(double)(t1_inner.tv_sec - t0_inner.tv_sec) + 1e-6*(double)(t1_inner.tv_nsec - t0_inner.tv_nsec));
 					}
@@ -139,6 +148,10 @@ int main(int argc, char **argv)
 					}
 				}
 			}
+		}
+		if (vdif_buf != NULL)
+		{
+			free(vdif_buf);
 		}
 		clock_gettime(CLOCK_REALTIME,&t1_outer);
 		printf("Total reading done in %10.6fms (%u packets)\n",1e3*(double)(t1_outer.tv_sec - t0_outer.tv_sec) + 1e-6*(double)(t1_outer.tv_nsec - t0_outer.tv_nsec),pkt_count);
