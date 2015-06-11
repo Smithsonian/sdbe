@@ -112,7 +112,7 @@ __global__ void vdif_to_beng(
     idx_beng_data_out += blockDim.x;
   }
 # 1253 "reader.cu"
-  old = atomicAdd(beng_frame_completion + ((bcount-bcount_offset)&(4 -1)), 1);
+  old = atomicAdd(beng_frame_completion + ((bcount-bcount_offset) %% %(BENG_BUFFER_IN_COUNTS)d), 1);
 # 1277 "reader.cu"
   if (__any(old == ((16384/8)*blockDim.x)-1))
   {
@@ -121,22 +121,23 @@ __global__ void vdif_to_beng(
  }
 }
 
-__global__ void reorderTz_smem(cufftComplex *beng_data_in, cufftComplex *beng_data_out, int num_beng_frames){
 
-  // gridDim.x = 128*16384/(16*16) = 8192;
+__global__ void reorderTz_smem(cufftComplex *beng_data_in, cufftComplex *beng_data_out, int num_beng_frames){
+  // gridDim.x = 16384 * 128 / (16 * 16) = 8192
   // blockDim.x = 16; blockDim.y = 16;
   // --> launches 2097152 threads
 
-  int sid_out,fid_in;
+  int32_t sid_out,bid_in;
+
   __shared__ cufftComplex tile[16][16];
 
   // for now, let us loop the grid over B-engine frames:
-  for (int fid_out=0; fid_out<num_beng_frames-1; fid_out+=1){
+  for (int bid_out=0; bid_out<num_beng_frames-1; bid_out+=1){
 
-    // snapshot id
+    // input snapshot id
     int sid_in = (blockIdx.x * blockDim.x + threadIdx.x) %% 128;
-    // channel id 
-    int cid = threadIdx.y + ((blockDim.x*blockIdx.x)/128)*blockDim.y;
+    // input channel id 
+    int cid = threadIdx.y + blockDim.y * (blockIdx.x / (128 / blockDim.x));
 
     // shift by 2-snapshots case:
     if (((cid / 4) & (0x1)) == 0) {
@@ -146,19 +147,21 @@ __global__ void reorderTz_smem(cufftComplex *beng_data_in, cufftComplex *beng_da
     }
 
     if (sid_out < 69){
-      fid_in = fid_out;
+      bid_in = bid_out;
     } else {
-      fid_in = fid_out+1;
+      bid_in = bid_out+1;
     }
 
-    tile[threadIdx.x][threadIdx.y] = beng_data_in[128*16384*fid_in + 128*cid + sid_in];
+    tile[threadIdx.x][threadIdx.y] = beng_data_in[128*num_beng_frames*cid + 128*bid_in + sid_in];
 
     __syncthreads();
 
+    // now we tranpose warp orientation over channels and snapshot index
+
     // snapshot id
-    sid_in = (blockIdx.x * blockDim.x + threadIdx.y) %% 128;
+    sid_in = threadIdx.y + (blockIdx.x*blockDim.y) %% 128;
     // channel id 
-    cid = threadIdx.x + ((blockDim.x*blockIdx.x)/128)*blockDim.x;
+    cid = threadIdx.x + blockDim.x * (blockIdx.x / (128 / blockDim.x)); 
 
     // shift by 2-snapshots case:
     if (((cid / 4) & (0x1)) == 0) {
@@ -167,11 +170,11 @@ __global__ void reorderTz_smem(cufftComplex *beng_data_in, cufftComplex *beng_da
       sid_out = sid_in;
     }
 
-    beng_data_out[128*16385*fid_out + 16385*sid_out + cid] = tile[threadIdx.y][threadIdx.x];
+    beng_data_out[128*16385*bid_out + 16385*sid_out + cid] = tile[threadIdx.y][threadIdx.x];
 
     // zero out nyquist: 
     if (cid == 0) {
-      beng_data_out[128*16385*fid_out + 16385*sid_out + 16384] = make_cuComplex(0.,0.);
+      beng_data_out[128*16385*bid_out + 16385*sid_out + 16384] = make_cuComplex(0.,0.);
     }
 
     __syncthreads();
@@ -264,10 +267,10 @@ BENG_SNAPSHOTS = 128
 SWARM_RATE = 2496e6
 R2DBE_RATE = 4096e6
 
-# settings
 BENG_BUFFER_IN_COUNTS = 40
 SNAPSHOTS_PER_BATCH = 39
-BATCH = 1 
+
+# settings
 beng_frame_offset = 1
 filename_input = '/home/shared/sdbe_preprocessed/prep6_test1_local_swarmdbe'
 repeats = 2
@@ -401,8 +404,8 @@ gpu_beng_ordered_0.free()
 #r2dbe_t = np.empty(num_r2dbe_samples,dtype=float32)
 #cuda.memcpy_dtoh(r2dbe_t,gpu_r2dbe)
 
-# this will be final timeseries
 gpu_r2dbe_spec = cuda.mem_alloc(8 * (4096/2+1) * batch_B)
+# this will be final timeseries
 gpu_r2dbe_trimmed = cuda.mem_alloc(4*num_r2dbe_samples/4096*2048)
 #gpu_r2dbe_trimmed = cuda.mem_alloc(4*batch_C*2048)
 
@@ -424,12 +427,6 @@ for ib in range(num_r2dbe_samples/4096/batch_B):
   #cpu_r2dbe_trimmed = np.empty(2048*batch_C,dtype=float32)
   #cuda.memcpy_dtoh(cpu_r2dbe_trimmed,gpu_r2dbe_trimmed)
 
-# grab resampled and trimmed time series
-#cpu_r2dbe_trimmed = np.empty(2048*num_r2dbe_samples/4096,float32)
-#cuda.memcpy_dtoh(cpu_r2dbe_trimmed,gpu_r2dbe_trimmed)
-# (should be divided by 2048 to retain same scale)
-#cpu_r2dbe_trimmed /= 2048.
-
 toc.record()
 toc.synchronize()
 tock = get_process_cpu_time()
@@ -445,5 +442,12 @@ print 'CPU:',time_cpu.nanoseconds*1e-6,' ms'
 
 # destroy plans
 cufft.cufftDestroy(plan_A)
+
+## DEBUGGING:
+# grab resampled and trimmed time series
+#cpu_r2dbe_trimmed = np.empty(2048*num_r2dbe_samples/4096,float32)
+#cuda.memcpy_dtoh(cpu_r2dbe_trimmed,gpu_r2dbe_trimmed)
+# (should be divided by 2048 to retain same scale)
+#cpu_r2dbe_trimmed /= 2048.
 
 print 'done!'
