@@ -5,17 +5,20 @@ reader --> reorder --> resample
 import pycuda.autoinit
 import pycuda.driver as cuda
 from pycuda.compiler import SourceModule
-
 import scikits.cuda.cufft as cufft
 
-from numpy import complex64,float32,float64,int32,uint32,array,arange,empty,zeros,ceil
-from struct import unpack
-
 from numpy.fft import irfft
+import numpy as np
+from numpy import complex64,float32,float64,int32,uint32,array,arange,empty,zeros,ceil,roll
+from struct import unpack
 
 from timing import get_process_cpu_time
 
-import numpy as np
+import sys
+sdbe_scripts_dir = '/home/krosenfe/sdbe/software/prototyping'
+sys.path.append(sdbe_scripts_dir)
+import read_r2dbe_vdif,read_sdbe_vdif,cross_corr,sdbe_preprocess
+import h5py
 
 kernel_template = """
 /*
@@ -206,7 +209,6 @@ __global__ void linear(float *a, int Na, float *b, int Nb, double c, float d){
       b[tid] = d * a[(ida / 32768)*32770 + (ida %% 32768) ];
     }
   }
-
 }
 
 """
@@ -273,8 +275,9 @@ SNAPSHOTS_PER_BATCH = 39
 
 # settings
 beng_frame_offset = 1
-filename_input = '/home/shared/sdbe_preprocessed/prep6_test1_local_swarmdbe'
-DEBUG = 0
+scan_filename_base = 'prep6_test1_local'
+filename_input = '/home/shared/sdbe_preprocessed/'+scan_filename_base+'_swarmdbe'
+DEBUG = 1
 
 # derive quantities
 num_vdif_frames = BENG_BUFFER_IN_COUNTS*VDIF_PER_BENG
@@ -395,7 +398,8 @@ gpu_r2dbe = cuda.mem_alloc(4 * num_r2dbe_samples)
 gpu_r2dbe_spec = cuda.mem_alloc(8 * (4096/2+1) * batch_B)
 gpu_r2dbe_trimmed = cuda.mem_alloc(4*num_r2dbe_samples/4096*2048)
 
-for SB in (gpu_beng_0,gpu_beng_1):
+#for SB in (gpu_beng_0,gpu_beng_1):
+for SB in (gpu_beng_1,):
 
   # Resample the entire time series using linear interpolation and rescale.
   threads_per_block = 512
@@ -455,7 +459,6 @@ cuda.memcpy_dtoh(cpu_r2dbe_trimmed,gpu_r2dbe_trimmed)
 # (should be divided by 2048 to retain same scale)
 cpu_r2dbe_trimmed /= 2048.
 
-
 if DEBUG:
   import matplotlib.pyplot as plt
 
@@ -468,6 +471,39 @@ cufft.cufftDestroy(plan_C)
 gpu_r2dbe_spec.free()
 gpu_r2dbe.free()
 gpu_r2dbe_trimmed.free()
+
+if DEBUG:
+  # Now read R2DBE data covering roughly the same time window as the SWARM
+  # data. Start at an offset of zero (i.e. from the first VDIF packet) to
+  # keep things simple.
+  N_r_vdif_frames = int(np.ceil(read_sdbe_vdif.SWARM_TRANSPOSE_SIZE*(BENG_BUFFER_IN_COUNTS-1)*read_sdbe_vdif.R2DBE_RATE/read_sdbe_vdif.SWARM_RATE))
+  vdif_frames_offset = 0
+  rel_path_to_in = '/home/shared/sdbe_preprocessed/'
+  d = sdbe_preprocess.get_diagnostics_from_file(scan_filename_base,rel_path=rel_path_to_in)
+  xr = read_r2dbe_vdif.read_from_file(rel_path_to_in + scan_filename_base + '_r2dbe_eth3.vdif',N_r_vdif_frames,vdif_frames_offset)
+
+  # compare to pre-shifted data
+  hf5 = h5py.File('prep6_test1_local_sdbe_preprocess.hdf5')
+  spectra = hf5.get('Xs1').value
+  xs_shifted = sdbe_preprocess.resample_sdbe_to_r2dbe_fft_interp(spectra,interp_kind="linear")
+
+  # Do FX correlation search on the two time-domain signals BEFORE band trimming
+  s_range = arange(-16,16)
+  s_avg = 128
+  offset_swarmdbe_data = d['offset_swarmdbe_data']
+  idx_offset = d['get_idx_offset'][0]
+  fft_window_size = 32768*2
+  s_0x1_shifted, S_0x1_shifted, s_peaks_shifted = cross_corr.corr_FXt(xr,xs_shifted[offset_swarmdbe_data:],
+									fft_window_size=fft_window_size,search_range=s_range,search_avg=s_avg)
+  s_0x1, S_0x1, s_peaks = cross_corr.corr_FXt(xr,cpu_r2dbe[np.ceil(idx_offset*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE)+offset_swarmdbe_data:],
+							fft_window_size=fft_window_size,search_range=s_range,search_avg=s_avg)  
+
+  plt.stem(s_range,s_peaks_shifted,markerfmt='b^')
+  plt.stem(s_range,s_peaks)
+  plt.xlabel('FFT window offset')
+  plt.ylabel('Corr coef (peak per window)')
+
+  plt.ion()
 
 # timing at ~3.7 x real!
 print 'done!'
