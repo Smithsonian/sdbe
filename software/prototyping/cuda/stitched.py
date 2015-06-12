@@ -211,6 +211,13 @@ __global__ void linear(float *a, int Na, float *b, int Nb, double c, float d){
   }
 }
 
+__global__ void zero_out(cufftComplex *a, int32_t n)
+{
+  int32_t tid = blockIdx.x*blockDim.x + threadIdx.x;
+  if (tid < n){
+    a[tid] = make_cuComplex(0.,0.);
+  }
+}
 """
 
 
@@ -278,6 +285,8 @@ beng_frame_offset = 1
 scan_filename_base = 'prep6_test1_local'
 filename_input = '/home/shared/sdbe_preprocessed/'+scan_filename_base+'_swarmdbe'
 DEBUG = 1
+#interp_kind = 'linear'
+interp_kind = 'fft'
 
 # derive quantities
 num_vdif_frames = BENG_BUFFER_IN_COUNTS*VDIF_PER_BENG
@@ -292,6 +301,7 @@ kernel_module = SourceModule(kernel_source)
 vdif_to_beng_kernel = kernel_module.get_function('vdif_to_beng')
 reorderTz_smem_kernel = kernel_module.get_function('reorderTz_smem')
 linear_kernel = kernel_module.get_function('linear')
+zero_out_kernel = kernel_module.get_function('zero_out')
 
 # read vdif
 cpu_vdif_buf,bcount_offset = read_vdif(filename_input,num_vdif_frames,beng_frame_offset,batched=True)
@@ -321,6 +331,26 @@ batch_C = batch_B
 plan_C = cufft.cufftPlanMany(1, n.ctypes.data, inembed.ctypes.data, 1, 4096/2+1,
 					       onembed.ctypes.data, 1, 2048,
 					       cufft.CUFFT_C2R, batch_C)
+
+if interp_kind == 'fft':
+  # Turn concatenated SWARM time series into single spectrum.
+  # Note that the input is padded with two extra values from plan_A
+  n = array([39*2*BENG_CHANNELS_],int32)
+  inembed = array([39*BENG_CHANNELS_],int32)
+  onembed = array([39*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE+1],int32)
+  plan_interp_A = cufft.cufftPlanMany(1,n.ctypes.data,
+					inembed.ctypes.data,1,39*2*BENG_CHANNELS,
+					onembed.ctypes.data,1,int(39*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE+1),
+					cufft.CUFFT_R2C,1)
+  # Turn padded SWARM spectrum into time series with R2DBE sampling rate
+  n = array([39*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE],int32)
+  inembed = array([39*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE/2+1],int32)
+  onembed = array([39*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE],int32)
+  plan_interp_B = cufft.cufftPlanMany(1,n.ctypes.data,
+					inembed.ctypes.data,1,int(39*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE+1),
+					onembed.ctypes.data,1,int(39*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE),
+					cufft.CUFFT_C2R,1)
+  
 # event timers
 tic = cuda.Event()
 toc = cuda.Event()
@@ -384,7 +414,7 @@ if DEBUG:
 # Turn SWARM snapshots into timeseries
 #print 'Turn SWARM snapshots into timeseries'
 cufft.cufftExecC2R(plan_A,int(gpu_beng_1),int(gpu_beng_1))
-# gpu_beng_ordered are now padded by two floats every 2*BENG_CHANNELS_ samples: [num_snapshots, 2*16384 + 2]
+# gpu_beng_[0-1] are now padded by two floats every 2*BENG_CHANNELS_ samples: [num_snapshots, 2*16384 + 2]
 
 if DEBUG:
   print 'DEBUG::loading cpu_beng_timeseries_1'
@@ -401,18 +431,37 @@ gpu_r2dbe_trimmed = cuda.mem_alloc(4*num_r2dbe_samples/4096*2048)
 #for SB in (gpu_beng_0,gpu_beng_1):
 for SB in (gpu_beng_1,):
 
-  # Resample the entire time series using linear interpolation and rescale.
-  threads_per_block = 512
-  blocks_per_grid = int(ceil(1. * num_r2dbe_samples / threads_per_block))
-  linear_kernel(	gpu_beng_1,
+  if interp_kind == 'linear':
+    # Resample the entire time series using linear interpolation and rescale.
+    threads_per_block = 512
+    blocks_per_grid = int(ceil(1. * num_r2dbe_samples / threads_per_block))
+    linear_kernel(	gpu_beng_1,
 		int32(num_swarm_samples),
 	      	gpu_r2dbe,
 		int32(num_r2dbe_samples),
 		float64(SWARM_RATE/R2DBE_RATE),
 		float32(1./(2*BENG_CHANNELS_)),
 		block=(threads_per_block,1,1),grid=(blocks_per_grid,1))
-  #gpu_beng_0.free() # can't do this yet!
-  SB.free()
+    #gpu_beng_0.free() # can't do this yet!
+    SB.free()
+  elif interp_kind == 'fft':
+    # look over batch=39 snapshots
+    gpu_tmp = cuda.mem_alloc(8*int(39*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE+1))
+    # zero out gpu_tmp
+    zero_out_kernel(gpu_tmp,int32(39*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE+1),
+			block=(1024,1,1),grid=(int(ceil((39*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE+1)/1024.)),1))
+    for ib in range((BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS/39):
+      # Turn concatenated SWARM time series into single spectrum (already zero padded)
+      cufft.cufftExecR2C(plan_interp_A,int(SB)+int(4*39*2*BENG_CHANNELS*ib),int(gpu_tmp))
+      # Turn padded SWARM spectrum into time series with R2DBE sampling rate
+      cufft.cufftExecC2R(plan_interp_B,
+			int(gpu_tmp),
+			int(gpu_r2dbe)+int(4*39*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE*ib))
+
+      # note that we need to normalize: 39*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE*(2*BENG_CHANNELS_)
+
+    gpu_tmp.free()
+    SB.free()
 
   if DEBUG:
     print 'DEBUG::loading resampled time series cpu_r2dbe'
@@ -485,6 +534,7 @@ if DEBUG:
   # compare to pre-shifted data
   hf5 = h5py.File('prep6_test1_local_sdbe_preprocess.hdf5')
   spectra = hf5.get('Xs1').value
+  #spectra = np.roll(cpu_beng_spectra_1,-d['get_idx_offset'][0],axis=0)
   xs_shifted = sdbe_preprocess.resample_sdbe_to_r2dbe_fft_interp(spectra,interp_kind="linear")
 
   # Do FX correlation search on the two time-domain signals BEFORE band trimming
@@ -500,6 +550,25 @@ if DEBUG:
 
   plt.stem(s_range,s_peaks_shifted,markerfmt='b^')
   plt.stem(s_range,s_peaks)
+  plt.xlabel('FFT window offset')
+  plt.ylabel('Corr coef (peak per window)')
+
+
+  # now we check the band limited series
+  xr_bl = sdbe_preprocess.bandlimit_1248_to_1024(xr,sub_sample=True)
+  xs_bl = sdbe_preprocess.bandlimit_1248_to_1024(xs_shifted[:xs_shifted.size/4096 * 4096],sub_sample=True)
+  #s_bl_shifted_0x1, S_bl_shifted_0x1, s_bl_shifted_peaks = cross_corr.corr_FXt(xr_bl,xs_bl[np.ceil(idx_offset*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE)+offset_swarmdbe_data/2:],
+  s_bl_shifted_0x1, S_bl_shifted_0x1, s_bl_shifted_peaks = cross_corr.corr_FXt(xr_bl,xs_bl[offset_swarmdbe_data/2:],
+							fft_window_size=fft_window_size,search_range=s_range,search_avg=s_avg)  
+  s_bl_0x1, S_bl_0x1, s_bl_peaks = cross_corr.corr_FXt(xr_bl,cpu_r2dbe_trimmed[np.ceil(idx_offset*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE)+offset_swarmdbe_data/2:],
+  							fft_window_size=fft_window_size,search_range=s_range,search_avg=s_avg)  
+
+  # 0.06, problem is shifting....
+  # 0.32661165,0.06
+
+  plt.figure()
+  plt.stem(s_range,s_bl_shifted_peaks,markerfmt='^')
+  plt.stem(s_range,s_bl_peaks)
   plt.xlabel('FFT window offset')
   plt.ylabel('Corr coef (peak per window)')
 
