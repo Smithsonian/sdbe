@@ -9,25 +9,21 @@ import sys
 sdbe_scripts_dir = '/home/krosenfe/sdbe/software/prototyping'
 sys.path.append(sdbe_scripts_dir)
 
-import pycuda.autoinit
+#import pycuda.autoinit
 import pycuda.driver as cuda
 from pycuda.compiler import SourceModule
 import scikits.cuda.cufft as cufft
+from kernel_template import kernel_template
 
 from threading import Thread
 from Queue import Queue
 from numpy.fft import rfft, irfft
 from numpy import complex64,float32,float64,int32,uint32,array,arange,empty,zeros,ceil,roll
-import vdif
 from argparse import ArgumentParser
-from sdbe_preprocess import get_diagnostics_from_file, process_chunk, run_diagnostics, \
-                            quantize_to_2bit, vdif_psn_to_eud, vdif_station_id_str_to_int
 from struct import unpack
 import logging
 from timeit import default_timer as timer
 from collections import defaultdict
-from kernel_template import kernel_template
-
 
 VDIF_BYTE_SIZE = 1056
 VDIF_BYTE_SIZE_DATA = 1024
@@ -49,6 +45,9 @@ class sdbe_cupreprocess(object):
   def __init__(self,gpuid,bandlimit_1248_to_1024=True):
     #self.ctx = cuda.Device(gpuid).make_context()
     #self.device = self.ctx.get_device()
+
+    self.device = cuda.Device(gpuid)
+    self.ctx = self.device.make_context()
 
     # basic info   
     self.gpuid = gpuid
@@ -95,6 +94,7 @@ class sdbe_cupreprocess(object):
     self.__gpu_beng_data_1 = None
     self.__gpu_beng_0 = None
     self.__gpu_beng_1 = None
+
 
   def memcpy_sdbe_vdif(self,cpu_vdif_buf,bcount_offset):
     ''' Move sdbe vdif buffer buffer to device.'''
@@ -157,8 +157,10 @@ class sdbe_cupreprocess(object):
     threads_per_block = 512
     blocks_per_grid = int(ceil(1. * self.num_r2dbe_samples / threads_per_block))
     self.__gpu_r2dbe = cuda.mem_alloc(4 * self.num_r2dbe_samples) # 25% of device memory
+    #self.gpumeminfo(cuda)
     if self.__bandlimit_1248_to_1024:
       gpu_r2dbe_spec = cuda.mem_alloc(8 * (4096/2+1) * self.__bandlimit_batch) # memory peanuts
+      #gpu_r2dbe_bl = cuda.mem_alloc(4*self.num_r2dbe_samples/4096*2048)
     for SB in (self.__gpu_beng_0, self.__gpu_beng_1):
       # Turn SWARM snapshots into timeseries
       cufft.cufftExecC2R(self.__plan_A,int(SB),int(SB))
@@ -187,11 +189,19 @@ class sdbe_cupreprocess(object):
   def gpumeminfo(self,driver):
     logger.info('Memory usage: %f' % (1.- 1.*driver.mem_get_info()[0]/driver.mem_get_info()[1]))
 
-  def __exit__(self):
+  #def __enter__(self,gpuid,bandlimit_1248_to_1024=True):
+  #  return self
+
+  def cleanup(self):
+
     # destroy plans
     cufft.cufftDestroy(self.__plan_A)
     cufft.cufftDestroy(self.__plan_B)
     cufft.cufftDestroy(self.__plan_C)
+
+    # delete context
+    self.ctx.pop()
+    del self.ctx
 
 #################################################################
 
@@ -231,7 +241,7 @@ def read_sdbe_vdif(filename_input,num_vdif_frames,beng_frame_offset=1,batched=Tr
 
 if __name__ == "__main__":
 
-  #driver.init()
+  cuda.init()
 
   parser = ArgumentParser(description="Convert SWARM vdif data into 4096 Msps time-domain vdif data")
   parser.add_argument('-v', dest='verbose', action='store_true', help='display debug information')
@@ -245,6 +255,7 @@ if __name__ == "__main__":
   logger = logging.getLogger(__name__)
   logger.addHandler(logging.StreamHandler())
   logger.setLevel(logging.DEBUG if args.verbose else logging.INFO)
+
 
   # timers
   clock = defaultdict(float)
@@ -260,53 +271,60 @@ if __name__ == "__main__":
   rel_path_dat = args.dir
   scan_filename_base = args.basename
 
-  # initalize GPUs (up to 4, not implemented yet.)
-  gpus = []  
-  #for g in range(args.num_gpu):
-  for g in range(1):
-    gpus.append(sdbe_cupreprocess(g,bandlimit_1248_to_1024=True))
-    #gpus.append(sdbe_cupreprocess(g,bandlimit_1248_to_1024=False))
+  if True: 
 
-  # load vdif onto device
-  for g in gpus:
-    tic('python read')
-    cpu_vdif_buf,bcount_offset = read_sdbe_vdif(rel_path_dat+scan_filename_base,BENG_BUFFER_IN_COUNTS*VDIF_PER_BENG,
+    # initalize GPUs (up to 4, not implemented yet.)
+    gpus = []  
+    #for g in range(args.num_gpu):
+    for g in range(1):
+      gpus.append(sdbe_cupreprocess(g,bandlimit_1248_to_1024=True))
+      #gpus.append(sdbe_cupreprocess(g,bandlimit_1248_to_1024=False))
+  
+    # load vdif onto device
+    for g in gpus:
+      tic('python read')
+      cpu_vdif_buf,bcount_offset = read_sdbe_vdif(rel_path_dat+scan_filename_base,BENG_BUFFER_IN_COUNTS*VDIF_PER_BENG,
 						beng_frame_offset=g.gpuid*BENG_BUFFER_IN_COUNTS+1)
-    toc('python read')
-    tic('htod      ')
-    g.memcpy_sdbe_vdif(cpu_vdif_buf,bcount_offset)
-    toc('htod      ')
+      toc('python read')
+      tic('htod      ')
+      g.memcpy_sdbe_vdif(cpu_vdif_buf,bcount_offset)
+      toc('htod      ')
+  
+    tic('gpu total')
+  
+    # depacketize vdif
+    tic('depacketize')
+    for g in gpus:
+      g.depacketize_sdbe_vdif()
+    toc('depacketize')
+  
+    # reorder B-engine data
+    tic('reorder  ')
+    for g in gpus:
+      g.reorder_beng_data()
+    toc('reorder  ')
+  
+    # linear resampling
+    tic('resample')
+    for g in gpus:
+      g.fft_linear_interp()
+    toc('resample')
+  
+    # To do: quantize and pack vdif
+  
+    toc('gpu total')
+  
+    # To do: pull data from device
 
-  tic('gpu total')
-
-  # depacketize vdif
-  tic('depacketize')
+  # clean up
   for g in gpus:
-    g.depacketize_sdbe_vdif()
-  toc('depacketize')
-
-  # reorder B-engine data
-  tic('reorder  ')
-  for g in gpus:
-    g.reorder_beng_data()
-  toc('reorder  ')
-
-  # linear resampling
-  tic('resample')
-  for g in gpus:
-    g.fft_linear_interp()
-  toc('resample')
-
-  # To do: quantize and pack vdif
-
-  toc('gpu total')
-
-  # To do: pull data from device
-
+    g.cleanup()
+  
   # report timing info
   real_time = (BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS*2*BENG_CHANNELS_/SWARM_RATE
+  print "%s\t%s\t%s\t%s" % ('operation', 'counts', 'total [ms]', 'x(real = %.3f)' % (real_time*1e3))
+  print "-----------------------------------------------------------"
   for k in total.keys():
-      print "%s\t%d\t%.3f\t%.3f" % (k, counts[k], total[k], total[k]/real_time)
+      print "%s\t%d\t%.2f\t\t%.3f" % (k, counts[k], 1e3*total[k], total[k]/real_time  )
 
   logger.debug('done!')
-    
