@@ -47,17 +47,15 @@ __global__ void nearest(float *a, float *b, int Nb, double c, float d){
   }
 }
 
-__global__ void linear(float *a, float *b, int Nb, double c, float d){
+__global__ void linear(const float *a, float *b, const int Nb, const double c, const float d){
  /*
-  This kernel uses a round-half-to-even tie-breaking rule which is
-  opposite that of python's interp_1d.
   a: input_array
   b: output_array
   Nb: size of array b
   c: conversion factor between a and b indices. 
   Note: type conversions are slowing this down.
   */
-  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  int32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid < Nb) {
     int ida = __double2int_rd(tid*c); // round down
     b[tid] = d * ( a[ida]*(1.-(c*tid-ida)) + a[ida+1]*(c*tid-ida) );
@@ -174,10 +172,10 @@ def fft_interp(gpu_1,gpu_2,num_snapshots,interp_kind='nearest',cpu_check=True):
   interp_1d = kernel_module.get_function(interp_kind)
 
   # execute plan
-  tic.record()
   cufft.cufftExecC2R(plan,int(gpu_1),int(gpu_2))
 
   # interpolate
+  tic.record()
   xs_size = int(floor(batch_size*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE)) - 1
   TPB = 512                               # threads per block
   nB = int(ceil(1. * xs_size / TPB))      # number of blocks
@@ -235,7 +233,7 @@ cpu_in = standard_normal(data_shape) + 1j * standard_normal(data_shape)
 cpu_in = cpu_in.astype(complex64)
 
 # batched fft resample: 
-if True:
+if False:
   # move data to device
   snapshots_per_batch = 39
   batch_size = num_snapshots / snapshots_per_batch
