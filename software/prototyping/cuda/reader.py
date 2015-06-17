@@ -108,7 +108,8 @@ __global__ void vdif_to_beng(
     idx_beng_data_out += blockDim.x;
   }
 # 1253 "reader.cu"
-  old = atomicAdd(beng_frame_completion + ((bcount-bcount_offset)&(4 -1)), 1);
+  //old = atomicAdd(beng_frame_completion + ((bcount-bcount_offset)&(4 -1)), 1);
+  old = atomicAdd(beng_frame_completion + ((bcount-bcount_offset) %% %(BENG_BUFFER_IN_COUNTS)d), 1);
 # 1277 "reader.cu"
   if (__any(old == ((16384/8)*blockDim.x)-1))
   {
@@ -126,9 +127,8 @@ VDIF_PER_BENG = 2048
 BENG_CHANNELS_ = 16384
 BENG_CHANNELS = (BENG_CHANNELS_ + 1)
 BENG_SNAPSHOTS = 128
-BENG_BUFFER_IN_COUNTS = 4
-#BENG_BUFFER_IN_COUNTS = 64
-#BENG_BUFFER_IN_COUNTS = 40
+#BENG_BUFFER_IN_COUNTS = 4
+BENG_BUFFER_IN_COUNTS = 40
 
 def meminfo(kernel):
   print "Registers: %d" % kernel.num_regs
@@ -143,6 +143,7 @@ def get_bcount_from_vdif(vdif_start):
 
 def read_vdif(filename_input,num_vdif_frames,beng_frame_offset=1,batched=True):
   vdif_buf = empty(VDIF_BYTE_SIZE*num_vdif_frames/4, dtype=uint32)
+  print beng_frame_offset
   for ii in arange(4):
     filename_data = "%s_eth%d.vdif" % (filename_input, 2+ii)
     print '\n',filename_data
@@ -195,13 +196,13 @@ toc = cuda.Event()
 filename_input = '/home/shared/sdbe_preprocessed/prep6_test1_local_swarmdbe'
 beng_frame_offset = 1
 num_vdif_frames = BENG_BUFFER_IN_COUNTS*VDIF_PER_BENG #
-repeats = 2
+repeats = 1
 # ./reader.out -I /home/shared/sdbe_preprocessed/prep6_test1_local_swarmdbe -B 1 -v -c 8192 -d c8192_B1.bin 
 #filename_data = 'c8192_B1.bin'
-# ./reader.out -I /home/shared/sdbe_preprocessed/prep6_test1_local_swarmdbe -B 1 -v -c 16384 -d c16384_B1.bin 
-#filename_data = 'c16384_B1.bin'
+# ./reader.out -I /home/shared/sdbe_preprocessed/prep6_test1_local_swarmdbe -B 1 -v -c 81920 -d c81920_B1.bin 
+# ./reader.out -I /home/shared/sdbe_preprocessed/prep6_test1_local_swarmdbe -B 2 -v -c 81920 -d c81920_B2.bin 
 filename_data = ''
-filename_data = 'c%d_B1.bin' % (num_vdif_frames,)
+#filename_data = 'c%d_B%d.bin' % (num_vdif_frames,beng_frame_offset)
 
 # read in vdif
 vdif_buf,bcount_offset = read_vdif(filename_input,num_vdif_frames,beng_frame_offset,batched=True)
@@ -248,8 +249,8 @@ beng_data_1 = empty(beng_data_bytes/8,dtype=complex64)
 cuda.memcpy_dtoh(beng_data_0,gpu_beng_data_0)
 cuda.memcpy_dtoh(beng_data_1,gpu_beng_data_1)
 cuda.memcpy_dtoh(beng_frame_completion,gpu_beng_frame_completion)
-beng_data_0.resize((BENG_BUFFER_IN_COUNTS,BENG_CHANNELS_,BENG_SNAPSHOTS))
-beng_data_1.resize((BENG_BUFFER_IN_COUNTS,BENG_CHANNELS_,BENG_SNAPSHOTS))
+beng_data_0.resize((BENG_CHANNELS_,BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS))
+beng_data_1.resize((BENG_CHANNELS_,BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS))
 
 print '\nvdif_to_beng test results:'
 if filename_data != '':
@@ -260,11 +261,7 @@ else:
   print np.unique(beng_data_0).size == 16
   print np.unique(beng_data_1).size == 16
 
-# free memory
-gpu_vdif_buf.free()
-gpu_fid.free()
-gpu_cid.free()
-gpu_bcount.free()
-gpu_beng_data_0.free()
-gpu_beng_data_1.free()
-gpu_beng_frame_completion.free()
+# plot averaged spectra:
+#import matplotlib.pyplot as plt
+#plt.plot(np.abs(np.mean(beng_data_0,axis=1)))
+#plt.plot(np.abs(np.mean(beng_data_1,axis=1)))
