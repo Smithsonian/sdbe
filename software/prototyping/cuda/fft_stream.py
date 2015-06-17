@@ -12,8 +12,10 @@ import numpy as np
 from numpy import complex64,float32,float64,int32,uint32,array,arange,empty,zeros,ceil,roll
 from struct import unpack
 
-from timing import get_process_cpu_time
+from timeit import default_timer as timer
+from argparse import ArgumentParser
 import logging
+from collections import defaultdict
 
 import sys
 sdbe_scripts_dir = '/home/krosenfe/sdbe/software/prototyping'
@@ -186,17 +188,7 @@ __global__ void reorderTz_smem(cufftComplex *beng_data_in, cufftComplex *beng_da
   }
 }
 
-
-__global__ void strided_copy(float *a, int istart, float *b, int N, int istride, int iskip)
-{
-  int32_t tid = blockIdx.x*blockDim.x + threadIdx.x;
-  if (tid < N){
-    b[tid] = a[istart + (tid/istride)*(istride+iskip) + (tid %% istride) ];
-  }
-}
-
 """
-
 
 def get_bcount_from_vdif(vdif_start):
   '''
@@ -239,58 +231,6 @@ def meminfo(kernel):
 def gpumeminfo(driver):
   print 'Memory usage:', 1.- 1.*driver.mem_get_info()[0]/driver.mem_get_info()[1]
 
-def corr_FXt(x0,x1,fft_window_size=32768,search_range=None,search_avg=1):
-	"""
-	Do FX cross-correlation by subdividing time-series into FFT windows.
-	
-	Optionally perform a search over multiple FFT window offsets.
-
-	Arguments:
-	----------
-	x0,x1 -- Time-domain signals.
-	fft_window_size -- The number of samples to take in an FFT window.
-	search_range -- Range of FFT window offsets to search for cross-
-	correlation, or None to not do search (default is None).
-	search_avg -- Number of windows over which to average when doing a
-	search. If search is not performed this parameter has no impact
-	(default is 1).
-	
-	Returns:
-	--------
-	s_0x1 -- Time-domain cross-correlation of two signals. If search is
-	done this is two-dimensional, with relative window offset along the
-	zeroth dimension.
-	S_0x1 -- Cross-power spectrum of two signals. If search is done
-	this is two-dimensional, with relative window offset along the 
-	zeroth dimension.
-	s_peaks -- If search is done, this returns the peak in the cross-
-	correlation as a function of relative window offset.
-	
-	Notes:
-	------
-	The search is done from the center window in x0, and over the search
-	range, relative to that window, in x1.
-	Code written by cross_corr.py by Andre Young.
-
-	Changes:
-	------
-	Uses rfft and assumes real Time-domain signal
-	Removes phase
-	"""
-	
-	N_samples = min((2**int(floor(log2(x0.size))),2**int(floor(log2(x1.size)))))
-	X0 = rfft(x0[:N_samples].reshape((N_samples/fft_window_size,fft_window_size)),axis=1)
-	X1 = rfft(x1[:N_samples].reshape((N_samples/fft_window_size,fft_window_size)),axis=1)
-	
-	if (search_range == None):
-		s_peaks = None
-		s_0x1,S_0x1 = corr_Xt(X0,X1,fft_window_size=fft_window_size)
-	else:
-		# do search
-		s_0x1,S_0x1,s_peaks = corr_Xt_search(X0,X1,fft_window_size=fft_window_size,search_range=search_range,search_avg=search_avg)
-	
-	return s_0x1,S_0x1,s_peaks
-
 ##########################################################################
 ##########################################################################
 
@@ -309,12 +249,31 @@ R2DBE_RATE = 4096e6
 BENG_BUFFER_IN_COUNTS = 40
 SNAPSHOTS_PER_BATCH = 39
 
+# logger
+parser = ArgumentParser(description="Convert SWARM vdif data into 4096 Msps time-domain data")
+parser.add_argument('-v', dest='verbose', action='store_true', help='display debug information')
+parser.add_argument('-c', dest='correlate', action='store_true',help='correlate against R2DBE')
+parser.add_argument('-b', dest='basename', help='scan filename base for SWARM data', default='prep6_test1_local')
+parser.add_argument('-d', dest='dir', help='directory for input SWARM data products', default='/home/shared/sdbe_preprocessed/')
+args = parser.parse_args()
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.StreamHandler())
+logger.setLevel(logging.DEBUG if args.verbose else logging.INFO)
+
+# timers
+clock = defaultdict(float)
+counts = defaultdict(int)
+total = defaultdict(float)
+def tick(name):
+  clock[name] = timer()
+def tock(name):
+  counts[name] = counts[name] + 1
+  total[name] = total[name] + timer() - clock[name]
+
 # settings
 beng_frame_offset = 1
-scan_filename_base = 'prep6_test1_local'
-filename_input = '/home/shared/sdbe_preprocessed/'+scan_filename_base+'_swarmdbe'
-DEBUG = False
-in_place = False
+scan_filename_base = args.basename
+filename_input = args.dir+scan_filename_base+'_swarmdbe'
 
 # derive quantities
 num_vdif_frames = BENG_BUFFER_IN_COUNTS*VDIF_PER_BENG
@@ -328,28 +287,19 @@ kernel_module = SourceModule(kernel_source)
 # fetch kernel handles
 vdif_to_beng_kernel = kernel_module.get_function('vdif_to_beng')
 reorderTz_smem_kernel = kernel_module.get_function('reorderTz_smem')
-strided_copy_kernel = kernel_module.get_function('strided_copy')
 
 # read vdif
 cpu_vdif_buf,bcount_offset = read_vdif(filename_input,num_vdif_frames,beng_frame_offset,batched=True)
 
-# inverse in-place FFT plan
-if in_place:
-  n = array([2*BENG_CHANNELS_],int32)
-  inembed = array([BENG_CHANNELS],int32)
-  onembed = array([2*BENG_CHANNELS],int32)
-  plan_A = cufft.cufftPlanMany(1, n.ctypes.data, inembed.ctypes.data, 1, BENG_CHANNELS,
-	                                       onembed.ctypes.data, 1, 2*BENG_CHANNELS,
-  					       cufft.CUFFT_C2R, (BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS)
-else:
-  # inverse FFT plan
-  n = array([2*BENG_CHANNELS_],int32)
-  inembed = array([BENG_CHANNELS],int32)
-  onembed = array([2*BENG_CHANNELS_],int32)
-  plan_A = cufft.cufftPlanMany(1, n.ctypes.data, inembed.ctypes.data, 1, BENG_CHANNELS,
-	                                       onembed.ctypes.data, 1, 2*BENG_CHANNELS_,
-	  				       cufft.CUFFT_C2R, (BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS)
+# inverse FFT plan
+n = array([2*BENG_CHANNELS_],int32)
+inembed = array([BENG_CHANNELS],int32)
+onembed = array([2*BENG_CHANNELS_],int32)
+plan_A = cufft.cufftPlanMany(1, n.ctypes.data, inembed.ctypes.data, 1, BENG_CHANNELS,
+                                      onembed.ctypes.data, 1, 2*BENG_CHANNELS_,
+ 				       cufft.CUFFT_C2R, (BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS)
 
+batch_trim = 32
 # Turn concatenated SWARM time series into single spectrum
 n = array([39*2*BENG_CHANNELS_],int32)
 inembed = array([39*2*BENG_CHANNELS_],int32)
@@ -357,8 +307,7 @@ onembed = array([39*BENG_CHANNELS_+1],int32)
 plan_interp_A = cufft.cufftPlanMany(1,n.ctypes.data,
 					inembed.ctypes.data,1,39*2*BENG_CHANNELS_,
 					onembed.ctypes.data,1,39*BENG_CHANNELS_+1,
-					cufft.CUFFT_R2C,1)
-
+					cufft.CUFFT_R2C,batch_trim)
 
 # Turn trimmed spectrum into 2048 timeseries
 n = array([32*2*BENG_CHANNELS_],int32)
@@ -367,8 +316,8 @@ onembed = array([32*2*BENG_CHANNELS_],int32)
 plan_interp_B = cufft.cufftPlanMany(1,n.ctypes.data,
 					inembed.ctypes.data,1,39*BENG_CHANNELS_+1,
 					onembed.ctypes.data,1,32*2*BENG_CHANNELS_,
-					cufft.CUFFT_C2R,1)
-  
+					cufft.CUFFT_C2R,batch_trim)
+
 # event timers
 tic = cuda.Event()
 toc = cuda.Event()
@@ -390,11 +339,12 @@ tic.record()
 cuda.memcpy_htod(gpu_vdif_buf,cpu_vdif_buf)
 toc.record()
 toc.synchronize()
-print 'htod transfer rate: %g GB/s' % (cpu_vdif_buf.nbytes/(tic.time_till(toc)*1e-3),)
+logger.info('htod transfer rate: %g GB/s' % (cpu_vdif_buf.nbytes/(tic.time_till(toc)*1e-3)))
 
 # depacketize and dequantize BENG_BUFFER_IN_COUNTS
 # gpu_beng_data_0 is USB
 tic.record()
+tick('depacketize')
 blocks_per_grid = 128
 vdif_to_beng_kernel(	gpu_vdif_buf,
 			gpu_fid, 
@@ -406,137 +356,106 @@ vdif_to_beng_kernel(	gpu_vdif_buf,
 			int32(BENG_BUFFER_IN_COUNTS*VDIF_PER_BENG),
 			int32(bcount_offset),
   			block=(32,32,1), grid=(blocks_per_grid,1,1))
-if DEBUG:
-  print 'DEBUG::loading cpu_beng_data_1'
-  gpumeminfo(cuda)
-  cpu_beng_data_1 = empty((BENG_CHANNELS_,BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS),dtype=complex64)
-  cuda.memcpy_dtoh(cpu_beng_data_1,gpu_beng_data_1)
+tock('depacketize')
 
 # reorder and zero pad SWARM snapshots
+tick('reorder   ')
 gpu_beng_0 = cuda.mem_alloc(8*BENG_CHANNELS*BENG_SNAPSHOTS*(BENG_BUFFER_IN_COUNTS-1))
 gpu_beng_1 = cuda.mem_alloc(8*BENG_CHANNELS*BENG_SNAPSHOTS*(BENG_BUFFER_IN_COUNTS-1))
 reorderTz_smem_kernel(gpu_beng_data_1,gpu_beng_1,np.int32(BENG_BUFFER_IN_COUNTS),
 	block=(16,16,1),grid=(BENG_CHANNELS_*BENG_SNAPSHOTS/(16*16),1,1),)
+reorderTz_smem_kernel(gpu_beng_data_0,gpu_beng_0,np.int32(BENG_BUFFER_IN_COUNTS),
+	block=(16,16,1),grid=(BENG_CHANNELS_*BENG_SNAPSHOTS/(16*16),1,1),)
 # free unpacked, unordered b-frames
 gpu_beng_data_0.free()
 gpu_beng_data_1.free()
-
-if DEBUG:
-  print 'DEBUG::loading cpu_beng_spectra_1'
-  gpumeminfo(cuda)
-  cpu_beng_spectra_1 = empty(((BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS,BENG_CHANNELS),dtype=complex64)
-  cuda.memcpy_dtoh(cpu_beng_spectra_1,gpu_beng_1)
+tock('reorder   ')
 
 # allocate memory for time series
+tick('resample')
 gpu_r2dbe = cuda.mem_alloc(4 * num_r2dbe_samples / 2)
-if not in_place: 
-  gpu_swarm = cuda.mem_alloc(4 * num_swarm_samples)
+gpu_swarm = cuda.mem_alloc(4 * num_swarm_samples)
+gpu_tmp = cuda.mem_alloc(8*int(39*BENG_CHANNELS_+1)*batch_trim)
 
 for SB in (gpu_beng_0,gpu_beng_1):
-#for SB in (gpu_beng_1,):
-  # Turn SWARM snapshots into timeseries
-  if in_place:
-    cufft.cufftExecC2R(plan_A,int(SB),int(SB))
-  else:  
-    cufft.cufftExecC2R(plan_A,int(SB),int(gpu_swarm))
-    SB.free()
-  if DEBUG:
-    print 'DEBUG::loading cpu_beng_timeseries_1'
-    gpumeminfo(cuda)
-    if in_place:
-      cpu_beng_timeseries_1 = empty(((BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS,2*BENG_CHANNELS),dtype=float32)
-      cuda.memcpy_dtoh(cpu_beng_timeseries_1,SB)
-      cpu_beng_timeseries_1 = cpu_beng_timeseries_1[:,:2*BENG_CHANNELS_]
-    else:
-      cpu_beng_timeseries_1 = empty(((BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS,2*BENG_CHANNELS_),dtype=float32)
-      cuda.memcpy_dtoh(cpu_beng_timeseries_1,gpu_swarm)
+  tick('plan_A   ')
+  cufft.cufftExecC2R(plan_A,int(SB),int(gpu_swarm))
+  SB.free()
+  tock('plan_A   ')
 
   # look over chunks of 39 SWARM snapshots
-  gpu_tmp = cuda.mem_alloc(8*int(39*BENG_CHANNELS_+1))
-  if in_place:
-    gpu_bar = cuda.mem_alloc(4*int(39*2*BENG_CHANNELS_))
-  for ib in range((BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS/39):
-
-    if in_place:
-      # copy 39 snapshots into a signal time series chunk, removing padding
-      strided_copy_kernel(SB,int32(39*2*BENG_CHANNELS*ib),gpu_bar,
-			int32(39*2*BENG_CHANNELS_),int32(2*BENG_CHANNELS_),int32(2),
-			block=(512,1,1),grid=(39*2*BENG_CHANNELS_/512,1))
-      # Turn concatenated SWARM time series into single spectrum
-      cufft.cufftExecR2C(plan_interp_A,int(gpu_bar),int(gpu_tmp))
-
-    else:
-      # Turn concatenated SWARM time series into single spectrum
-      cufft.cufftExecR2C(plan_interp_A,int(gpu_swarm)+int(4*39*2*BENG_CHANNELS_*ib),int(gpu_tmp))
+  for ib in range((BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS/39/batch_trim):
+    # Turn concatenated SWARM time series into single spectrum
+    tick('plan_interp_A')
+    cufft.cufftExecR2C(plan_interp_A,int(gpu_swarm)+int(4*39*2*BENG_CHANNELS_*batch_trim*ib),int(gpu_tmp))
+    tock('plan_interp_A')
 
     # Turn padded SWARM spectrum into time series with R2DBE sampling rate
+    tick('plan_interp_B')
     cufft.cufftExecC2R(plan_interp_B,
-		int(gpu_tmp)+int(8*150*512),int(gpu_r2dbe)+int(4*32*2*BENG_CHANNELS_*ib))
-			#int(gpu_tmp)+int(8*(1024-150)*512),int(gpu_r2dbe)+int(4*32*2*BENG_CHANNELS_*ib))
+			int(gpu_tmp)+int(8*150*512),int(gpu_r2dbe)+int(4*32*2*BENG_CHANNELS_*ib*batch_trim))
+    tock('plan_interp_B')
 
-      # note that we need to normalize: 39*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE*(2*BENG_CHANNELS_)
+tock('resample')
 
-  if in_place:
-    gpu_bar.free()
-    SB.free()
-  gpu_tmp.free()
-
-if not in_place:
-  gpu_swarm.free()
-
+gpu_tmp.free()
+gpu_swarm.free()
 toc.record()
 toc.synchronize()
-
 time_gpu = tic.time_till(toc)
 
-print 'DEBUG::loading resampled time series cpu_r2dbe'
-gpumeminfo(cuda)
 cpu_r2dbe = np.empty(num_r2dbe_samples/2,dtype=float32)
 cuda.memcpy_dtoh(cpu_r2dbe,gpu_r2dbe)
-
-print ''
-print 'time resampled:', 13.128e-3 * BENG_SNAPSHOTS * (BENG_BUFFER_IN_COUNTS - 1), ' ms'
-print 'Transfer size was %d bytes' % cpu_vdif_buf.nbytes
-print 'GPU time:',time_gpu,' ms'
+gpu_r2dbe.free()
 
 # destroy plans
 cufft.cufftDestroy(plan_A)
 cufft.cufftDestroy(plan_interp_A)
 cufft.cufftDestroy(plan_interp_B)
 
-# free memory
-#gpu_r2dbe.free()
+logger.info('INFO:: Time resampled: %.2f ms' % (13.128e-3 * BENG_SNAPSHOTS * (BENG_BUFFER_IN_COUNTS - 1)))
+logger.info('INFO:: GPU time: %.2f ms' % time_gpu)
 
-if DEBUG:
+# report timing info
+real_time = (BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS*2*BENG_CHANNELS_/SWARM_RATE
+logger.info( "\n%s\t%s\t%s\t%s" % ('operation', 'counts', 'total [ms]', 'x(real = %.3f)' % (real_time*1e3)))
+logger.info("-----------------------------------------------------------")
+for k in total.keys():
+  logger.info("%s\t%d\t%.2f\t\t%.3f" % (k, counts[k], 1e3*total[k], real_time/total[k]  ))
+
+#####################################################################################
+
+if args.correlate:
   import matplotlib.pyplot as plt
+  logger.info("INFO:: Correlating result again R2DBE")
+
   # Now read R2DBE data covering roughly the same time window as the SWARM
   # data. Start at an offset of zero (i.e. from the first VDIF packet) to
   # keep things simple.
   N_r_vdif_frames = int(np.ceil(read_sdbe_vdif.SWARM_TRANSPOSE_SIZE*(BENG_BUFFER_IN_COUNTS-1)*read_sdbe_vdif.R2DBE_RATE/read_sdbe_vdif.SWARM_RATE))
   vdif_frames_offset = 0
-  rel_path_to_in = '/home/shared/sdbe_preprocessed/'
+  rel_path_to_in = args.dir
   d = sdbe_preprocess.get_diagnostics_from_file(scan_filename_base,rel_path=rel_path_to_in)
   xr = read_r2dbe_vdif.read_from_file(rel_path_to_in + scan_filename_base + '_r2dbe_eth3.vdif',N_r_vdif_frames,vdif_frames_offset)
 
-  s_range = arange(-16,16)
-  s_avg = 128
-  offset_swarmdbe_data = d['offset_swarmdbe_data']
-  idx_offset = d['get_idx_offset'][0]
-  fft_window_size = 32768
 
   # compare to pre-shifted data
-  hf5 = h5py.File('prep6_test1_local_sdbe_preprocess.hdf5')
+  hf5 = h5py.File(rel_path_to_in + scan_filename_base + '_sdbe_preprocess.hdf5')
   spectra = hf5.get('Xs1').value
-  #spectra = np.roll(cpu_beng_spectra_1,-d['get_idx_offset'][0],axis=0)
   xs_shifted = sdbe_preprocess.resample_sdbe_to_r2dbe_fft_interp(spectra,interp_kind="linear")
 
   # now we check the band limited series
   xr_bl = sdbe_preprocess.bandlimit_1248_to_1024(xr[:(xr.size//4096)*4096],sub_sample=True)
   xs_bl = sdbe_preprocess.bandlimit_1248_to_1024(xs_shifted[:(xs_shifted.size//4096)*4096],sub_sample=True)
 
-
   # check correlation given pre-determined time shift
+  s_range = arange(-16,16)
+  s_avg = 128
+  offset_swarmdbe_data = d['offset_swarmdbe_data']
+  idx_offset = d['get_idx_offset'][0]
+  fft_window_size = 32768
 
+  # FFT resampled
   x0 = xr_bl.copy()
   x1 = cpu_r2dbe[np.floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6)+offset_swarmdbe_data/2-1:]
   n = np.min((2**int(np.floor(np.log2(x0.size))),2**int(np.floor(np.log2(x1.size)))))
@@ -555,7 +474,8 @@ if DEBUG:
   s_0x0 = irfft(S_0x0,n=p*fft_window_size).real
   s_1x1 = irfft(S_1x1,n=p*fft_window_size).real
   s_0x1 = irfft(S_0x1,n=p*fft_window_size).real/np.sqrt(s_0x0.max()*s_1x1.max())
-  print s_0x1.max(), s_0x1.min()
+
+  print 'FFT resampling:', s_0x1.max(), s_0x1.min()
   plt.figure()
   plt.stem(np.arange(-p*q/2,p*q/2),np.roll(s_0x1,p*q/2)[:p*q])
 
@@ -579,15 +499,9 @@ if DEBUG:
   s_0x0 = irfft(S_0x0,n=p*fft_window_size).real
   s_1x1 = irfft(S_1x1,n=p*fft_window_size).real
   s_0x1 = irfft(S_0x1,n=p*fft_window_size).real/np.sqrt(s_0x0.max()*s_1x1.max())
-  print s_0x1.max(), s_0x1.min()
+  print 'linear resampling on shifted series:', s_0x1.max(), s_0x1.min()
+
   plt.figure()
   plt.stem(np.arange(-p*q/2,p*q/2),np.roll(s_0x1,p*q/2)[:p*q])
 
-  plt.ion()
   plt.show()
-
-print 'done!'
-
-#0.320292665479 -0.0944922613483
-#0.326504978799 -0.0429685921659
-
