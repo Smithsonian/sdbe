@@ -292,7 +292,7 @@ SNAPSHOTS_PER_BATCH = 39
 beng_frame_offset = 1
 scan_filename_base = 'prep6_test1_local'
 filename_input = '/home/shared/sdbe_preprocessed/'+scan_filename_base+'_swarmdbe'
-DEBUG = False
+DEBUG = True
 #interp_kind = 'linear'
 interp_kind = 'fft'
 
@@ -425,8 +425,8 @@ gpu_r2dbe = cuda.mem_alloc(4 * num_r2dbe_samples)
 gpu_r2dbe_spec = cuda.mem_alloc(8 * (4096/2+1) * batch_B)
 gpu_r2dbe_trimmed = cuda.mem_alloc(4*num_r2dbe_samples/4096*2048)
 
-for SB in (gpu_beng_0,gpu_beng_1):
-#for SB in (gpu_beng_1,):
+#for SB in (gpu_beng_0,gpu_beng_1):
+for SB in (gpu_beng_1,):
   # Turn SWARM snapshots into timeseries
   cufft.cufftExecC2R(plan_A,int(SB),int(SB))
   # gpu_beng_[0-1] are now padded by two floats every 2*BENG_CHANNELS_ samples: [num_snapshots, 2*16384 + 2]
@@ -461,14 +461,14 @@ for SB in (gpu_beng_0,gpu_beng_1):
     #cuda.memcpy_dtoh(cpu_tmp,gpu_tmp)
     #print 'check zero out:',cpu_tmp.max(), cpu_tmp.min()
     for ib in range((BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS/39):
-      # copy 1 SWARM time sereis chunk, removing padding
+      # copy 1 SWARM time series chunk, removing padding
       strided_copy_kernel(SB,int32(39*2*BENG_CHANNELS*ib),gpu_bar,
 			int32(39*2*BENG_CHANNELS_),int32(2*BENG_CHANNELS_),int32(2),
 		block=(512,1,1),grid=(39*2*BENG_CHANNELS_/512,1))
       # Turn concatenated SWARM time series into single spectrum (already zero padded)
       #cufft.cufftExecR2C(plan_interp_A,int(SB)+int(4*39*2*BENG_CHANNELS*ib),int(gpu_tmp))
       cufft.cufftExecR2C(plan_interp_A,int(gpu_bar),int(gpu_tmp))
-      cuda.memcpy_dtoh(cpu_tmp,gpu_tmp)
+      #cuda.memcpy_dtoh(cpu_tmp,gpu_tmp)
       # Turn padded SWARM spectrum into time series with R2DBE sampling rate
       cufft.cufftExecC2R(plan_interp_B,
 			int(gpu_tmp),
@@ -545,8 +545,8 @@ gpu_r2dbe_spec.free()
 gpu_r2dbe.free()
 gpu_r2dbe_trimmed.free()
 
-#if DEBUG:
-if False:
+if DEBUG:
+#if False:
   # Now read R2DBE data covering roughly the same time window as the SWARM
   # data. Start at an offset of zero (i.e. from the first VDIF packet) to
   # keep things simple.
@@ -604,10 +604,10 @@ if False:
   plt.ion()
   plt.show()
 
-tmp = rfft(cpu_beng_timeseries_1.reshape((128,39*2*BENG_CHANNELS_)),axis=-1)
-bar = np.hstack([ tmp,zeros((128,39*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE -39*BENG_CHANNELS_)) ])
-foo = irfft(bar,axis=-1)
-foo /= (2*BENG_CHANNELS_)
+#tmp = rfft(cpu_beng_timeseries_1.reshape((128,39*2*BENG_CHANNELS_)),axis=-1)
+#bar = np.hstack([ tmp,zeros((128,39*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE -39*BENG_CHANNELS_)) ])
+#foo = irfft(bar,axis=-1)
+#foo /= (2*BENG_CHANNELS_)
 
 # timing at ~4.3 x real!
 print 'done!'

@@ -313,7 +313,7 @@ SNAPSHOTS_PER_BATCH = 39
 beng_frame_offset = 1
 scan_filename_base = 'prep6_test1_local'
 filename_input = '/home/shared/sdbe_preprocessed/'+scan_filename_base+'_swarmdbe'
-DEBUG = False
+DEBUG = True 
 in_place = False
 
 # derive quantities

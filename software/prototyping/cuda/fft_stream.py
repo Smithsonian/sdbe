@@ -265,10 +265,16 @@ clock = defaultdict(float)
 counts = defaultdict(int)
 total = defaultdict(float)
 def tick(name):
-  clock[name] = timer()
+  #clock[name] = timer()
+  clock[name] = cuda.Event()
+  clock[name].record()
 def tock(name):
   counts[name] = counts[name] + 1
-  total[name] = total[name] + timer() - clock[name]
+  tmp = cuda.Event()
+  tmp.record()
+  tmp.synchronize()
+  #total[name] = total[name] + timer() - clock[name]
+  total[name] = total[name] + 1e-3*tmp.time_since(clock[name])
 
 # settings
 beng_frame_offset = 1
@@ -331,8 +337,6 @@ gpu_fid         = cuda.mem_alloc(4*VDIF_PER_BENG*BENG_BUFFER_IN_COUNTS)
 gpu_cid         = cuda.mem_alloc(4*VDIF_PER_BENG*BENG_BUFFER_IN_COUNTS)
 gpu_bcount      = cuda.mem_alloc(4*VDIF_PER_BENG*BENG_BUFFER_IN_COUNTS)
 gpu_beng_frame_completion = cuda.mem_alloc(4*BENG_BUFFER_IN_COUNTS)
-# reorder/resample
-# buffers
 
 # move cpu_vdif_buf to device
 tic.record()
@@ -373,10 +377,11 @@ tock('reorder   ')
 
 # allocate memory for time series
 tick('resample')
-gpu_r2dbe = cuda.mem_alloc(4 * num_r2dbe_samples / 2)
+#gpu_r2dbe = cuda.mem_alloc(4 * num_r2dbe_samples / 2)
+gpu_r2dbe = cuda.mem_alloc(4 * num_r2dbe_samples)
 gpu_swarm = cuda.mem_alloc(4 * num_swarm_samples)
-gpu_tmp = cuda.mem_alloc(8*int(39*BENG_CHANNELS_+1)*batch_trim)
 
+i_phase_sum = 0
 for SB in (gpu_beng_0,gpu_beng_1):
   tick('plan_A   ')
   cufft.cufftExecC2R(plan_A,int(SB),int(gpu_swarm))
@@ -384,6 +389,7 @@ for SB in (gpu_beng_0,gpu_beng_1):
   tock('plan_A   ')
 
   # look over chunks of 39 SWARM snapshots
+  gpu_tmp = cuda.mem_alloc(8*int(39*BENG_CHANNELS_+1)*batch_trim)
   for ib in range((BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS/39/batch_trim):
     # Turn concatenated SWARM time series into single spectrum
     tick('plan_interp_A')
@@ -393,18 +399,20 @@ for SB in (gpu_beng_0,gpu_beng_1):
     # Turn padded SWARM spectrum into time series with R2DBE sampling rate
     tick('plan_interp_B')
     cufft.cufftExecC2R(plan_interp_B,
-			int(gpu_tmp)+int(8*150*512),int(gpu_r2dbe)+int(4*32*2*BENG_CHANNELS_*ib*batch_trim))
+			int(gpu_tmp)+int(8*150*512),int(gpu_r2dbe)+int(4*32*2*BENG_CHANNELS_*ib*batch_trim)+int(4*i_phase_sum*num_r2dbe_samples/2))
     tock('plan_interp_B')
+  gpu_tmp.free()
+
+  i_phase_sum += 1
 
 tock('resample')
 
-gpu_tmp.free()
 gpu_swarm.free()
 toc.record()
 toc.synchronize()
 time_gpu = tic.time_till(toc)
 
-cpu_r2dbe = np.empty(num_r2dbe_samples/2,dtype=float32)
+cpu_r2dbe = np.empty((2,num_r2dbe_samples/2),dtype=float32) # empty array for result
 cuda.memcpy_dtoh(cpu_r2dbe,gpu_r2dbe)
 gpu_r2dbe.free()
 
@@ -457,7 +465,7 @@ if args.correlate:
 
   # FFT resampled
   x0 = xr_bl.copy()
-  x1 = cpu_r2dbe[np.floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6)+offset_swarmdbe_data/2-1:]
+  x1 = cpu_r2dbe[1,np.floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6)+offset_swarmdbe_data/2-1:]
   n = np.min((2**int(np.floor(np.log2(x0.size))),2**int(np.floor(np.log2(x1.size)))))
   x0 = x0[:n]
   x1 = x1[:n]
@@ -475,7 +483,7 @@ if args.correlate:
   s_1x1 = irfft(S_1x1,n=p*fft_window_size).real
   s_0x1 = irfft(S_0x1,n=p*fft_window_size).real/np.sqrt(s_0x0.max()*s_1x1.max())
 
-  print 'FFT resampling:', s_0x1.max(), s_0x1.min()
+  print 'FFT:\t\t', s_0x1.max(), s_0x1.min()
   plt.figure()
   plt.stem(np.arange(-p*q/2,p*q/2),np.roll(s_0x1,p*q/2)[:p*q])
 
@@ -499,7 +507,7 @@ if args.correlate:
   s_0x0 = irfft(S_0x0,n=p*fft_window_size).real
   s_1x1 = irfft(S_1x1,n=p*fft_window_size).real
   s_0x1 = irfft(S_0x1,n=p*fft_window_size).real/np.sqrt(s_0x0.max()*s_1x1.max())
-  print 'linear resampling on shifted series:', s_0x1.max(), s_0x1.min()
+  print 'linear+shift:\t\t', s_0x1.max(), s_0x1.min()
 
   plt.figure()
   plt.stem(np.arange(-p*q/2,p*q/2),np.roll(s_0x1,p*q/2)[:p*q])
