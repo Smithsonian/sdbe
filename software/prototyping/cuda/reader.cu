@@ -39,7 +39,8 @@
 #define BENG_CHANNELS_ 16384
 #define BENG_CHANNELS (BENG_CHANNELS_+1) // number of channels PLUS added sample-rate/2 component for the complex-to-real inverse transform
 #define BENG_SNAPSHOTS 128
-#define BENG_BUFFER_IN_COUNTS 4 // we will buffer 32 B-engine frames
+//#define BENG_BUFFER_IN_COUNTS 4 // we will buffer 32 B-engine frames
+#define BENG_BUFFER_IN_COUNTS 40 // we will buffer 32 B-engine frames
 #define BENG_BUFFER_INDEX_MASK (BENG_BUFFER_IN_COUNTS-1) // mask used to convert B-engine counter to index into buffer
 #define SWARM_N_FIDS 8
 #define SWARM_XENG_PARALLEL_CHAN 8
@@ -56,8 +57,8 @@
 #define BENG_VDIF_SAMPLE_VALUE_OFFSET 2.0f
 
 // Debugging
-//#define DEBUG
-//#define KR_DEBUG
+#define DEBUG
+#define KR_DEBUG
 //~ #define DEBUG_GPU
 //~ #define DEBUG_GPU_CONDITION (blockIdx.x == 0 && threadIdx.x == 7 && threadIdx.y == 3)
 //~ #define DEBUG_SINGLE_FRAME
@@ -226,7 +227,7 @@ int main(int argc, char **argv)
 			{         0,                 0,    0,   0 }
 		};
 		
-		c = getopt_long(argc, argv, "b:B::c:d:hi:I:l:r:vx:y:", long_options, &option_index);
+		c = getopt_long(argc, argv, "b:B:c:d:hi:I:l:r:vx:y:", long_options, &option_index);
 		
 		if (c == -1)
 		{
@@ -836,10 +837,12 @@ int main(int argc, char **argv)
 		fwrite((void *)beng_data_0, sizeof(cufftComplex), BENG_CHANNELS*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS, fh_data);
 		// write B-engine data for phased sum 1
 		fwrite((void *)beng_data_1, sizeof(cufftComplex), BENG_CHANNELS*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS, fh_data);
+		#ifndef KR_DEBUG
 		// write time series data for phased sum 0
 		fwrite((void *)time_series_0, sizeof(cufftReal), 2*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS, fh_data);
 		// write time series data for phased sum 1
 		fwrite((void *)time_series_1, sizeof(cufftReal), 2*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS, fh_data);
+		#endif
 	}
 	
 	#ifdef DEBUG_SINGLE_FRAME
@@ -1051,14 +1054,22 @@ __global__ void vdif_to_beng(
 			 * in buffer.
 			 */
 			idx_beng_data_out = SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid)*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS;
+			#ifdef KR_DEBUG
+			idx_beng_data_out += ((bcount-bcount_offset) % BENG_BUFFER_IN_COUNTS)*BENG_SNAPSHOTS;
+			#else
 			idx_beng_data_out += ((bcount-bcount_offset)&BENG_BUFFER_INDEX_MASK)*BENG_SNAPSHOTS;
+			#endif
 		#else
 			/* Set the offset into the B-engine data buffer. Channels for 
 			 * a single snapshot are consecutive in memory, consecutive 
 			 * snapshots are separated by one spectrum, and consecutive
 			 * B-engine frames are separated by 128 snapshots (128 spectra).
 			 * */
+			#ifdef KR_DEBUG
+			idx_beng_data_out  = BENG_CHANNELS*BENG_SNAPSHOTS*((bcount-bcount_offset) % BENG_BUFFER_IN_COUNTS); // offset given the masked B-engine counter value
+			#else
 			idx_beng_data_out  = BENG_CHANNELS*BENG_SNAPSHOTS*((bcount-bcount_offset)&BENG_BUFFER_INDEX_MASK); // offset given the masked B-engine counter value
+			#endif
 			idx_beng_data_out += SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid); // offset given the cid and fid
 		#endif
 		
