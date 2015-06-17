@@ -195,13 +195,6 @@ __global__ void strided_copy(float *a, int istart, float *b, int N, int istride,
   }
 }
 
-__global__ void zero_me(cufftComplex *a, int i){
-  int32_t tid = blockIdx.x*blockDim.x + threadIdx.x;
-  if (tid == 0) {
-    //a[i] = make_cuComplex(-1.f*a[i].x,0.); 
-    //a[i] = make_cuComplex(0.,0.); 
-  }
-}
 """
 
 
@@ -336,7 +329,6 @@ kernel_module = SourceModule(kernel_source)
 vdif_to_beng_kernel = kernel_module.get_function('vdif_to_beng')
 reorderTz_smem_kernel = kernel_module.get_function('reorderTz_smem')
 strided_copy_kernel = kernel_module.get_function('strided_copy')
-zero_me_kernel = kernel_module.get_function('zero_me')
 
 # read vdif
 cpu_vdif_buf,bcount_offset = read_vdif(filename_input,num_vdif_frames,beng_frame_offset,batched=True)
@@ -349,7 +341,7 @@ plan_A = cufft.cufftPlanMany(1, n.ctypes.data, inembed.ctypes.data, 1, BENG_CHAN
 	                                       onembed.ctypes.data, 1, 2*BENG_CHANNELS,
   					       cufft.CUFFT_C2R, (BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS)
 
-# Turn concatenated SWARM time series into single spectrum.
+# Turn concatenated SWARM time series into single spectrum
 n = array([39*2*BENG_CHANNELS_],int32)
 inembed = array([39*2*BENG_CHANNELS_],int32)
 onembed = array([39*BENG_CHANNELS_+1],int32)
@@ -357,6 +349,8 @@ plan_interp_A = cufft.cufftPlanMany(1,n.ctypes.data,
 					inembed.ctypes.data,1,39*2*BENG_CHANNELS_,
 					onembed.ctypes.data,1,39*BENG_CHANNELS_+1,
 					cufft.CUFFT_R2C,1)
+
+
 # Turn trimmed spectrum into 2048 timeseries
 n = array([32*2*BENG_CHANNELS_],int32)
 inembed = array([32*BENG_CHANNELS_+1],int32)
@@ -423,14 +417,12 @@ if DEBUG:
   gpumeminfo(cuda)
   cpu_beng_spectra_1 = empty(((BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS,BENG_CHANNELS),dtype=complex64)
   cuda.memcpy_dtoh(cpu_beng_spectra_1,gpu_beng_1)
-  #cpu_beng_spectra_1 = np.roll(cpu_beng_spectra_1,-19,axis=0)
-  #cuda.memcpy_htod(gpu_beng_1,cpu_beng_spectra_1)
 
 # allocate more memory
 gpu_r2dbe = cuda.mem_alloc(4 * num_r2dbe_samples / 2)
 
-#for SB in (gpu_beng_0,gpu_beng_1):
-for SB in (gpu_beng_1,):
+for SB in (gpu_beng_0,gpu_beng_1):
+#for SB in (gpu_beng_1,):
   # Turn SWARM snapshots into timeseries
   cufft.cufftExecC2R(plan_A,int(SB),int(SB))
   # DEBUGGING:
@@ -442,17 +434,18 @@ for SB in (gpu_beng_1,):
     cuda.memcpy_dtoh(cpu_beng_timeseries_1,gpu_beng_1)
     cpu_beng_timeseries_1 = cpu_beng_timeseries_1[:,:2*BENG_CHANNELS_]
 
-    # look over batch=39 snapshots
+    # look over chunks of 39 SWARM snapshots
     gpu_tmp = cuda.mem_alloc(8*int(39*BENG_CHANNELS_+1))
     gpu_bar = cuda.mem_alloc(4*int(39*2*BENG_CHANNELS_))
     for ib in range((BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS/39):
-      # copy 1 SWARM time series chunk, removing padding
+
+      # copy 39 snapshots into a signal time series chunk, removing padding
       strided_copy_kernel(SB,int32(39*2*BENG_CHANNELS*ib),gpu_bar,
 			int32(39*2*BENG_CHANNELS_),int32(2*BENG_CHANNELS_),int32(2),
 			block=(512,1,1),grid=(39*2*BENG_CHANNELS_/512,1))
       # Turn concatenated SWARM time series into single spectrum
       cufft.cufftExecR2C(plan_interp_A,int(gpu_bar),int(gpu_tmp))
-      zero_me_kernel(gpu_tmp,int32(8*150*512),block=(32,1,1),grid=(1,1))
+
       # Turn padded SWARM spectrum into time series with R2DBE sampling rate
       cufft.cufftExecC2R(plan_interp_B,
 			int(gpu_tmp)+int(8*150*512),int(gpu_r2dbe)+int(4*32*2*BENG_CHANNELS_*ib))
@@ -463,7 +456,6 @@ for SB in (gpu_beng_1,):
     gpu_tmp.free()
     gpu_bar.free()
     SB.free()
-
 
 toc.record()
 toc.synchronize()
