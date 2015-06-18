@@ -29,6 +29,8 @@ from collections import defaultdict
 import read_r2dbe_vdif,cross_corr,sdbe_preprocess
 import h5py
 
+from scipy.special import erfinv
+
 VDIF_BYTE_SIZE = 1056
 VDIF_BYTE_SIZE_DATA = 1024
 VDIF_INT_SIZE = VDIF_BYTE_SIZE/4
@@ -47,11 +49,6 @@ SNAPSHOTS_PER_BATCH = 39
 class sdbe_cupreprocess(object): 
 
   def __init__(self,gpuid,resamp_kind='linear'):
-    #self.ctx = cuda.Device(gpuid).make_context()
-    #self.device = self.ctx.get_device()
-
-    #self.device = cuda.Device(gpuid)
-    #self.ctx = self.device.make_context()
 
     # basic info   
     self.gpuid = gpuid
@@ -66,10 +63,11 @@ class sdbe_cupreprocess(object):
     self.__vdif_to_beng = kernel_module.get_function('vdif_to_beng')
     self.__reorderTz_smem = kernel_module.get_function('reorderTz_smem')
     self.__linear_interp = kernel_module.get_function('linear')
-
+    self.__quantize2bit = kernel_module.get_function('quantize2bit')
+    self.__zero_rout = kernel_module.get_function('zero_rout')
 
     # initalize FFT plans:
-    if self.__resamp_kind is 'linear':
+    if self.__resamp_kind == 'linear':
       # inverse in-place FFT plan
       n = array([2*BENG_CHANNELS_],int32)
       inembed = array([BENG_CHANNELS],int32)
@@ -92,7 +90,7 @@ class sdbe_cupreprocess(object):
       self.__plan_C = cufft.cufftPlanMany(1, n.ctypes.data, inembed.ctypes.data, 1, 4096/2+1,
 					       onembed.ctypes.data, 1, 2048,
 					       cufft.CUFFT_C2R, self.__bandlimit_batch)
-    elif self.__resamp_kind is 'fft':
+    elif self.__resamp_kind == 'fft':
       # inverse FFT plan
       n = array([2*BENG_CHANNELS_],int32)
       inembed = array([BENG_CHANNELS],int32)
@@ -125,7 +123,10 @@ class sdbe_cupreprocess(object):
     self.__gpu_beng_data_1 = None
     self.__gpu_beng_0 = None
     self.__gpu_beng_1 = None
-    self.__gpu_r2dbe = None
+    self.__gpu_time_series_0 = None
+    self.__gpu_time_series_1 = None
+    self.__gpu_quantized_0 = None
+    self.__gpu_quantized_1 = None
 
 
   def memcpy_sdbe_vdif(self,cpu_vdif_buf,bcount_offset):
@@ -182,25 +183,30 @@ class sdbe_cupreprocess(object):
     self.__gpu_beng_data_1.free()
 
   def resamp(self):
-    if self.__resamp_kind is 'linear':
+    if self.__resamp_kind == 'linear':
       self.__fft_linear_interp()
-    elif self.__resamp_kind is 'fft':
+    elif self.__resamp_kind == 'fft':
       self.__fft_resample()
+    else:
+      print 'no resampling kernel to match'
 
   def __fft_resample(self):
     '''
     Resample using FFTs.
     Requires that use_fft_resample flag is True.
-    __gpu_r2dbe has both phased sums resampled at 2048 MHz. 
+    individual phased sums resampled at 2048 MHz. 
     '''
     logger.debug('Resampling using FFTs')
-    self.__gpu_r2dbe = cuda.mem_alloc(4 * self.num_r2dbe_samples)
+
+    #device memory allocation
+    self.__gpu_time_series_0 = cuda.mem_alloc(4 * self.num_r2dbe_samples / 2) # 2048 MHz clock
+    self.__gpu_time_series_1 = cuda.mem_alloc(4 * self.num_r2dbe_samples / 2) # 2048 MHz clock
     gpu_swarm = cuda.mem_alloc(4 * self.num_swarm_samples)
+
     # loop over phased sums
-    phase_sum_i = 0
-    for SB in (self.__gpu_beng_0, self.__gpu_beng_1):
-      cufft.cufftExecC2R(self.__plan_A,int(SB),int(gpu_swarm))
-      SB.free()
+    for (phased_sum_in,phased_sum_out) in zip((self.__gpu_beng_0, self.__gpu_beng_1),(self.__gpu_time_series_0,self.__gpu_time_series_1)):
+      cufft.cufftExecC2R(self.__plan_A,int(phased_sum_in),int(gpu_swarm))
+      phased_sum_in.free()
  
       gpu_tmp = cuda.mem_alloc(8*int(39*BENG_CHANNELS_+1)*self.__bandlimit_batch)
       for ib in range((BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS/39/self.__bandlimit_batch):
@@ -209,11 +215,9 @@ class sdbe_cupreprocess(object):
 						int(4*39*2*BENG_CHANNELS_*self.__bandlimit_batch*ib),int(gpu_tmp))
         # Turn padded SWARM spectrum into time series with R2DBE sampling rate
         cufft.cufftExecC2R(self.__plan_C,
-			int(gpu_tmp)+int(8*150*512),int(self.__gpu_r2dbe)+
-						int(4*32*2*BENG_CHANNELS_*ib*self.__bandlimit_batch)+
-						int(4*phase_sum_i*self.num_r2dbe_samples/2))
+			int(gpu_tmp)+int(8*150*512),int(phased_sum_out)+
+						int(4*32*2*BENG_CHANNELS_*ib*self.__bandlimit_batch))
       gpu_tmp.free()
-      phase_sum_i += 1
 
     gpu_swarm.free()
 
@@ -226,40 +230,57 @@ class sdbe_cupreprocess(object):
     blocks_per_grid = int(ceil(1. * self.num_r2dbe_samples / threads_per_block))
 
     # allocate device memory
-    self.__gpu_r2dbe = cuda.mem_alloc(4 * self.num_r2dbe_samples) # 25% of device memory
+    self.__gpu_time_series_1 = cuda.mem_alloc(4 * self.num_r2dbe_samples / 2) # 2048 MHz clock
+    self.__gpu_time_series_0 = cuda.mem_alloc(4 * self.num_r2dbe_samples / 2) # 2048 MHz clock
     gpu_r2dbe_spec = cuda.mem_alloc(8 * (4096/2+1) * self.__bandlimit_batch) # memory peanuts
 
-    phase_sum_i = 0
-    for SB in (self.__gpu_beng_0, self.__gpu_beng_1):
+    for (phased_sum_in,phased_sum_out) in zip((self.__gpu_beng_0, self.__gpu_beng_1),(self.__gpu_time_series_0,self.__gpu_time_series_1)):
       # Turn SWARM snapshots into timeseries
-      cufft.cufftExecC2R(self.__plan_A,int(SB),int(SB))
+      cufft.cufftExecC2R(self.__plan_A,int(phased_sum_in),int(phased_sum_in))
       # resample 
       gpu_resamp = cuda.mem_alloc(4 * self.num_r2dbe_samples) # 25% of device memory
-      self.__linear_interp(SB,
+      self.__linear_interp(phased_sum_in,
 		int32(self.num_swarm_samples),
 		gpu_resamp,
 		int32(self.num_r2dbe_samples),
 		float64(SWARM_RATE/R2DBE_RATE),
 		float32(1./(2*BENG_CHANNELS_)),
 		block=(threads_per_block,1,1),grid=(blocks_per_grid,1))
-      SB.free()
+      phased_sum_in.free()
 
       # loop through resampled time series in chunks of batch_B num_r2dbe_samples/4096/__bandlimit_batch
       for ib in range(self.num_r2dbe_samples/4096/self.__bandlimit_batch):
-        # compute spectrum with Fs = 4096
+        # compute spectrum with 4096 MHz sample clock
         cufft.cufftExecR2C(self.__plan_B,
         int(gpu_resamp)+int(4*ib*4096*self.__bandlimit_batch),int(gpu_r2dbe_spec))
-        # invert to time series with B=1024, masking out first 150 MHz and last (1024-150) MHz.(MUST INDEX BY 8)
+        # invert to time series with BW of 1024 MHz, masking out first 150 MHz and last (1024-150) MHz. (pointers are 4-byte values)
         cufft.cufftExecC2R(self.__plan_C,
 		int(gpu_r2dbe_spec)+int(8*150),
-		int(self.__gpu_r2dbe) + 
-		int(4*ib*2048*self.__bandlimit_batch) + 
-		int(4*phase_sum_i*self.num_r2dbe_samples/2))
+		int(phased_sum_out) + 
+		int(4*ib*2048*self.__bandlimit_batch))
 
       gpu_resamp.free()
-      phase_sum_i += 1
 
     gpu_r2dbe_spec.free()
+
+  def quantize(self,threshold):
+    ''' quantize to 2-bits. note little endian format following vdif '''
+    # zero out arrays
+    num_int_words = self.num_r2dbe_samples / 2 / 16
+    self.__gpu_quantized_0 = cuda.mem_alloc(2 * (self.num_r2dbe_samples / 2) / 8 )
+    self.__gpu_quantized_1 = cuda.mem_alloc(2 * (self.num_r2dbe_samples / 2) / 8)
+    self.__zero_rout(self.__gpu_quantized_0, int32(num_int_words),
+		block=(512,1,1),grid=(num_int_words / 512,1))
+    self.__zero_rout(self.__gpu_quantized_1, int32(num_int_words),
+		block=(512,1,1),grid=(num_int_words / 512,1))
+    # quantize
+    threads_per_block = (16,1,1)
+    blocks_per_grid=(64,1,1)
+    self.__quantize2bit(self.__gpu_time_series_0,self.__gpu_quantized_0,int32(self.num_r2dbe_samples/2),float32(threshold[0]),
+		block=threads_per_block,grid=blocks_per_grid)
+    self.__quantize2bit(self.__gpu_time_series_1,self.__gpu_quantized_1,int32(self.num_r2dbe_samples/2),float32(threshold[1]),
+		block=threads_per_block,grid=blocks_per_grid)
+    # can free gpu_time_series_{0-1} now
 
   def gpumeminfo(self,driver):
     logger.info('Memory usage: %f' % (1.- 1.*driver.mem_get_info()[0]/driver.mem_get_info()[1]))
@@ -273,6 +294,7 @@ class sdbe_cupreprocess(object):
 
     #
     self.__gpu_r2dbe.free()
+    self.__gpu_quantized.free()
 
     # delete context
     #self.ctx.pop()
@@ -323,6 +345,7 @@ if __name__ == "__main__":
   parser.add_argument('-b', dest='basename', help='scan filename base for SWARM data', default='prep6_test1_local')
   parser.add_argument('-d', dest='dir', help='directory for input SWARM data products', default='/home/shared/sdbe_preprocessed/')
   parser.add_argument('-s', dest='skip', type=int, help='starting snapshot', default=1)
+  parser.add_argument('-alg', dest='resamp_kind', type=str, help='resampling algorithm', default='fft')
   parser.add_argument('-n', dest='num_gpu', type=int, help='number of gpus to use',
 		default=1,choices=range(1,cuda.Device.count()+1))
   parser.add_argument('-c', dest='correlate', action='store_true', help='correlate against R2DBE')
@@ -332,6 +355,13 @@ if __name__ == "__main__":
   logger.addHandler(logging.StreamHandler())
   logger.setLevel(logging.DEBUG if args.verbose else logging.INFO)
 
+
+  if args.resamp_kind == 'linear':
+    thresh = [22.6, 23.6]
+  elif args.resamp_kind == 'fft':
+    thresh = [2.80364832e+08, 2.95670688e+08]
+  thresh = sqrt(2)*erfinv(0.5)*array(thresh)
+  #thresh = 0.65*array(thresh)
 
   # timers
   clock = defaultdict(float)
@@ -353,8 +383,7 @@ if __name__ == "__main__":
     gpus = []  
     #for g in range(args.num_gpu):
     for g in range(1):
-      #gpus.append(sdbe_cupreprocess(g,resamp_kind='fft'))
-      gpus.append(sdbe_cupreprocess(g,resamp_kind='linear'))
+      gpus.append(sdbe_cupreprocess(g,resamp_kind=args.resamp_kind))
   
     # load vdif onto device
     for g in gpus:
@@ -385,19 +414,33 @@ if __name__ == "__main__":
     for g in gpus:
       g.resamp()
     toc('resample')
+
+    # optional: calculate threshold for quantization
   
-    # To do: quantize and pack vdif
+    #quantize
+    tic('quantize')
+    for g in gpus:
+      g.quantize(thresh)
+    toc('quantize')
   
     toc('gpu total')
   
-    # pull data from device
+    # pull float data from device
     for g in gpus:
-      cpu_r2dbe = empty((2,g.num_r2dbe_samples/2),dtype=float32) # empty array for result
-      cuda.memcpy_dtoh(cpu_r2dbe,g._sdbe_cupreprocess__gpu_r2dbe)
+      cpu_r2dbe = empty(g.num_r2dbe_samples/2,dtype=float32) # empty array for result
+      cuda.memcpy_dtoh(cpu_r2dbe,g._sdbe_cupreprocess__gpu_time_series_1)
+
+    for g in gpus:
+      cpu_quantized = empty(g.num_r2dbe_samples/2/16,dtype=uint32)
+      cuda.memcpy_dtoh(cpu_quantized,g._sdbe_cupreprocess__gpu_quantized_1)
+      cpu_q_r2dbe = empty(g.num_r2dbe_samples/2,dtype=int32)
+      for i in range(16):
+        #cpu_q_r2dbe[15-i::16] = (cpu_quantized & (0x3 << 2*i)) >> (2*i)
+        cpu_q_r2dbe[i::16] = (cpu_quantized & (0x3 << 2*i)) >> (2*i)
 
   # clean up
-  for g in gpus:
-    g.cleanup()
+  #for g in gpus:
+    #g.cleanup()
   
   # report timing info
   real_time = (BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS*2*BENG_CHANNELS_/SWARM_RATE
@@ -437,54 +480,46 @@ if __name__ == "__main__":
     offset_swarmdbe_data = d['offset_swarmdbe_data']
     idx_offset = d['get_idx_offset'][0]
     fft_window_size = 32768
+
+    #for (x,shift) in zip((cpu_q_r2dbe,xs_bl),(floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6),0)):
+    for (x,shift) in zip((cpu_q_r2dbe,cpu_r2dbe,xs_bl),(floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6),floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6),0)):
   
-    # FFT resampled
-    x0 = xr_bl.copy()
-    x1 = cpu_r2dbe[1,floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6)+offset_swarmdbe_data/2-1:]
-    n = min((2**int(floor(log2(x0.size))),2**int(floor(log2(x1.size)))))
-    x0 = x0[:n]
-    x1 = x1[:n]
+      # FFT resampled
+      x0 = xr_bl.copy()
+      x1 = x[shift+offset_swarmdbe_data/2-1:]
+      n = min((2**int(floor(log2(x0.size))),2**int(floor(log2(x1.size)))))
+      x0 = x0[:n]
+      x1 = x1[:n]
   
-    X0 = rfft(x0.reshape(n/fft_window_size,fft_window_size),axis=-1)
-    X1 = rfft(x1.reshape(n/fft_window_size,fft_window_size),axis=-1)
-    X0*= exp(-1.0j*angle(X0[0,0]))
-    X1*= exp(-1.0j*angle(X1[0,0]))
+      X0 = rfft(x0.reshape(n/fft_window_size,fft_window_size),axis=-1)
+      X1 = rfft(x1.reshape(n/fft_window_size,fft_window_size),axis=-1)
+      X0*= exp(-1.0j*angle(X0[0,0]))
+      X1*= exp(-1.0j*angle(X1[0,0]))
   
-    S_0x0 = (X0 * X0.conj()).mean(axis=0)
-    S_1x1 = (X1 * X1.conj()).mean(axis=0)
-    S_0x1 = (X0 * X1.conj()).mean(axis=0)
-    p = 8; q = 16
-    s_0x0 = irfft(S_0x0,n=p*fft_window_size).real
-    s_1x1 = irfft(S_1x1,n=p*fft_window_size).real
-    s_0x1 = irfft(S_0x1,n=p*fft_window_size).real/sqrt(s_0x0.max()*s_1x1.max())
+      S_0x0 = (X0 * X0.conj()).mean(axis=0)
+      S_1x1 = (X1 * X1.conj()).mean(axis=0)
+      S_0x1 = (X0 * X1.conj()).mean(axis=0)
+      p = 8; q = 16
+      s_0x0 = irfft(S_0x0,n=p*fft_window_size).real
+      s_1x1 = irfft(S_1x1,n=p*fft_window_size).real
+      s_0x1 = irfft(S_0x1,n=p*fft_window_size).real/sqrt(s_0x0.max()*s_1x1.max())
   
-    print 'resample:\t\t', s_0x1.max(), s_0x1.min()
-    plt.figure()
-    plt.stem(arange(-p*q/2,p*q/2),roll(s_0x1,p*q/2)[:p*q])
-  
-    #################
-  
-    x0 = xr_bl.copy()
-    x1 = xs_bl[offset_swarmdbe_data/2-1:]
-    n = min((2**int(floor(log2(x0.size))),2**int(floor(log2(x1.size)))))
-    x0 = x0[:n]
-    x1 = x1[:n]
-  
-    X0 = rfft(x0.reshape(n/fft_window_size,fft_window_size),axis=-1)
-    X1 = rfft(x1.reshape(n/fft_window_size,fft_window_size),axis=-1)
-    X0*= exp(-1.0j*angle(X0[0,0]))
-    X1*= exp(-1.0j*angle(X1[0,0]))
-  
-    S_0x0 = (X0 * X0.conj()).mean(axis=0)
-    S_1x1 = (X1 * X1.conj()).mean(axis=0)
-    S_0x1 = (X0 * X1.conj()).mean(axis=0)
-    p = 8; q = 16
-    s_0x0 = irfft(S_0x0,n=p*fft_window_size).real
-    s_1x1 = irfft(S_1x1,n=p*fft_window_size).real
-    s_0x1 = irfft(S_0x1,n=p*fft_window_size).real/sqrt(s_0x0.max()*s_1x1.max())
-    print 'linear+shift:\t\t', s_0x1.max(), s_0x1.min()
-  
-    plt.figure()
-    plt.stem(arange(-p*q/2,p*q/2),roll(s_0x1,p*q/2)[:p*q])
+      print ' (max,min) corr coeffs:\t\t', s_0x1.max(), s_0x1.min()
+      #plt.figure()
+      #plt.stem(arange(-p*q/2,p*q/2),roll(s_0x1,p*q/2)[:p*q])
   
     plt.show()
+
+#INFO:: Correlating result again R2DBE
+
+#LINEAR:
+# (max,min) corr coeffs:         0.188509379213 -0.0395297462877
+# (max,min) corr coeffs:         0.315810267718 -0.0663339328175
+# (max,min) corr coeffs:         0.326504978799 -0.0429685921659
+
+# FFT:
+# (max,min) corr coeffs:         0.191704138582 -0.0565066308196
+# (max,min) corr coeffs:         0.320292665479 -0.0944922613483
+# (max,min) corr coeffs:         0.326504978799 -0.0429685921659
+
+
