@@ -7,7 +7,7 @@
 
 #define VDIF_PKT_HEADER_SIZE 32
 #define VDIF_PKT_DATA_SIZE 4096
-#define VDIF_IN_BUFFER_SIZE 256
+#define VDIF_IN_BUFFER_SIZE 32
 
 typedef struct vdif_packet {
   char header[VDIF_PKT_HEADER_SIZE];
