@@ -1,6 +1,8 @@
-# **A**daptive **P**hased-array and **H**eterogenous **I**nterpolator and **D**ownsampler for **S**WARM #
+# APHIDS #
 
-## Cavets for running APHIDS ##
+APHIDS stands for: **A**daptive **P**hased-array and **H**eterogenous **I**nterpolator and **D**ownsampler for **S**WARM.
+
+## Caveats for running APHIDS ##
 
 In order to run APHIDS as a regular user with large shared memory buffers you will need to create the following file:
 
@@ -29,7 +31,7 @@ kernel.sem = 1024 256000 32 4096
 ```
 
 Where the first number is the maximum number of allowed semaphores. For APHIDS/hashpipe this should match the buffer size 
-you are trying to achieve. You must then reload the sysctl (as root) value with:
+you are trying to achieve. You must then reload the sysctl (as root) configuration with:
 
 ```
 $ sysctl -p
