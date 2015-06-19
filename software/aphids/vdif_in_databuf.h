@@ -1,7 +1,6 @@
 #ifndef VDIF_IN_DATABUF_H
 #define VDIF_IN_DATABUF_H
 
-#include <pthread.h>
 #include "hashpipe.h"
 #include "hashpipe_databuf.h"
 
