@@ -47,7 +47,7 @@ typedef struct msg_to_sgthread { // message TO an SG thread
 } MsgToSGThread;
 typedef struct msg_from_sgthread { // message FROM an SG thread
 	uint32_t *data_buf; // pointer to VDIF data buffer
-	size_t num_frames; // number of frames in buffer
+	int num_frames; // number of frames in buffer
 } MsgFromSGThread;
 
 // Forward declarations
@@ -633,7 +633,6 @@ static void * sgthread_read_block(void *arg)
 	MsgFromSGThread *msg_out = (MsgFromSGThread *)malloc(sizeof(MsgFromSGThread));
 	uint32_t *start = NULL;
 	uint32_t *end = NULL;
-	int num_frames;
 	int ii;
 	uint32_t *data_buf; // pointer to VDIF data buffer
 	#ifdef DEBUG_LEVEL
@@ -656,12 +655,7 @@ static void * sgthread_read_block(void *arg)
 		snprintf(_dbgmsg,0x200,"\tRead block %d",(int)msg_in->iblock);
 		DEBUGMSG(_dbgmsg);
 	#endif
-	start = sg_pkt_by_blk(msg_in->sgi_ptr,msg_in->iblock,&num_frames,&end);
-	msg_out->num_frames = num_frames;
-	#if DEBUG_LEVEL >= DEBUG_LEVEL_DEBUG
-		snprintf(_dbgmsg,0x200,"\tFrames read is %d",num_frames);
-		DEBUGMSG(_dbgmsg);
-	#endif
+	start = sg_pkt_by_blk(msg_in->sgi_ptr,msg_in->iblock,&msg_out->num_frames,&end);
 	// allocate data storage and copy data to memory
 	msg_out->data_buf = (uint32_t *)malloc(msg_out->num_frames*msg_in->sgi_ptr->pkt_size);
 	if (msg_out->data_buf != NULL)
