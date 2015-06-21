@@ -1,1 +1,6 @@
+# Ignored Python bytecode
 *.pyc
+
+# Ignored object files
+*.so
+*.o
