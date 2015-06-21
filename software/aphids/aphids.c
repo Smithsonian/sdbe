@@ -8,11 +8,7 @@
 #include "aphids.h"
 #include "hiredis/hiredis.h"
 
-/* aphids_init
 
-   This function initializes APHIDS functionality and should run 
-   *inside* the init_method function of all APHIDS hashpipe threads.
-*/
 int aphids_init(aphids_context_t * aphids_ctx, hashpipe_thread_args_t * thread_args) {
 
   char prefix[80];
