@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <sys/time.h>
 
+#include "aphids.h"
 #include "hashpipe.h"
 #include "hashpipe_databuf.h"
 
@@ -25,6 +26,16 @@ static void *run_method(hashpipe_thread_args_t * args) {
   vdif_in_databuf_t *db_out = (vdif_in_databuf_t *)args->obuf;
   hashpipe_status_t st = args->st;
   const char * status_key = args->thread_desc->skey;
+  aphids_context_t aphids_ctx;
+  char iter_s[80];
+
+  // initialize the aphids context
+  rv = aphids_init(&aphids_ctx, args);
+  if (rv != APHIDS_OK) {
+    hashpipe_error(__FUNCTION__, "error waiting for free databuf");
+    pthread_exit(NULL);
+  }
+
 
   // first log, just to say we're starting
   syslog(LOG_INFO, "%s[START]", args->thread_desc->name);
@@ -100,8 +111,9 @@ static void *run_method(hashpipe_thread_args_t * args) {
     if ((iters % 1000000) == 0) {
       // only do this every so often
 
-      // log to show we are still alive
-      syslog(LOG_DEBUG, "%s[#%d]", args->thread_desc->name, log_update);
+      // test setting a value
+      sprintf(iter_s, "%d", iters);
+      aphids_set(&aphids_ctx, "iters", iter_s);
 
       log_update++; // keep track of number of updates
 
