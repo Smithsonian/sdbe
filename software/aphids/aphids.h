@@ -20,6 +20,8 @@
 #define APHIDS_REDIS_PORT 6379
 #define APHIDS_REDIS_TIMEOUT 1 // seconds
 
+#define APHIDS_UPDATE_EVERY 1000000
+
 /* aphids_context_t
 
    This function initializes APHIDS functionality and should run 
@@ -27,7 +29,9 @@
 */
 typedef struct aphids_context {
   int init;
+  int iters;
   char *prefix;
+  struct timeval begin, end;
   hashpipe_thread_args_t *thread_args;
   redisContext *redis_ctx;
 } aphids_context_t;
@@ -39,6 +43,14 @@ typedef struct aphids_context {
    hashpipe threads.
 */
 int aphids_init(aphids_context_t * aphids_ctx, hashpipe_thread_args_t * thread_args);
+
+/* aphids_update
+
+   This function updates statistics related to the running thread such
+   as number of iterations, run time, input data rate, etc. It should be
+   run in the thread's loop on each iteration.
+*/
+int aphids_update(aphids_context_t * aphids_ctx);
 
 /* aphids_set, aphids_get
 
