@@ -30,7 +30,8 @@ def main(stdscr):
         for i, k in enumerate(akeys):
             v = r.get(k)
             opts = A_STANDOUT if k.endswith('seg_rate') else 0
-            stdscr.addstr(i+2, 8, '{0:60s}= {1}'.format(k, v), opts)
+            stdscr.addstr(i+2, 8, k)
+            stdscr.addstr(i+2, 68, v, opts)
 
         # refresh screen
         stdscr.refresh()
