@@ -11,14 +11,14 @@ def main(stdscr):
     # move cursos to 0, 0
     stdscr.leaveok(0)
 
+    # connect to the redis server
+    r = StrictRedis(host='127.0.0.1', port=6379, db=0)
+
     # main loop
     while True:
 
         # clear screen
         stdscr.erase()
-
-        # connect to the redis server
-        r = StrictRedis(host='127.0.0.1', port=6379, db=0)
 
         # print info message
         stdscr.addstr(0, 0, "press 'q' to exit.")
