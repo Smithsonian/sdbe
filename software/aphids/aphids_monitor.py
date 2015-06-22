@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from curses import wrapper, curs_set
+from curses import wrapper, curs_set, A_STANDOUT
 from redis import StrictRedis
 
 def main(stdscr):
@@ -29,7 +29,8 @@ def main(stdscr):
         # get and show all aphids keys
         for i, k in enumerate(akeys):
             v = r.get(k)
-            stdscr.addstr(i+2, 8, '{0:60s}= {1}'.format(k, v))
+            opts = A_STANDOUT if k.endswith('seg_rate') else 0
+            stdscr.addstr(i+2, 8, '{0:60s}= {1}'.format(k, v), opts)
 
         # refresh screen
         stdscr.refresh()
