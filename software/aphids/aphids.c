@@ -2,8 +2,10 @@
 #define APHIDS_C
 
 #include <stdio.h>
+#include <syslog.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 
 #include "aphids.h"
 #include "hiredis/hiredis.h"
@@ -12,7 +14,8 @@
 int aphids_init(aphids_context_t * aphids_ctx, hashpipe_thread_args_t * thread_args) {
 
   char prefix[80];
-  char aphids_val[80];
+  hashpipe_status_t st = thread_args->st;
+  const char * status_key = thread_args->thread_desc->skey;
 
   // set init flag to not initialized
   aphids_ctx->init = APHIDS_CTX_NOT_INITIALIZED;
@@ -38,6 +41,17 @@ int aphids_init(aphids_context_t * aphids_ctx, hashpipe_thread_args_t * thread_a
 
   // add redis context to aphids context
   aphids_ctx->redis_ctx = c;
+
+  // open syslog so we can send messages
+  openlog("aphids", LOG_PID, LOG_USER);
+
+  // log in syslog, just to say we're starting
+  syslog(LOG_INFO, "%s started", aphids_ctx->prefix);
+
+  // update our hashpipe status
+  hashpipe_status_lock_safe(&st);
+  hputs(st.buf, status_key, "running");
+  hashpipe_status_unlock_safe(&st);
 
   // we're done, initialize context
   aphids_ctx->init = APHIDS_CTX_INITIALIZED;

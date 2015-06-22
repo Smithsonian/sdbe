@@ -30,15 +30,6 @@ static void *run_method(hashpipe_thread_args_t * args) {
     pthread_exit(NULL);
   }
 
-
-  // first log, just to say we're starting
-  syslog(LOG_INFO, "%s[START]", args->thread_desc->name);
-
-  // update our status
-  hashpipe_status_lock_safe(&st);
-  hputs(st.buf, status_key, "running");
-  hashpipe_status_unlock_safe(&st);
-
   while (run_threads()) { // hashpipe wants us to keep running
 
     // read from the input buffer first
