@@ -56,6 +56,9 @@ int aphids_init(aphids_context_t * aphids_ctx, hashpipe_thread_args_t * thread_a
   // we're done, initialize context
   aphids_ctx->init = APHIDS_CTX_INITIALIZED;
 
+  // update our redis status
+  aphids_set(aphids_ctx, "status", "running");
+
   return APHIDS_OK;
 }
 
@@ -206,10 +209,13 @@ int aphids_destroy(aphids_context_t * aphids_ctx) {
   hashpipe_status_t st = aphids_ctx->thread_args->st;
   const char * status_key = aphids_ctx->thread_args->thread_desc->skey;
 
-  // update our status
+  // update our hashpipe status
   hashpipe_status_lock_safe(&st);
   hputs(st.buf, status_key, "stopping");
   hashpipe_status_unlock_safe(&st);
+
+  // update our redis status
+  aphids_set(aphids_ctx, "status", "done");
 
   // free redis context
   redisFree(aphids_ctx->redis_ctx);
