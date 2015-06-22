@@ -93,7 +93,7 @@ int aphids_update(aphids_context_t * aphids_ctx) {
 	(double)(aphids_ctx->thread_args->ibuf->block_size * 8) / seg_time;
 
       // set rate over last segment
-      sprintf(aphids_val, "%f", seg_rate);
+      sprintf(aphids_val, "%f Gbps", seg_rate);
       aphids_set(aphids_ctx, "ibuf:seg_rate", aphids_val);
 
     }
@@ -106,7 +106,7 @@ int aphids_update(aphids_context_t * aphids_ctx) {
 	(double)(aphids_ctx->thread_args->obuf->block_size * 8) / seg_time;
 
       // set rate over last segment
-      sprintf(aphids_val, "%f", seg_rate);
+      sprintf(aphids_val, "%f Gbps", seg_rate);
       aphids_set(aphids_ctx, "obuf:seg_rate", aphids_val);
 
     }
@@ -117,7 +117,7 @@ int aphids_update(aphids_context_t * aphids_ctx) {
 
 
     // set time over last segment
-    sprintf(aphids_val, "%f", seg_time);
+    sprintf(aphids_val, "%f secs", seg_time);
     aphids_set(aphids_ctx, "seg_time", aphids_val);
 
     aphids_ctx->begin = aphids_ctx->end; // keep the time for the next update
