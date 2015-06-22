@@ -163,11 +163,28 @@ __global__ void reorderTz_smem(cufftComplex *beng_data_in, cufftComplex *beng_da
   }
 }
 
-__global__ void linear(float *a, int Na, float *b, int Nb, double c, float d){
- /*
+__global__ void nearest(float *a, int Na, float *b, int Nb, double c, float d){
+  /*
   This kernel uses a round-half-to-even tie-breaking rule which is
   opposite that of python's interp_1d.
-  deal with extrapolation
+  a: input_array
+  b: output_array
+  Nb: size of array b
+  c: stride for interpolation: b[i] = d*a[int(c*i)]
+  */
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (tid < Nb) {
+    int ida = __double2int_rn(tid*c); // round nearest
+    if (ida < Na-1){
+      b[tid] = d*a[(ida / 32768)*32770 + (ida %% 32768)];
+    } else {
+      b[tid] = d*a[Na-1];
+    }
+  }
+}
+
+__global__ void linear(float *a, int Na, float *b, int Nb, double c, float d){
+ /*
   a: input_array (assume padded by two floats for every SWARM snapshot)
   b: output_array
   Nb: size of array b
