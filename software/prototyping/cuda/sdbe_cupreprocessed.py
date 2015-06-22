@@ -9,7 +9,6 @@ import sys
 sdbe_scripts_dir = '/home/krosenfe/sdbe/software/prototyping'
 sys.path.append(sdbe_scripts_dir)
 
-import pycuda.autoinit
 import pycuda.driver as cuda
 from pycuda.compiler import SourceModule
 import scikits.cuda.cufft as cufft
@@ -51,12 +50,13 @@ class sdbe_cupreprocess(object):
   def __init__(self,gpuid,resamp_kind='linear'):
 
     # basic info   
+    self.logger = logging.getLogger(__name__)
     self.gpuid = gpuid
     self.num_beng_counts = BENG_BUFFER_IN_COUNTS-1
     self.num_swarm_samples = int((BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS*2*BENG_CHANNELS_)
     self.num_r2dbe_samples = int(self.num_swarm_samples*R2DBE_RATE/SWARM_RATE)
     self.__resamp_kind = resamp_kind
-    # grab GPU
+
     # compile CUDA kernels
     kernel_source = kernel_template % {'BENG_BUFFER_IN_COUNTS':BENG_BUFFER_IN_COUNTS}
     kernel_module = SourceModule(kernel_source)
@@ -143,7 +143,7 @@ class sdbe_cupreprocess(object):
     depacketize sdbe vdif:
     consecutive snapshots are indexed fastest 
     '''
-    logger.debug('depacketizing B-engine data')
+    self.logger.debug('depacketizing B-engine data')
     self.__gpu_beng_data_0 = cuda.mem_alloc(8*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS)
     self.__gpu_beng_data_1 = cuda.mem_alloc(8*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS)
     gpu_fid         = cuda.mem_alloc(4*VDIF_PER_BENG*BENG_BUFFER_IN_COUNTS)
@@ -174,7 +174,7 @@ class sdbe_cupreprocess(object):
     reorder B-engine data with a shift by 2 snapshots where (channel index / 4) is even
     and then by 1 B-frame where snapshot index > 68.
     '''
-    logger.debug('reordering B-engine data')
+    self.logger.debug('reordering B-engine data')
     self.__gpu_beng_0 = cuda.mem_alloc(8*BENG_CHANNELS*BENG_SNAPSHOTS*(BENG_BUFFER_IN_COUNTS-1))
     self.__gpu_beng_1 = cuda.mem_alloc(8*BENG_CHANNELS*BENG_SNAPSHOTS*(BENG_BUFFER_IN_COUNTS-1))
     self.__reorderTz_smem(self.__gpu_beng_data_0,self.__gpu_beng_0,int32(BENG_BUFFER_IN_COUNTS),
@@ -201,7 +201,7 @@ class sdbe_cupreprocess(object):
     Requires that use_fft_resample flag is True.
     individual phased sums resampled at 2048 MHz. 
     '''
-    logger.debug('Resampling using FFTs')
+    self.logger.debug('Resampling using FFTs')
 
     #device memory allocation
     self.__gpu_time_series_0 = cuda.mem_alloc(4 * self.num_r2dbe_samples / 2) # 2048 MHz clock
@@ -230,7 +230,7 @@ class sdbe_cupreprocess(object):
     '''
     Resample using nearest interpolation.
     '''
-    logger.debug('Resampling using nearest interpolation')
+    self.logger.debug('Resampling using nearest interpolation')
     threads_per_block = 512
     blocks_per_grid = int(ceil(1. * self.num_r2dbe_samples / threads_per_block))
 
@@ -249,8 +249,9 @@ class sdbe_cupreprocess(object):
 		gpu_resamp,
 		int32(self.num_r2dbe_samples),
 		float64(SWARM_RATE/R2DBE_RATE),
-		float32(1./(2*BENG_CHANNELS_)),
+		float32(1.),
 		block=(threads_per_block,1,1),grid=(blocks_per_grid,1))
+		#float32(1./(2*BENG_CHANNELS_)),
       phased_sum_in.free()
 
       # loop through resampled time series in chunks of batch_B num_r2dbe_samples/4096/__bandlimit_batch
@@ -272,7 +273,7 @@ class sdbe_cupreprocess(object):
     '''
     Resample using linear interpolation.
     '''
-    logger.debug('Resampling using linear interpolation')
+    self.logger.debug('Resampling using linear interpolation')
     threads_per_block = 512
     blocks_per_grid = int(ceil(1. * self.num_r2dbe_samples / threads_per_block))
 
@@ -291,8 +292,9 @@ class sdbe_cupreprocess(object):
 		gpu_resamp,
 		int32(self.num_r2dbe_samples),
 		float64(SWARM_RATE/R2DBE_RATE),
-		float32(1./(2*BENG_CHANNELS_)),
+		float32(1.),
 		block=(threads_per_block,1,1),grid=(blocks_per_grid,1))
+		#float32(1./(2*BENG_CHANNELS_)),
       phased_sum_in.free()
 
       # loop through resampled time series in chunks of batch_B num_r2dbe_samples/4096/__bandlimit_batch
@@ -330,7 +332,7 @@ class sdbe_cupreprocess(object):
     # can free gpu_time_series_{0-1} now
 
   def gpumeminfo(self,driver):
-    logger.info('Memory usage: %f' % (1.- 1.*driver.mem_get_info()[0]/driver.mem_get_info()[1]))
+    self.logger.info('Memory usage: %f' % (1.- 1.*driver.mem_get_info()[0]/driver.mem_get_info()[1]))
 
   def cleanup(self):
 
@@ -340,8 +342,10 @@ class sdbe_cupreprocess(object):
     cufft.cufftDestroy(self.__plan_C)
 
     #
-    self.__gpu_r2dbe.free()
-    self.__gpu_quantized.free()
+    self.__gpu_quantized_0.free()
+    self.__gpu_quantized_1.free()
+    self.__gpu_time_series_0.free()
+    self.__gpu_time_series_1.free()
 
     # delete context
     #self.ctx.pop()
@@ -384,7 +388,7 @@ def read_sdbe_vdif(filename_input,num_vdif_frames,beng_frame_offset=1,batched=Tr
 #################################################################
 
 if __name__ == "__main__":
-
+  import pycuda.autoinit
   #cuda.init()
 
   parser = ArgumentParser(description="Convert SWARM vdif data into 4096 Msps time-domain vdif data")
@@ -393,8 +397,6 @@ if __name__ == "__main__":
   parser.add_argument('-d', dest='dir', help='directory for input SWARM data products', default='/home/shared/sdbe_preprocessed/')
   parser.add_argument('-s', dest='skip', type=int, help='starting snapshot', default=1)
   parser.add_argument('-alg', dest='resamp_kind', type=str, help='resampling algorithm', default='fft')
-  parser.add_argument('-n', dest='num_gpu', type=int, help='number of gpus to use',
-		default=1,choices=range(1,cuda.Device.count()+1))
   parser.add_argument('-c', dest='correlate', action='store_true', help='correlate against R2DBE')
   args = parser.parse_args()
 
@@ -478,7 +480,6 @@ if __name__ == "__main__":
     cpu_q_r2dbe = empty(g.num_r2dbe_samples/2,dtype=int32)
     for i in range(16):
       cpu_q_r2dbe[i::16] = (cpu_quantized_1 & (0x3 << 2*i)) >> (2*i)
-      #cpu_q_r2dbe[15-i::16] = (cpu_quantized & (0x3 << 2*i)) >> (2*i)
 
   # clean up
   #for g in gpus:
