@@ -29,7 +29,7 @@ def main(stdscr):
         # get and show all aphids keys
         for i, k in enumerate(akeys):
             v = r.get(k)
-            stdscr.addstr(i+2, 8, '{0:80s}= {1}'.format(k, v))
+            stdscr.addstr(i+2, 8, '{0:60s}= {1}'.format(k, v))
 
         # refresh screen
         stdscr.refresh()
