@@ -201,4 +201,27 @@ int aphids_get(aphids_context_t * aphids_ctx, char * key, char * value) {
   return APHIDS_OK;
 }  
 
+int aphids_destroy(aphids_context_t * aphids_ctx) {
+
+  hashpipe_status_t st = aphids_ctx->thread_args->st;
+  const char * status_key = aphids_ctx->thread_args->thread_desc->skey;
+
+  // update our status
+  hashpipe_status_lock_safe(&st);
+  hputs(st.buf, status_key, "stopping");
+  hashpipe_status_unlock_safe(&st);
+
+  // free redis context
+  redisFree(aphids_ctx->redis_ctx);
+
+  // one last log, number iterations
+  syslog(LOG_INFO, "%s stopped after %d iterations",
+	 aphids_ctx->thread_args->thread_desc->name, aphids_ctx->iters);
+
+  closelog(); // close logger
+
+  return APHIDS_OK;
+
+}
+
 #endif

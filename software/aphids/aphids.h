@@ -64,4 +64,11 @@ int aphids_update(aphids_context_t * aphids_ctx);
 int aphids_set(aphids_context_t * aphids_ctx, char * key, char * value);
 int aphids_get(aphids_context_t * aphids_ctx, char * key, char * value);
 
+/* aphids_destroy
+
+   This function cleans up and destroys an APHIDS context and should
+   at the end of all APHIDS-enable hashpipe threads.
+*/
+int aphids_destroy(aphids_context_t * aphids_ctx);
+
 #endif

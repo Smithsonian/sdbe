@@ -17,8 +17,6 @@ static void *run_method(hashpipe_thread_args_t * args) {
   int index = 0;
   vdif_packet_t this_vdif_packet;
   vdif_in_databuf_t *db_in = (vdif_in_databuf_t *)args->ibuf;
-  hashpipe_status_t st = args->st;
-  const char * status_key = args->thread_desc->skey;
   aphids_context_t aphids_ctx;
 
   // initialize the aphids context
@@ -62,15 +60,8 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
   } // end while(run_threads())
 
-  // update our status
-  hashpipe_status_lock_safe(&st);
-  hputs(st.buf, status_key, "stopping");
-  hashpipe_status_unlock_safe(&st);
-
-  // one last log, number iterations
-  syslog(LOG_INFO, "%s[STOP]: iters=%d", args->thread_desc->name, aphids_ctx.iters);
-
-  closelog(); // close logger
+  // destroy aphids context and exit
+  aphids_destroy(&aphids_ctx);
 
   return NULL;
 }
