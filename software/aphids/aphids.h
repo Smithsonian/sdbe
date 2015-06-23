@@ -1,8 +1,6 @@
 #ifndef APHIDS_H
 #define APHIDS_H
 
-#include <stdarg.h>
-
 #include "hashpipe.h"
 #include "hiredis/hiredis.h"
 
