@@ -1,10 +1,10 @@
 #include <stdio.h>
-#include <syslog.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
 
 #include "aphids.h"
+#include "aphids_log.h"
 #include "hiredis/hiredis.h"
 
 
@@ -39,12 +39,6 @@ int aphids_init(aphids_context_t * aphids_ctx, hashpipe_thread_args_t * thread_a
   // add redis context to aphids context
   aphids_ctx->redis_ctx = c;
 
-  // open syslog so we can send messages
-  openlog("aphids", LOG_PID, LOG_USER);
-
-  // log in syslog, just to say we're starting
-  syslog(LOG_INFO, "%s started", aphids_ctx->prefix);
-
   // update our hashpipe status
   hashpipe_status_lock_safe(&st);
   hputs(st.buf, status_key, "running");
@@ -55,6 +49,9 @@ int aphids_init(aphids_context_t * aphids_ctx, hashpipe_thread_args_t * thread_a
 
   // update our redis status
   aphids_set(aphids_ctx, "status", "running");
+
+  // send log, just to say we're starting
+  aphids_log(aphids_ctx, APHIDS_LOG_INFO, "started");
 
   return APHIDS_OK;
 }
@@ -214,14 +211,12 @@ int aphids_destroy(aphids_context_t * aphids_ctx) {
   // update our redis status
   aphids_set(aphids_ctx, "status", "done");
 
+  // one last log, number iterations
+  aphids_log(aphids_ctx, APHIDS_LOG_INFO,
+	     "stopped after %d iterations", aphids_ctx->iters);
+
   // free redis context
   redisFree(aphids_ctx->redis_ctx);
-
-  // one last log, number iterations
-  syslog(LOG_INFO, "%s stopped after %d iterations",
-	 aphids_ctx->thread_args->thread_desc->name, aphids_ctx->iters);
-
-  closelog(); // close logger
 
   return APHIDS_OK;
 
