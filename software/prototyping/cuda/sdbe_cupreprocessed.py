@@ -59,7 +59,7 @@ class sdbe_cupreprocess(object):
     self.__vdif_to_beng = kernel_module.get_function('vdif_to_beng')
     self.__reorderTz_smem = kernel_module.get_function('reorderTz_smem')
     if self.__resamp_kind == 'linear':
-      self.__linear_interp = kernel_module.get_function('linear1')
+      self.__linear_interp = kernel_module.get_function('linear')
       template_size = int(39*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE)
       ctid = SWARM_RATE/R2DBE_RATE*arange(template_size)
       cpu_ida  = floor(SWARM_RATE/R2DBE_RATE*arange(template_size)).astype(int32)
@@ -562,40 +562,43 @@ if __name__ == "__main__":
   
     plt.show()
 
-#Resampling using nearest interpolation
+#[krosenfe@hamster cuda]$ python sdbe_cupreprocessed.py -alg linear -c
 #operation       counts  total [ms]      x(real = 65.536)
 #-----------------------------------------------------------
-#gpu total       1       398.76          0.164
-#reorder         1       26.48           2.475
-#depacketize     1       12.50           5.243
-#quantize        1       0.75            86.904
-#resample        1       192.94          0.340
+#gpu total       1       331.82          5.063
+#reorder         1       26.45           0.404
+#resample        1       175.14          2.672
+#depacketize     1       12.02           0.183
+#quantize        1       0.32            0.005
+#mem transfer    2       117.88          1.799
+#
 #INFO:: Correlating result again R2DBE
-# (max,min) corr coeffs:         0.18928104014 -0.0469958905486
+# (max,min) corr coeffs:         0.188520458271 -0.039532406453
+# (max,min) corr coeffs:         0.315810267681 -0.0663339328473
+#
+#[krosenfe@hamster cuda]$ python sdbe_cupreprocessed.py -alg nearest -c
+#operation       counts  total [ms]      x(real = 65.536)
+#-----------------------------------------------------------
+#gpu total       1       347.40          5.301
+#reorder         1       26.46           0.404
+#resample        1       177.43          2.707
+#depacketize     1       12.04           0.184
+#quantize        1       0.35            0.005
+#mem transfer    2       131.11          2.001
+#
+#INFO:: Correlating result again R2DBE
+# (max,min) corr coeffs:         0.185023550395 -0.0460234654388
 # (max,min) corr coeffs:         0.309522793633 -0.0781857316486
 #
-#Resampling using linear interpolation
+#[krosenfe@hamster cuda]$ python sdbe_cupreprocessed.py -alg fft -c
 #operation       counts  total [ms]      x(real = 65.536)
 #-----------------------------------------------------------
-#gpu total       1       459.24          0.143
-#reorder         1       26.46           2.476
-#depacketize     1       12.59           5.205
-#quantize        1       0.31            210.796
-#resample        1       253.92          0.258
-#
-#INFO:: Correlating result again R2DBE
-# (max,min) corr coeffs:         0.188509379213 -0.0395297462877
-# (max,min) corr coeffs:         0.315810267718 -0.0663339328175
-
-
-# Resampling using FFTs
-#operation       counts  total [ms]      x(real = 65.536)
-#-----------------------------------------------------------
-#gpu total       1       409.67          0.160
-#reorder         1       26.44           2.479
-#depacketize     1       12.48           5.251
-#quantize        1       0.35            185.228
-#resample        1       204.50          0.320
+#gpu total       1       372.88          5.690
+#reorder         1       26.38           0.402
+#resample        1       205.21          3.131
+#depacketize     1       12.00           0.183
+#quantize        1       0.33            0.005
+#mem transfer    2       128.95          1.968
 #
 #INFO:: Correlating result again R2DBE
 # (max,min) corr coeffs:         0.191704138582 -0.0565066308196
