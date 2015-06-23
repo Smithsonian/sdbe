@@ -9,7 +9,8 @@ from pycuda.compiler import SourceModule
 import scikits.cuda.cufft as cufft
 
 from numpy import complex64,float32,int32,uint32,array,arange,floor,float64,\
-			empty,zeros,allclose,ceil,unique,hstack,max,abs,median
+			empty,zeros,allclose,ceil,unique,hstack,max,abs,median,\
+			rint,all
 from numpy.random import standard_normal,seed
 from numpy.fft import irfft,rfft
 import numpy as np
@@ -62,6 +63,34 @@ __global__ void linear(const float *a, float *b, const int Nb, const double c, c
   }
 }
 
+"""
+
+kernel_source_1 = """
+#include <cufft.h>
+
+__global__ void linear(const float *a, float *b, const int N, const float *wgt, const int *ida){
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (tid < N){
+    int i = ida[tid];
+    float w = wgt[tid];
+    b[tid] = a[i]*(1.f-w) + a[i+1]*w;
+  }
+}
+
+__global__ void linear1(const float *a, float *b, const int N, const float *wgt, const int *ida){
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  int i = ida[tid];
+  float w = wgt[tid];
+  // loop over groups of 39 snapshots (assuming we have 128 such chunks)
+  for (int ichunk=0; ichunk<128; ichunk += 1){
+    //b[ichunk*2097152+tid] = a[i+1277952*ichunk]*(1.f-w) + a[i+1+1277952*ichunk]*w;
+    if (i+1+1277952*ichunk<N){
+      b[ichunk*2097152+tid] = a[i+1277952*ichunk]*(1.f-w) + a[i+1+1277952*ichunk]*w;
+    } else {
+      b[ichunk*2097152+tid] = a[i+1277952*ichunk];
+    }
+  }
+}
 """
 
 def fft_batched(gpu_1,gpu_2,num_snapshots,snapshots_per_batch=39,cpu_check=True):
@@ -212,10 +241,177 @@ def fft_interp(gpu_1,gpu_2,num_snapshots,interp_kind='nearest',cpu_check=True):
     t_r2dbe_rate = arange(0,T_s_all-dt_s,dt_r)
     # and interpolate
     x_interp = interp1d(t_swarm_rate,xs_swarm_rate,kind=interp_kind)
+    cpu_A = x_interp(t_r2dbe_rate).astype(float32)
+
+    cpu_out = np.empty_like(cpu_A,dtype=float32)
+    cuda.memcpy_dtoh(cpu_out,gpu_1)
+
+    print 'median residual: ',median(abs(cpu_A-cpu_out))
+    if interp_kind is 'nearest':
+      cpu_A[::32] = 0
+      cpu_out[::32] = 0
+    print 'test results: ', 'pass' if allclose(cpu_A,cpu_out) else 'fail'
+##################################################################################
+
+def fft_interp_1(gpu_1,gpu_2,num_snapshots,interp_kind='linear',cpu_check=True):
+  '''
+  Batched fft to time series and then interpolation to resample.
+  Use devuce memory to store coefficients and index values.
+  '''
+  tic = cuda.Event()
+  toc = cuda.Event()
+
+  batch_size = num_snapshots // 39
+  print 'batch size: %d' % batch_size
+
+  # create batched FFT plan configuration
+  n = array([2*BENG_CHANNELS_],int32)
+  inembed = array([BENG_CHANNELS],int32)
+  onembed = array([2*BENG_CHANNELS_],int32)
+  plan = cufft.cufftPlanMany(1, n.ctypes.data,
+ 			inembed.ctypes.data, 1, BENG_CHANNELS,
+                        onembed.ctypes.data, 1, 2*BENG_CHANNELS_,
+  			cufft.CUFFT_C2R, batch_size)
+
+  # pre-calculate coefficients on CPU (c*tid-ida)
+  r2dbe_samples = int(num_snapshots*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE)
+  ctid = SWARM_RATE/R2DBE_RATE*arange(r2dbe_samples)
+  cpu_ida  = floor(SWARM_RATE/R2DBE_RATE*arange(r2dbe_samples)).astype(int32)
+  cpu_wgt  = (ctid-cpu_ida).astype(float32)
+
+  gpu_ida = cuda.mem_alloc(4 * r2dbe_samples)
+  cuda.memcpy_htod(gpu_ida,cpu_ida)
+  gpu_wgt = cuda.mem_alloc(4 * r2dbe_samples)
+  cuda.memcpy_htod(gpu_wgt,cpu_wgt)
+
+  kernel_module = SourceModule(kernel_source_1)
+  linear = kernel_module.get_function('linear')
+
+  # execute plan
+  for ib in range(num_snapshots / batch_size):
+    cufft.cufftExecC2R(plan,
+			int(gpu_1)+(8*ib*batch_size*BENG_CHANNELS),
+			int(gpu_2)+(4*ib*batch_size*2*BENG_CHANNELS_))
+
+  # resample
+  tic.record()
+  linear(gpu_2,gpu_1,int32(r2dbe_samples),gpu_wgt,gpu_ida,
+	block=(512,1,1),grid=(r2dbe_samples/512,1))
+  toc.record()
+  toc.synchronize()
+
+  print 'GPU time:', tic.time_till(toc),' ms = ',tic.time_till(toc)/(num_snapshots*0.5*13.128e-3),' x real (both SB)' 
+
+  # destroy plan
+  cufft.cufftDestroy(plan)
+
+  # check on CPU
+  if (cpu_check):
+    # timestep sizes for SWARM and R2DBE rates
+    dt_s = 1.0/SWARM_RATE
+    dt_r = 1.0/R2DBE_RATE
+    # the timespan of one SWARM FFT window
+    T_s = dt_s*2*BENG_CHANNELS_
+    # the timespan of all SWARM data
+    T_s_all = T_s*num_snapshots
+    # get time-domain signal
+    xs_swarm_rate = irfft(cpu_in,n=2*BENG_CHANNELS_,axis=1).flatten()
+    # and calculate sample points
+    t_swarm_rate = arange(0,T_s_all,dt_s)
+    print t_swarm_rate[0],t_swarm_rate[-1]
+    # calculate resample points (subtract one dt_s from end to avoid extrapolation)
+    t_r2dbe_rate = arange(0,T_s_all-dt_s,dt_r)
+    # and interpolate
+    x_interp = interp1d(t_swarm_rate,xs_swarm_rate,kind=interp_kind)
     cpu_A = x_interp(t_r2dbe_rate)
 
     cpu_out = np.empty_like(cpu_A,dtype=float32)
     cuda.memcpy_dtoh(cpu_out,gpu_1)
+    cpu_out /= (2*BENG_CHANNELS_)
+
+    print 'median residual: ',median(abs(cpu_A-cpu_out))
+    if interp_kind is 'nearest':
+      cpu_A[::32] = 0
+      cpu_out[::32] = 0
+    print 'test results: ', 'pass' if allclose(cpu_A,cpu_out) else 'fail'
+
+##################################################################################
+
+def fft_interp_2(gpu_1,gpu_2,num_snapshots,interp_kind='linear',cpu_check=True):
+  '''
+  Batched fft to time series and then interpolation to resample.
+  Use devuce memory to store coefficients and index values.
+  '''
+  tic = cuda.Event()
+  toc = cuda.Event()
+
+  batch_size = num_snapshots // 39
+  print 'batch size: %d' % batch_size
+
+  # create batched FFT plan configuration
+  n = array([2*BENG_CHANNELS_],int32)
+  inembed = array([BENG_CHANNELS],int32)
+  onembed = array([2*BENG_CHANNELS_],int32)
+  plan = cufft.cufftPlanMany(1, n.ctypes.data,
+ 			inembed.ctypes.data, 1, BENG_CHANNELS,
+                        onembed.ctypes.data, 1, 2*BENG_CHANNELS_,
+  			cufft.CUFFT_C2R, batch_size)
+
+  # pre-calculate coefficients on CPU (c*tid-ida)
+  stride = 39*2*BENG_CHANNELS_
+  template_size = int(39*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE)
+  ctid = SWARM_RATE/R2DBE_RATE*arange(template_size)
+  cpu_ida  = floor(SWARM_RATE/R2DBE_RATE*arange(template_size)).astype(int32)
+  cpu_wgt  = (ctid-cpu_ida).astype(float32)
+
+  gpu_ida = cuda.mem_alloc(4 * template_size)
+  cuda.memcpy_htod(gpu_ida,cpu_ida)
+  gpu_wgt = cuda.mem_alloc(4 * template_size)
+  cuda.memcpy_htod(gpu_wgt,cpu_wgt)
+
+  kernel_module = SourceModule(kernel_source_1)
+  linear = kernel_module.get_function('linear1')
+
+  # execute plan
+  for ib in range(num_snapshots / batch_size):
+    cufft.cufftExecC2R(plan,
+			int(gpu_1)+(8*ib*batch_size*BENG_CHANNELS),
+			int(gpu_2)+(4*ib*batch_size*2*BENG_CHANNELS_))
+
+  # resample
+  tic.record()
+  linear(gpu_2,gpu_1,int32(num_snapshots*2*BENG_CHANNELS_),gpu_wgt,gpu_ida,
+	block=(512,1,1),grid=(2097152/512,1))
+  toc.record()
+  toc.synchronize()
+
+  print 'GPU time:', tic.time_till(toc),' ms = ',tic.time_till(toc)/(num_snapshots*0.5*13.128e-3),' x real (both SB)' 
+
+  # destroy plan
+  cufft.cufftDestroy(plan)
+
+  # check on CPU
+  if (cpu_check):
+    # timestep sizes for SWARM and R2DBE rates
+    dt_s = 1.0/SWARM_RATE
+    dt_r = 1.0/R2DBE_RATE
+    # the timespan of one SWARM FFT window
+    T_s = dt_s*2*BENG_CHANNELS_
+    # the timespan of all SWARM data
+    T_s_all = T_s*num_snapshots
+    # get time-domain signal
+    xs_swarm_rate = irfft(cpu_in,n=2*BENG_CHANNELS_,axis=1).flatten()
+    # and calculate sample points
+    t_swarm_rate = arange(0,T_s_all,dt_s)
+    # calculate resample points (subtract one dt_s from end to avoid extrapolation)
+    t_r2dbe_rate = arange(0,T_s_all-dt_s,dt_r)
+    # and interpolate
+    x_interp = interp1d(t_swarm_rate,xs_swarm_rate,kind=interp_kind)
+    cpu_A = x_interp(t_r2dbe_rate)
+
+    cpu_out = np.empty_like(cpu_A,dtype=float32)
+    cuda.memcpy_dtoh(cpu_out,gpu_1)
+    cpu_out /= (2*BENG_CHANNELS_)
 
     print 'median residual: ',median(abs(cpu_A-cpu_out))
     if interp_kind is 'nearest':
@@ -227,7 +423,7 @@ def fft_interp(gpu_1,gpu_2,num_snapshots,interp_kind='nearest',cpu_check=True):
 ##################################################################################
 
 # mock data
-num_snapshots = 39
+num_snapshots = 39*128
 data_shape = (num_snapshots,BENG_CHANNELS)
 cpu_in = standard_normal(data_shape) + 1j * standard_normal(data_shape)
 cpu_in = cpu_in.astype(complex64)
@@ -247,13 +443,20 @@ if False:
 # nearest-neighbor:
 if False:
   gpu_1 = cuda.mem_alloc(4*(int(floor(num_snapshots*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE)) - 1))
-  gpu_2 = cuda.mem_alloc(4*int(4*num_snapshots*(2*BENG_CHANNELS_)))
+  gpu_2 = cuda.mem_alloc(int(4*num_snapshots*(2*BENG_CHANNELS_)))
   cuda.memcpy_htod(gpu_1,cpu_in)
   fft_interp(gpu_1,gpu_2,num_snapshots,interp_kind='nearest',cpu_check=True)
 
 # linear 
-if True: 
+if False:
   gpu_1 = cuda.mem_alloc(4*(int(floor(num_snapshots*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE)) - 1))
-  gpu_2 = cuda.mem_alloc(4*int(4*num_snapshots*(2*BENG_CHANNELS_)))
+  gpu_2 = cuda.mem_alloc(4*int(num_snapshots*(2*BENG_CHANNELS_)))
   cuda.memcpy_htod(gpu_1,cpu_in)
   fft_interp(gpu_1,gpu_2,num_snapshots,interp_kind='linear',cpu_check=True)
+
+# linear saving coefficients
+if True:
+  gpu_1 = cuda.mem_alloc(4*int(num_snapshots*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE))
+  gpu_2 = cuda.mem_alloc(4*int(num_snapshots*(2*BENG_CHANNELS_)))
+  cuda.memcpy_htod(gpu_1,cpu_in)
+  fft_interp_2(gpu_1,gpu_2,num_snapshots,interp_kind='linear',cpu_check=True)

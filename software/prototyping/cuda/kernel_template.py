@@ -163,27 +163,37 @@ __global__ void reorderTz_smem(cufftComplex *beng_data_in, cufftComplex *beng_da
   }
 }
 
-__global__ void nearest(float *a, int Na, float *b, int Nb, double c, float d){
+__global__ void nearest(float *a, int Na, float *b, int Nb, double c){
   /*
   This kernel uses a round-half-to-even tie-breaking rule which is
   opposite that of python's interp_1d.
   a: input_array
   b: output_array
   Nb: size of array b
-  c: stride for interpolation: b[i] = d*a[int(c*i)]
+  c: stride for interpolation: b[i] = a[int(c*i)]
   */
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid < Nb) {
     int ida = __double2int_rn(tid*c); // round nearest
-    if (ida < Na-1){
-      b[tid] = d*a[(ida / 32768)*32770 + (ida %% 32768)];
+      b[tid] = a[ida];
+  }
+}
+
+__global__ void linear1(const float *a, float *b, const int N, const float *wgt, const int *ida){
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  int i = ida[tid];
+  float w = wgt[tid];
+  // loop over groups of 39 snapshots (assuming we have 128 such chunks)
+  for (int ichunk=0; ichunk<128; ichunk += 1){
+    if (i+1+1277952*ichunk<N){
+      b[ichunk*2097152+tid] = a[i+1277952*ichunk]*(1.f-w) + a[i+1+1277952*ichunk]*w;
     } else {
-      b[tid] = d*a[Na-1];
+      b[ichunk*2097152+tid] = a[i+1277952*ichunk];
     }
   }
 }
 
-__global__ void linear(float *a, int Na, float *b, int Nb, double c, float d){
+__global__ void linear(float *a, int Na, float *b, int Nb, double c){
  /*
   a: input_array (assume padded by two floats for every SWARM snapshot)
   b: output_array
@@ -198,10 +208,12 @@ __global__ void linear(float *a, int Na, float *b, int Nb, double c, float d){
   if (tid < Nb) {
     int ida = __double2int_rd(tid*c); // round down
     if (ida < Na-1){
-      b[tid] = d * ( a[(ida / 32768)*32770 + (ida %% 32768) ]*(1.-(c*tid-ida)) + 
-		     a[((ida+1) / 32768)*32770 + ((ida+1) %% 32768)]*(c*tid-ida) );
+      //b[tid] = d * ( a[(ida / 32768)*32770 + (ida %% 32768) ]*(1.-(c*tid-ida)) + 
+//		     a[((ida+1) / 32768)*32770 + ((ida+1) %% 32768)]*(c*tid-ida) );
+      b[tid] = ( a[ida]*(1.-(c*tid-ida)) + a[ida+1]*(c*tid-ida) );
     } else {
-      b[tid] = d * a[(ida / 32768)*32770 + (ida %% 32768) ];
+      //b[tid] = d * a[(ida / 32768)*32770 + (ida %% 32768) ];
+      b[tid] = a[ida];
     }
   }
 }

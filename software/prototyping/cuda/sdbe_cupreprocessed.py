@@ -1,8 +1,5 @@
 '''
- simple Queue based workflow using CUDA kernels
- Based on rslib.py script by LLB
- Steps implemented:
-  - 
+Module for using cuda kernels in python
 '''
 
 import sys
@@ -14,11 +11,10 @@ from pycuda.compiler import SourceModule
 import scikits.cuda.cufft as cufft
 from kernel_template import kernel_template
 
-from threading import Thread
-from Queue import Queue
 from numpy.fft import rfft, irfft
 from numpy import complex64,float32,float64,int32,uint32,array,arange,empty,zeros,ceil,roll
 from numpy import min,floor,ceil,exp,angle,reshape,sqrt,roll,log2
+from scipy.special import erfinv
 from argparse import ArgumentParser
 from struct import unpack
 import logging
@@ -28,7 +24,7 @@ from collections import defaultdict
 import read_r2dbe_vdif,cross_corr,sdbe_preprocess
 import h5py
 
-from scipy.special import erfinv
+import ctypes
 
 VDIF_BYTE_SIZE = 1056
 VDIF_BYTE_SIZE_DATA = 1024
@@ -63,7 +59,15 @@ class sdbe_cupreprocess(object):
     self.__vdif_to_beng = kernel_module.get_function('vdif_to_beng')
     self.__reorderTz_smem = kernel_module.get_function('reorderTz_smem')
     if self.__resamp_kind == 'linear':
-      self.__linear_interp = kernel_module.get_function('linear')
+      self.__linear_interp = kernel_module.get_function('linear1')
+      template_size = int(39*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE)
+      ctid = SWARM_RATE/R2DBE_RATE*arange(template_size)
+      cpu_ida  = floor(SWARM_RATE/R2DBE_RATE*arange(template_size)).astype(int32)
+      cpu_wgt  = (ctid-cpu_ida).astype(float32)
+      self.__gpu_ida = cuda.mem_alloc(4 * template_size)
+      cuda.memcpy_htod(self.__gpu_ida,cpu_ida)
+      self.__gpu_wgt = cuda.mem_alloc(4 * template_size)
+      cuda.memcpy_htod(self.__gpu_wgt,cpu_wgt)
     elif self.__resamp_kind == 'nearest': 
       self.__nearest_interp = kernel_module.get_function('nearest')
     self.__quantize2bit = kernel_module.get_function('quantize2bit')
@@ -74,10 +78,12 @@ class sdbe_cupreprocess(object):
       # inverse in-place FFT plan
       n = array([2*BENG_CHANNELS_],int32)
       inembed = array([BENG_CHANNELS],int32)
-      onembed = array([2*BENG_CHANNELS],int32)
+      onembed = array([2*BENG_CHANNELS_],int32)
+      self.__sdbe_batch = BENG_SNAPSHOTS
       self.__plan_A = cufft.cufftPlanMany(1, n.ctypes.data, inembed.ctypes.data, 1, BENG_CHANNELS,
-	                                       onembed.ctypes.data, 1, 2*BENG_CHANNELS,
-  					       cufft.CUFFT_C2R, self.num_beng_counts*BENG_SNAPSHOTS)
+	                                       onembed.ctypes.data, 1, 2*BENG_CHANNELS_,
+  					       cufft.CUFFT_C2R, self.__sdbe_batch)
+
       # band trimming R2C FFT plan
       n = array([4096],int32)
       inembed = array([4096],int32)
@@ -121,6 +127,12 @@ class sdbe_cupreprocess(object):
 					onembed.ctypes.data,1,32*2*BENG_CHANNELS_,
 					cufft.CUFFT_C2R,self.__bandlimit_batch)
 
+
+    # deal with pagelocked memory for faster memory transfers.
+    self.vdif_buf = cuda.pagelocked_empty((VDIF_INT_SIZE*VDIF_PER_BENG*BENG_BUFFER_IN_COUNTS,),uint32)
+    self.quantized_0 = cuda.pagelocked_empty((self.num_r2dbe_samples/2/16,),uint32)
+    self.quantized_1 = cuda.pagelocked_empty((self.num_r2dbe_samples/2/16,),uint32)
+
     self.__gpu_vdif_buf = None
     self.__gpu_beng_data_0 = None
     self.__gpu_beng_data_1 = None
@@ -132,11 +144,18 @@ class sdbe_cupreprocess(object):
     self.__gpu_quantized_1 = None
 
 
-  def memcpy_sdbe_vdif(self,cpu_vdif_buf,bcount_offset):
+  def memcpy_sdbe_vdif(self,bcount_offset):
     ''' Move sdbe vdif buffer buffer to device.'''
     self.bcount_offset = bcount_offset
-    self.__gpu_vdif_buf = cuda.mem_alloc(cpu_vdif_buf.nbytes)
-    cuda.memcpy_htod(self.__gpu_vdif_buf,cpu_vdif_buf)
+    self.__gpu_vdif_buf = cuda.mem_alloc(VDIF_BYTE_SIZE*VDIF_PER_BENG*BENG_BUFFER_IN_COUNTS)
+    cuda.memcpy_htod(self.__gpu_vdif_buf,self.vdif_buf)
+
+  def memcpy_streams(self):
+    ''' move quantized streams to host '''
+    cuda.memcpy_dtoh(self.quantized_0,self.__gpu_quantized_0)
+    cuda.memcpy_dtoh(self.quantized_1,self.__gpu_quantized_1)
+    self.__gpu_quantized_0.free()
+    self.__gpu_quantized_1.free()
 
   def depacketize_sdbe_vdif(self,blocks_per_grid=128):
     ''' 
@@ -144,8 +163,8 @@ class sdbe_cupreprocess(object):
     consecutive snapshots are indexed fastest 
     '''
     self.logger.debug('depacketizing B-engine data')
-    self.__gpu_beng_data_0 = cuda.mem_alloc(8*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS)
-    self.__gpu_beng_data_1 = cuda.mem_alloc(8*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS)
+    self.__gpu_beng_data_0 = cuda.mem_alloc(8*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS) # 15.6%
+    self.__gpu_beng_data_1 = cuda.mem_alloc(8*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS) # 15.6%
     gpu_fid         = cuda.mem_alloc(4*VDIF_PER_BENG*BENG_BUFFER_IN_COUNTS)
     gpu_cid         = cuda.mem_alloc(4*VDIF_PER_BENG*BENG_BUFFER_IN_COUNTS)
     gpu_bcount      = cuda.mem_alloc(4*VDIF_PER_BENG*BENG_BUFFER_IN_COUNTS)
@@ -166,7 +185,7 @@ class sdbe_cupreprocess(object):
     gpu_cid.free()
     gpu_bcount.free()
     gpu_beng_frame_completion.free()
-    # free 2-bit vdif 
+    # could free 2-bit vdif (2%)
     self.__gpu_vdif_buf.free()
 
   def reorder_beng_data(self):
@@ -221,7 +240,7 @@ class sdbe_cupreprocess(object):
         # Turn padded SWARM spectrum into time series with R2DBE sampling rate
         cufft.cufftExecC2R(self.__plan_C,
 			int(gpu_tmp)+int(8*150*512),int(phased_sum_out)+
-						int(4*32*2*BENG_CHANNELS_*ib*self.__bandlimit_batch))
+			int(4*32*2*BENG_CHANNELS_*ib*self.__bandlimit_batch))
       gpu_tmp.free()
 
     gpu_swarm.free()
@@ -238,21 +257,22 @@ class sdbe_cupreprocess(object):
     self.__gpu_time_series_1 = cuda.mem_alloc(4 * self.num_r2dbe_samples / 2) # 2048 MHz clock
     self.__gpu_time_series_0 = cuda.mem_alloc(4 * self.num_r2dbe_samples / 2) # 2048 MHz clock
     gpu_r2dbe_spec = cuda.mem_alloc(8 * (4096/2+1) * self.__bandlimit_batch) # memory peanuts
+    gpu_swarm = cuda.mem_alloc(4 * self.num_swarm_samples)
 
     for (phased_sum_in,phased_sum_out) in zip((self.__gpu_beng_0, self.__gpu_beng_1),(self.__gpu_time_series_0,self.__gpu_time_series_1)):
       # Turn SWARM snapshots into timeseries
-      cufft.cufftExecC2R(self.__plan_A,int(phased_sum_in),int(phased_sum_in))
+      #cufft.cufftExecC2R(self.__plan_A,int(phased_sum_in),int(phased_sum_in))
+      for ib in range(self.num_beng_counts):
+        cufft.cufftExecC2R(self.__plan_A,int(phased_sum_in)+int(8*ib*BENG_SNAPSHOTS*BENG_CHANNELS),int(gpu_swarm)+int(4*ib*BENG_SNAPSHOTS*2*BENG_CHANNELS_))
+      phased_sum_in.free()
       # resample 
       gpu_resamp = cuda.mem_alloc(4 * self.num_r2dbe_samples) # 25% of device memory
-      self.__nearest_interp(phased_sum_in,
+      self.__nearest_interp(gpu_swarm,
 		int32(self.num_swarm_samples),
 		gpu_resamp,
 		int32(self.num_r2dbe_samples),
 		float64(SWARM_RATE/R2DBE_RATE),
-		float32(1.),
 		block=(threads_per_block,1,1),grid=(blocks_per_grid,1))
-		#float32(1./(2*BENG_CHANNELS_)),
-      phased_sum_in.free()
 
       # loop through resampled time series in chunks of batch_B num_r2dbe_samples/4096/__bandlimit_batch
       for ib in range(self.num_r2dbe_samples/4096/self.__bandlimit_batch):
@@ -268,6 +288,7 @@ class sdbe_cupreprocess(object):
       gpu_resamp.free()
 
     gpu_r2dbe_spec.free()
+    gpu_swarm.free()
 
   def __fft_linear_interp(self):
     '''
@@ -278,30 +299,26 @@ class sdbe_cupreprocess(object):
     blocks_per_grid = int(ceil(1. * self.num_r2dbe_samples / threads_per_block))
 
     # allocate device memory
-    self.__gpu_time_series_1 = cuda.mem_alloc(4 * self.num_r2dbe_samples / 2) # 2048 MHz clock
-    self.__gpu_time_series_0 = cuda.mem_alloc(4 * self.num_r2dbe_samples / 2) # 2048 MHz clock
+    self.__gpu_time_series_1 = cuda.mem_alloc(4 * self.num_r2dbe_samples / 2) # 2048 MHz clock, 12.5% memory
+    self.__gpu_time_series_0 = cuda.mem_alloc(4 * self.num_r2dbe_samples / 2) # 2048 MHz clock, 12.5% memory
     gpu_r2dbe_spec = cuda.mem_alloc(8 * (4096/2+1) * self.__bandlimit_batch) # memory peanuts
+    gpu_swarm = cuda.mem_alloc(4 * self.num_swarm_samples)
 
     for (phased_sum_in,phased_sum_out) in zip((self.__gpu_beng_0, self.__gpu_beng_1),(self.__gpu_time_series_0,self.__gpu_time_series_1)):
       # Turn SWARM snapshots into timeseries
-      cufft.cufftExecC2R(self.__plan_A,int(phased_sum_in),int(phased_sum_in))
-      # resample 
-      gpu_resamp = cuda.mem_alloc(4 * self.num_r2dbe_samples) # 25% of device memory
-      self.__linear_interp(phased_sum_in,
-		int32(self.num_swarm_samples),
-		gpu_resamp,
-		int32(self.num_r2dbe_samples),
-		float64(SWARM_RATE/R2DBE_RATE),
-		float32(1.),
-		block=(threads_per_block,1,1),grid=(blocks_per_grid,1))
-		#float32(1./(2*BENG_CHANNELS_)),
+      ##cufft.cufftExecC2R(self.__plan_A,int(phased_sum_in),int(phased_sum_in))
+      for ib in range(self.num_beng_counts):
+        cufft.cufftExecC2R(self.__plan_A,int(phased_sum_in)+int(8*ib*BENG_SNAPSHOTS*BENG_CHANNELS),int(gpu_swarm)+int(4*ib*BENG_SNAPSHOTS*2*BENG_CHANNELS_))
       phased_sum_in.free()
+      ## resample 
+      gpu_resamp = cuda.mem_alloc(4 * self.num_r2dbe_samples) # 25% of device memory
+      self.__linear_interp(gpu_swarm,gpu_resamp,int32(self.num_swarm_samples),self.__gpu_wgt,self.__gpu_ida,
+		block=(512,1,1),grid=(2097152/512,1))
 
       # loop through resampled time series in chunks of batch_B num_r2dbe_samples/4096/__bandlimit_batch
       for ib in range(self.num_r2dbe_samples/4096/self.__bandlimit_batch):
         # compute spectrum with 4096 MHz sample clock
-        cufft.cufftExecR2C(self.__plan_B,
-        int(gpu_resamp)+int(4*ib*4096*self.__bandlimit_batch),int(gpu_r2dbe_spec))
+        cufft.cufftExecR2C(self.__plan_B,int(gpu_resamp)+int(4*ib*4096*self.__bandlimit_batch),int(gpu_r2dbe_spec))
         # invert to time series with BW of 1024 MHz, masking out first 150 MHz and last (1024-150) MHz. (pointers are 4-byte values)
         cufft.cufftExecC2R(self.__plan_C,
 		int(gpu_r2dbe_spec)+int(8*150),
@@ -311,6 +328,7 @@ class sdbe_cupreprocess(object):
       gpu_resamp.free()
 
     gpu_r2dbe_spec.free()
+    gpu_swarm.free()
 
   def quantize(self,threshold):
     ''' quantize to 2-bits. note little endian format following vdif '''
@@ -329,10 +347,13 @@ class sdbe_cupreprocess(object):
 		block=threads_per_block,grid=blocks_per_grid)
     self.__quantize2bit(self.__gpu_time_series_1,self.__gpu_quantized_1,int32(self.num_r2dbe_samples/2),float32(threshold[1]),
 		block=threads_per_block,grid=blocks_per_grid)
-    # can free gpu_time_series_{0-1} now
 
-  def gpumeminfo(self,driver):
-    self.logger.info('Memory usage: %f' % (1.- 1.*driver.mem_get_info()[0]/driver.mem_get_info()[1]))
+    # can free gpu_time_series_{0-1} now
+    #self.__gpu_time_series_1.free()
+    #self.__gpu_time_series_0.free()
+
+  def gpumeminfo(self,driver,msg=''):
+    self.logger.info('Memory usage: %f :: (%20s)' % (1.- 1.*driver.mem_get_info()[0]/driver.mem_get_info()[1],msg))
 
   def cleanup(self):
 
@@ -340,16 +361,6 @@ class sdbe_cupreprocess(object):
     cufft.cufftDestroy(self.__plan_A)
     cufft.cufftDestroy(self.__plan_B)
     cufft.cufftDestroy(self.__plan_C)
-
-    #
-    self.__gpu_quantized_0.free()
-    self.__gpu_quantized_1.free()
-    self.__gpu_time_series_0.free()
-    self.__gpu_time_series_1.free()
-
-    # delete context
-    #self.ctx.pop()
-    #del self.ctx
 
 #################################################################
 
@@ -361,9 +372,9 @@ def get_bcount_from_vdif(vdif_start):
   BENG_VDIF_HDR_1_OFFSET_INT = 5  #  c  0  f b0
   return ((vdif_start[BENG_VDIF_HDR_1_OFFSET_INT]&0xFF000000)>>24) + ((vdif_start[BENG_VDIF_HDR_0_OFFSET_INT]&0x00FFFFFF)<<8);
 
-def read_sdbe_vdif(filename_input,num_vdif_frames,beng_frame_offset=1,batched=True):
+def read_sdbe_vdif(vdif_buf,filename_input,num_vdif_frames,beng_frame_offset=1,batched=True):
   logger = logging.getLogger(__name__)
-  vdif_buf = empty(VDIF_BYTE_SIZE*num_vdif_frames/4, dtype=uint32)
+  #vdif_buf = empty(VDIF_BYTE_SIZE*num_vdif_frames/4, dtype=uint32)
   for ii in arange(4):
     filename_data = "%s_swarmdbe_eth%d.vdif" % (filename_input, 2+ii)
     fh = open(filename_data,"r")
@@ -383,7 +394,7 @@ def read_sdbe_vdif(filename_input,num_vdif_frames,beng_frame_offset=1,batched=Tr
     tmp_vdif = array(unpack('<{0}I'.format(VDIF_INT_SIZE),fh.read(VDIF_BYTE_SIZE)), uint32)
     logger.debug('ending with B-count = %d, read %d B-engine frames' % (get_bcount_from_vdif(tmp_vdif), get_bcount_from_vdif(tmp_vdif)-bcount_offset+1))
     fh.close()
-  return vdif_buf,bcount_offset
+  return bcount_offset
 
 #################################################################
 
@@ -406,11 +417,11 @@ if __name__ == "__main__":
 
 
   if args.resamp_kind == 'linear':
-    thresh = [22.6, 23.6]
+    thresh = [741508.44,773105.12]
   elif args.resamp_kind == 'fft':
     thresh = [2.80364832e+08, 2.95670688e+08]
   elif args.resamp_kind == 'nearest':
-    thresh = [22.6, 23.6]
+    thresh = [833892.25, 875652.25]
   thresh = sqrt(2)*erfinv(0.5)*array(thresh)
 
   # timers
@@ -431,17 +442,14 @@ if __name__ == "__main__":
 
     g = sdbe_cupreprocess(0,resamp_kind=args.resamp_kind)
 
-    # host memory for result (should be pagelocked?)
-    cpu_quantized_0 = empty(g.num_r2dbe_samples/2/16,dtype=uint32)
-    cpu_quantized_1 = empty(g.num_r2dbe_samples/2/16,dtype=uint32)
-  
     # load vdif onto device
-    cpu_vdif_buf,bcount_offset = read_sdbe_vdif(rel_path_dat+scan_filename_base,BENG_BUFFER_IN_COUNTS*VDIF_PER_BENG,
+    bcount_offset = read_sdbe_vdif(g.vdif_buf,rel_path_dat+scan_filename_base,BENG_BUFFER_IN_COUNTS*VDIF_PER_BENG,
 						beng_frame_offset=g.gpuid*BENG_BUFFER_IN_COUNTS+1)
 
     tic('gpu total')
+
     tic('mem transfer')
-    g.memcpy_sdbe_vdif(cpu_vdif_buf,bcount_offset)
+    g.memcpy_sdbe_vdif(bcount_offset)
     toc('mem transfer')
   
     # depacketize vdif
@@ -466,20 +474,16 @@ if __name__ == "__main__":
     g.quantize(thresh)
     toc('quantize')
 
+    # load quantized data
     tic('mem transfer')
-    cuda.memcpy_dtoh(cpu_quantized_0,g._sdbe_cupreprocess__gpu_quantized_0)
-    cuda.memcpy_dtoh(cpu_quantized_1,g._sdbe_cupreprocess__gpu_quantized_1)
+    g.memcpy_streams()
     toc('mem transfer')
   
     toc('gpu total')
-  
-    # pull float data from device
-    cpu_r2dbe = empty(g.num_r2dbe_samples/2,dtype=float32) # empty array for result
-    cuda.memcpy_dtoh(cpu_r2dbe,g._sdbe_cupreprocess__gpu_time_series_1)
 
     cpu_q_r2dbe = empty(g.num_r2dbe_samples/2,dtype=int32)
     for i in range(16):
-      cpu_q_r2dbe[i::16] = (cpu_quantized_1 & (0x3 << 2*i)) >> (2*i)
+      cpu_q_r2dbe[i::16] = (g.quantized_1 & (0x3 << 2*i)) >> (2*i)
 
   # clean up
   #for g in gpus:
@@ -490,12 +494,16 @@ if __name__ == "__main__":
   print "%s\t%s\t%s\t%s" % ('operation', 'counts', 'total [ms]', 'x(real = %.3f)' % (real_time*1e3))
   print "-----------------------------------------------------------"
   for k in total.keys():
-      print "%s\t%d\t%.2f\t\t%.3f" % (k, counts[k], 1e3*total[k], real_time/total[k]  )
+      print "%s\t%d\t%.2f\t\t%.3f" % (k, counts[k], 1e3*total[k], total[k]/real_time )
 
 
   if args.correlate:
     import matplotlib.pyplot as plt
     logger.info("\nINFO:: Correlating result again R2DBE")
+
+    # pull float data from device
+    cpu_r2dbe = empty(g.num_r2dbe_samples/2,dtype=float32) # empty array for result
+    cuda.memcpy_dtoh(cpu_r2dbe,g._sdbe_cupreprocess__gpu_time_series_1)
   
     # Now read R2DBE data covering roughly the same time window as the SWARM
     # data. Start at an offset of zero (i.e. from the first VDIF packet) to
@@ -525,7 +533,8 @@ if __name__ == "__main__":
 
     #for (x,shift) in zip((cpu_q_r2dbe,xs_bl),(floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6),0)):
     #for (x,shift) in zip((cpu_q_r2dbe,cpu_r2dbe,xs_bl),(floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6),floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6),0)):
-    for (x,shift) in zip((cpu_q_r2dbe,cpu_r2dbe),2*(floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6),)):
+    #for (x,shift) in zip((cpu_q_r2dbe,cpu_r2dbe),2*(floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6),)):
+    for (x,shift) in zip((cpu_q_r2dbe,),1*(floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6),)):
   
       # FFT resampled
       x0 = xr_bl.copy()
