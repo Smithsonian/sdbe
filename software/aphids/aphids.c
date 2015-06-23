@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <pthread.h>
 
 #include "aphids.h"
@@ -11,6 +12,7 @@
 int aphids_init(aphids_context_t * aphids_ctx, hashpipe_thread_args_t * thread_args) {
 
   char prefix[80];
+  sigset_t sig_set;
   hashpipe_status_t st = thread_args->st;
   const char * status_key = thread_args->thread_desc->skey;
 
@@ -19,6 +21,11 @@ int aphids_init(aphids_context_t * aphids_ctx, hashpipe_thread_args_t * thread_a
 
   // disable thread cancelability
   pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+
+  // block SIGINT (pesky hashpipe)
+  sigemptyset(&sig_set);
+  sigaddset(&sig_set, SIGINT);
+  pthread_sigmask(SIG_BLOCK, &sig_set, NULL);
 
   // initialize iters
   aphids_ctx->iters = 0;
