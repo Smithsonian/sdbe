@@ -11,7 +11,6 @@
 #include <sys/mman.h>
 
 #include "sg_access.h"
-#include "vdif_ext.h"
 
 #include "print_rusage.h"
 
