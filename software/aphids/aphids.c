@@ -1,6 +1,3 @@
-#ifndef APHIDS_C
-#define APHIDS_C
-
 #include <stdio.h>
 #include <syslog.h>
 #include <stdlib.h>
@@ -229,5 +226,3 @@ int aphids_destroy(aphids_context_t * aphids_ctx) {
   return APHIDS_OK;
 
 }
-
-#endif
