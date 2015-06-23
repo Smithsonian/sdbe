@@ -4,3 +4,6 @@
 # Ignored object files
 *.so
 *.o
+
+# Ignore APHIDS stdout log
+output.log
