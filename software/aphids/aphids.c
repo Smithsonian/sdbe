@@ -17,6 +17,9 @@ int aphids_init(aphids_context_t * aphids_ctx, hashpipe_thread_args_t * thread_a
   // set init flag to not initialized
   aphids_ctx->init = APHIDS_CTX_NOT_INITIALIZED;
 
+  // disable thread cancelability
+  pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+
   // initialize iters
   aphids_ctx->iters = 0;
 

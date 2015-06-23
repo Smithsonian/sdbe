@@ -56,8 +56,6 @@ static void *run_method(hashpipe_thread_args_t * args) {
     // update aphids statistics
     aphids_update(&aphids_ctx);
 
-    pthread_testcancel(); // check if thread has been canceled
-
   } // end while(run_threads())
 
   // destroy aphids context and exit
