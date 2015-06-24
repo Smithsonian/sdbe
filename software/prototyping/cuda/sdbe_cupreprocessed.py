@@ -12,7 +12,7 @@ import scikits.cuda.cufft as cufft
 from kernel_template import kernel_template
 
 from numpy.fft import rfft, irfft
-from numpy import complex64,float32,float64,int32,uint32,array,arange,empty,zeros,ceil,roll
+from numpy import complex64,float32,float64,int32,uint32,array,arange,empty,zeros,ceil,roll,hstack
 from numpy import min,floor,ceil,exp,angle,reshape,sqrt,roll,log2
 from scipy.special import erfinv
 from argparse import ArgumentParser
@@ -43,7 +43,13 @@ SNAPSHOTS_PER_BATCH = 39
 
 class sdbe_cupreprocess(object): 
 
-  def __init__(self,gpuid,resamp_kind='linear'):
+  def __init__(self,gpuid,resamp_kind='fft',debias=None):
+    ''' 
+    Prep GPU for preprocessing
+
+    resamp_kind : Choice of fft, linear, nearest
+    debias: provide arrays for debiasing SWARM spectra ([2,N])
+    '''
 
     # basic info   
     self.logger = logging.getLogger(__name__)
@@ -52,37 +58,51 @@ class sdbe_cupreprocess(object):
     self.num_swarm_samples = int((BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS*2*BENG_CHANNELS_)
     self.num_r2dbe_samples = int(self.num_swarm_samples*R2DBE_RATE/SWARM_RATE)
     self.__resamp_kind = resamp_kind
+    self.debias = False if debias is None else True
 
     # compile CUDA kernels
     kernel_source = kernel_template % {'BENG_BUFFER_IN_COUNTS':BENG_BUFFER_IN_COUNTS}
     kernel_module = SourceModule(kernel_source)
     self.__vdif_to_beng = kernel_module.get_function('vdif_to_beng')
-    self.__reorderTz_smem = kernel_module.get_function('reorderTz_smem')
+    self.__reorderTzp_smem = kernel_module.get_function('reorderTzp_smem')
+    #self.__reorderTz_smem = kernel_module.get_function('reorderTz_smem')
+    self.__quantize2bit = kernel_module.get_function('quantize2bit')
+    self.__zero_rout = kernel_module.get_function('zero_rout')
+    self.__detrend = kernel_module.get_function('detrend')
+
     if self.__resamp_kind == 'linear':
       self.__linear_interp = kernel_module.get_function('linear')
+      # pre-compute weights and indices for interpolation
       template_size = int(39*2*BENG_CHANNELS_*R2DBE_RATE/SWARM_RATE)
       ctid = SWARM_RATE/R2DBE_RATE*arange(template_size)
       cpu_ida  = floor(SWARM_RATE/R2DBE_RATE*arange(template_size)).astype(int32)
       cpu_wgt  = (ctid-cpu_ida).astype(float32)
+      # and load these to the GPU
       self.__gpu_ida = cuda.mem_alloc(4 * template_size)
       cuda.memcpy_htod(self.__gpu_ida,cpu_ida)
       self.__gpu_wgt = cuda.mem_alloc(4 * template_size)
       cuda.memcpy_htod(self.__gpu_wgt,cpu_wgt)
     elif self.__resamp_kind == 'nearest': 
       self.__nearest_interp = kernel_module.get_function('nearest')
-    self.__quantize2bit = kernel_module.get_function('quantize2bit')
-    self.__zero_rout = kernel_module.get_function('zero_rout')
+
+    # prep for debias ('optional')
+    if self.debias:
+      self.__gpu_xs0avg = cuda.mem_alloc(4*debias.shape[-1])
+      self.__gpu_xs1avg = cuda.mem_alloc(4*debias.shape[-1])
+      cuda.memcpy_htod(self.__gpu_xs0avg,debias[0,:])
+      cuda.memcpy_htod(self.__gpu_xs1avg,debias[1,:])
+
+    # inverse in-place FFT plan
+    n = array([2*BENG_CHANNELS_],int32)
+    inembed = array([16400],int32)
+    onembed = array([2*BENG_CHANNELS_],int32)
+    self.__sdbe_batch = BENG_SNAPSHOTS
+    self.__plan_A = cufft.cufftPlanMany(1, n.ctypes.data, inembed.ctypes.data, 1, 16400,
+                                        onembed.ctypes.data, 1, 2*BENG_CHANNELS_,
+ 				         cufft.CUFFT_C2R, self.__sdbe_batch)
 
     # initalize FFT plans:
     if self.__resamp_kind == 'linear' or self.__resamp_kind == 'nearest':
-      # inverse in-place FFT plan
-      n = array([2*BENG_CHANNELS_],int32)
-      inembed = array([BENG_CHANNELS],int32)
-      onembed = array([2*BENG_CHANNELS_],int32)
-      self.__sdbe_batch = BENG_SNAPSHOTS
-      self.__plan_A = cufft.cufftPlanMany(1, n.ctypes.data, inembed.ctypes.data, 1, BENG_CHANNELS,
-	                                       onembed.ctypes.data, 1, 2*BENG_CHANNELS_,
-  					       cufft.CUFFT_C2R, self.__sdbe_batch)
 
       # band trimming R2C FFT plan
       n = array([4096],int32)
@@ -101,12 +121,12 @@ class sdbe_cupreprocess(object):
 					       cufft.CUFFT_C2R, self.__bandlimit_batch)
     elif self.__resamp_kind == 'fft':
       # inverse FFT plan
-      n = array([2*BENG_CHANNELS_],int32)
-      inembed = array([BENG_CHANNELS],int32)
-      onembed = array([2*BENG_CHANNELS_],int32)
-      self.__plan_A = cufft.cufftPlanMany(1, n.ctypes.data, inembed.ctypes.data, 1, BENG_CHANNELS,
-                                      onembed.ctypes.data, 1, 2*BENG_CHANNELS_,
- 				       cufft.CUFFT_C2R, self.num_beng_counts*BENG_SNAPSHOTS)
+      #n = array([2*BENG_CHANNELS_],int32)
+      #inembed = array([BENG_CHANNELS],int32)
+      #onembed = array([2*BENG_CHANNELS_],int32)
+      #self.__plan_A = cufft.cufftPlanMany(1, n.ctypes.data, inembed.ctypes.data, 1, BENG_CHANNELS,
+      #                                onembed.ctypes.data, 1, 2*BENG_CHANNELS_,
+ 	#			       cufft.CUFFT_C2R, self.num_beng_counts*BENG_SNAPSHOTS)
 
       self.__bandlimit_batch = 32
       # Turn concatenated SWARM time series into single spectrum
@@ -162,7 +182,6 @@ class sdbe_cupreprocess(object):
     depacketize sdbe vdif:
     consecutive snapshots are indexed fastest 
     '''
-    self.logger.debug('depacketizing B-engine data')
     self.__gpu_beng_data_0 = cuda.mem_alloc(8*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS) # 15.6%
     self.__gpu_beng_data_1 = cuda.mem_alloc(8*BENG_CHANNELS_*BENG_SNAPSHOTS*BENG_BUFFER_IN_COUNTS) # 15.6%
     gpu_fid         = cuda.mem_alloc(4*VDIF_PER_BENG*BENG_BUFFER_IN_COUNTS)
@@ -192,17 +211,29 @@ class sdbe_cupreprocess(object):
     '''
     reorder B-engine data with a shift by 2 snapshots where (channel index / 4) is even
     and then by 1 B-frame where snapshot index > 68.
+    This function also debiases the spectra if template was initialized.
     '''
-    self.logger.debug('reordering B-engine data')
-    self.__gpu_beng_0 = cuda.mem_alloc(8*BENG_CHANNELS*BENG_SNAPSHOTS*(BENG_BUFFER_IN_COUNTS-1))
-    self.__gpu_beng_1 = cuda.mem_alloc(8*BENG_CHANNELS*BENG_SNAPSHOTS*(BENG_BUFFER_IN_COUNTS-1))
-    self.__reorderTz_smem(self.__gpu_beng_data_0,self.__gpu_beng_0,int32(BENG_BUFFER_IN_COUNTS),
+    self.__gpu_beng_0 = cuda.mem_alloc(8*16400*BENG_SNAPSHOTS*(BENG_BUFFER_IN_COUNTS-1))
+    self.__gpu_beng_1 = cuda.mem_alloc(8*16400*BENG_SNAPSHOTS*(BENG_BUFFER_IN_COUNTS-1))
+    self.__reorderTzp_smem(self.__gpu_beng_data_0,self.__gpu_beng_0,int32(BENG_BUFFER_IN_COUNTS),
 		block=(16,16,1),grid=(BENG_CHANNELS_*BENG_SNAPSHOTS/(16*16),1,1),)
-    self.__reorderTz_smem(self.__gpu_beng_data_1,self.__gpu_beng_1,int32(BENG_BUFFER_IN_COUNTS),
+    self.__reorderTzp_smem(self.__gpu_beng_data_1,self.__gpu_beng_1,int32(BENG_BUFFER_IN_COUNTS),
 		block=(16,16,1),grid=(BENG_CHANNELS_*BENG_SNAPSHOTS/(16*16),1,1),)
     # free unpacked, unordered b-frames
     self.__gpu_beng_data_0.free()
     self.__gpu_beng_data_1.free()
+
+    if self.debias:
+      self.__debias()
+
+  def __debias(self):
+    block = (128,1,1)
+    grid = (BENG_CHANNELS_/128,1) 
+    self.__detrend(self.__gpu_beng_0, int32(self.num_beng_counts*BENG_SNAPSHOTS),self.__gpu_xs0avg,
+		block=block,grid=grid)
+    self.__detrend(self.__gpu_beng_1, int32(self.num_beng_counts*BENG_SNAPSHOTS),self.__gpu_xs1avg,
+		block=block,grid=grid)
+   #__global__ void detrend(cufftComplex *spectra, int32_t N, float *avg){
 
   def resamp(self):
     if self.__resamp_kind == 'linear':
@@ -214,13 +245,12 @@ class sdbe_cupreprocess(object):
     else:
       print 'no resampling kernel to match'
 
+
   def __fft_resample(self):
     '''
     Resample using FFTs.
-    Requires that use_fft_resample flag is True.
     individual phased sums resampled at 2048 MHz. 
     '''
-    self.logger.debug('Resampling using FFTs')
 
     #device memory allocation
     self.__gpu_time_series_0 = cuda.mem_alloc(4 * self.num_r2dbe_samples / 2) # 2048 MHz clock
@@ -229,7 +259,9 @@ class sdbe_cupreprocess(object):
 
     # loop over phased sums
     for (phased_sum_in,phased_sum_out) in zip((self.__gpu_beng_0, self.__gpu_beng_1),(self.__gpu_time_series_0,self.__gpu_time_series_1)):
-      cufft.cufftExecC2R(self.__plan_A,int(phased_sum_in),int(gpu_swarm))
+      # turn SWARM snapshots into timeseries
+      for ib in range(self.num_beng_counts):
+        cufft.cufftExecC2R(self.__plan_A,int(phased_sum_in)+int(8*ib*BENG_SNAPSHOTS*16400),int(gpu_swarm)+int(4*ib*BENG_SNAPSHOTS*2*BENG_CHANNELS_))
       phased_sum_in.free()
  
       gpu_tmp = cuda.mem_alloc(8*int(39*BENG_CHANNELS_+1)*self.__bandlimit_batch)
@@ -249,7 +281,6 @@ class sdbe_cupreprocess(object):
     '''
     Resample using nearest interpolation.
     '''
-    self.logger.debug('Resampling using nearest interpolation')
     threads_per_block = 512
     blocks_per_grid = int(ceil(1. * self.num_r2dbe_samples / threads_per_block))
 
@@ -261,9 +292,8 @@ class sdbe_cupreprocess(object):
 
     for (phased_sum_in,phased_sum_out) in zip((self.__gpu_beng_0, self.__gpu_beng_1),(self.__gpu_time_series_0,self.__gpu_time_series_1)):
       # Turn SWARM snapshots into timeseries
-      #cufft.cufftExecC2R(self.__plan_A,int(phased_sum_in),int(phased_sum_in))
       for ib in range(self.num_beng_counts):
-        cufft.cufftExecC2R(self.__plan_A,int(phased_sum_in)+int(8*ib*BENG_SNAPSHOTS*BENG_CHANNELS),int(gpu_swarm)+int(4*ib*BENG_SNAPSHOTS*2*BENG_CHANNELS_))
+        cufft.cufftExecC2R(self.__plan_A,int(phased_sum_in)+int(8*ib*BENG_SNAPSHOTS*16400),int(gpu_swarm)+int(4*ib*BENG_SNAPSHOTS*2*BENG_CHANNELS_))
       phased_sum_in.free()
       # resample 
       gpu_resamp = cuda.mem_alloc(4 * self.num_r2dbe_samples) # 25% of device memory
@@ -294,7 +324,6 @@ class sdbe_cupreprocess(object):
     '''
     Resample using linear interpolation.
     '''
-    self.logger.debug('Resampling using linear interpolation')
     threads_per_block = 512
     blocks_per_grid = int(ceil(1. * self.num_r2dbe_samples / threads_per_block))
 
@@ -306,9 +335,8 @@ class sdbe_cupreprocess(object):
 
     for (phased_sum_in,phased_sum_out) in zip((self.__gpu_beng_0, self.__gpu_beng_1),(self.__gpu_time_series_0,self.__gpu_time_series_1)):
       # Turn SWARM snapshots into timeseries
-      ##cufft.cufftExecC2R(self.__plan_A,int(phased_sum_in),int(phased_sum_in))
       for ib in range(self.num_beng_counts):
-        cufft.cufftExecC2R(self.__plan_A,int(phased_sum_in)+int(8*ib*BENG_SNAPSHOTS*BENG_CHANNELS),int(gpu_swarm)+int(4*ib*BENG_SNAPSHOTS*2*BENG_CHANNELS_))
+        cufft.cufftExecC2R(self.__plan_A,int(phased_sum_in)+int(8*ib*BENG_SNAPSHOTS*16400),int(gpu_swarm)+int(4*ib*BENG_SNAPSHOTS*2*BENG_CHANNELS_))
       phased_sum_in.free()
       ## resample 
       gpu_resamp = cuda.mem_alloc(4 * self.num_r2dbe_samples) # 25% of device memory
@@ -409,13 +437,14 @@ if __name__ == "__main__":
   parser.add_argument('-s', dest='skip', type=int, help='starting snapshot', default=1)
   parser.add_argument('-alg', dest='resamp_kind', type=str, help='resampling algorithm', default='fft')
   parser.add_argument('-c', dest='correlate', action='store_true', help='correlate against R2DBE')
+  parser.add_argument('-debias', dest='debias', action='store_true', help='debias SWARM spectra')
   args = parser.parse_args()
 
   logger = logging.getLogger(__name__)
   logger.addHandler(logging.StreamHandler())
   logger.setLevel(logging.DEBUG if args.verbose else logging.INFO)
 
-
+  # use precomputed thresholds for quantization
   if args.resamp_kind == 'linear':
     thresh = [741508.44,773105.12]
   elif args.resamp_kind == 'fft':
@@ -423,6 +452,20 @@ if __name__ == "__main__":
   elif args.resamp_kind == 'nearest':
     thresh = [833892.25, 875652.25]
   thresh = sqrt(2)*erfinv(0.5)*array(thresh)
+
+  if args.debias:
+    # read in debiasing template 
+    f = open(args.basename+'_spline.bin','rb')
+    debias = array(unpack('%df' % (2*BENG_CHANNELS_,),f.read(4*2*BENG_CHANNELS_)),dtype=float32).reshape(2,BENG_CHANNELS_)
+    f.close()
+    # zero out SWARM spurs appearing every 2048 channels
+    spurs = arange(2048, BENG_CHANNELS_, 2048)
+    debias[:,spurs] = 0
+    # remove guard band artifacts
+    debias[0,:20] = 0 
+    debias[1,15200:] = 0 
+    # pad to match 16400 padded spectra chunks
+    debias = hstack([debias, zeros((2,16400 - BENG_CHANNELS_), dtype=float32) ]) 
 
   # timers
   clock = defaultdict(float)
@@ -434,16 +477,12 @@ if __name__ == "__main__":
     counts[name] = counts[name] + 1
     total[name] = total[name] + timer() - clock[name]
 
-  # I/O and prior processing
-  rel_path_dat = args.dir
-  scan_filename_base = args.basename
-
   if True: 
 
-    g = sdbe_cupreprocess(0,resamp_kind=args.resamp_kind)
+    g = sdbe_cupreprocess(0,resamp_kind=args.resamp_kind,debias=debias)
 
     # load vdif onto device
-    bcount_offset = read_sdbe_vdif(g.vdif_buf,rel_path_dat+scan_filename_base,BENG_BUFFER_IN_COUNTS*VDIF_PER_BENG,
+    bcount_offset = read_sdbe_vdif(g.vdif_buf,args.dir+args.basename,BENG_BUFFER_IN_COUNTS*VDIF_PER_BENG,
 						beng_frame_offset=g.gpuid*BENG_BUFFER_IN_COUNTS+1)
 
     tic('gpu total')
@@ -496,7 +535,6 @@ if __name__ == "__main__":
   for k in total.keys():
       print "%s\t%d\t%.2f\t\t%.3f" % (k, counts[k], 1e3*total[k], total[k]/real_time )
 
-
   if args.correlate:
     import matplotlib.pyplot as plt
     logger.info("\nINFO:: Correlating result again R2DBE")
@@ -510,13 +548,12 @@ if __name__ == "__main__":
     # keep things simple.
     N_r_vdif_frames = int(ceil(BENG_SNAPSHOTS*(BENG_BUFFER_IN_COUNTS-1)*R2DBE_RATE/SWARM_RATE))
     vdif_frames_offset = 0
-    rel_path_to_in = args.dir
-    d = sdbe_preprocess.get_diagnostics_from_file(scan_filename_base,rel_path=rel_path_to_in)
-    xr = read_r2dbe_vdif.read_from_file(rel_path_to_in + scan_filename_base + '_r2dbe_eth3.vdif',N_r_vdif_frames,vdif_frames_offset)
-  
+    d = sdbe_preprocess.get_diagnostics_from_file(args.basename,rel_path=args.dir)
+    xr = read_r2dbe_vdif.read_from_file(args.dir+args.basename+'_r2dbe_eth3.vdif',
+		N_r_vdif_frames,vdif_frames_offset)
   
     # compare to pre-shifted data
-    hf5 = h5py.File(rel_path_to_in + scan_filename_base + '_sdbe_preprocess.hdf5')
+    hf5 = h5py.File(args.dir+args.basename+'_sdbe_preprocess.hdf5')
     spectra = hf5.get('Xs1').value
     xs_shifted = sdbe_preprocess.resample_sdbe_to_r2dbe_fft_interp(spectra,interp_kind="linear")
   
@@ -533,8 +570,8 @@ if __name__ == "__main__":
 
     #for (x,shift) in zip((cpu_q_r2dbe,xs_bl),(floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6),0)):
     #for (x,shift) in zip((cpu_q_r2dbe,cpu_r2dbe,xs_bl),(floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6),floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6),0)):
-    #for (x,shift) in zip((cpu_q_r2dbe,cpu_r2dbe),2*(floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6),)):
-    for (x,shift) in zip((cpu_q_r2dbe,),1*(floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6),)):
+    for (x,shift) in zip((cpu_q_r2dbe,cpu_r2dbe),2*(floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6),)):
+    #for (x,shift) in zip((cpu_q_r2dbe,),1*(floor(idx_offset*2*BENG_CHANNELS_/SWARM_RATE*2048e6),)):
   
       # FFT resampled
       x0 = xr_bl.copy()

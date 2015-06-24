@@ -270,6 +270,77 @@ __global__ void reorderTz_smem(cufftComplex *beng_data_in, cufftComplex *beng_da
   }
 }
 
+/**@brief Reorder B-engine data for BENG_FRAMES_OUT_CONSECUTIVE_SNAPSHOTS
+Reorder B-engine data that is snapshot contiguous and where consecutive channels
+are separated by 128 snapshots time the number of B-engine frames in the buffer.
+This kernel must be called with a (16,16) thread block and enough x-blocks
+to cover 1 B-engine.  The output has 16400 zero-padded channels
+- blockDim.x = 16
+- blockDim.y = 16;
+- gridDim.x = BENG_CHANNELS_ * BENG_SNAPSHOTS / (blockDim.x*blockDim.y)
+@author Katherine Rosenfeld
+@date June 2015
+*/
+__global__ void reorderTzp_smem(cufftComplex *beng_data_in, cufftComplex *beng_data_out, int num_beng_frames){
+  // gridDim.x = 16384 * 128 / (16 * 16) = 8192
+  // blockDim.x = 16; blockDim.y = 16;
+  // --> launches 2097152 threads
+
+  int32_t sid_out,bid_in;
+
+  __shared__ cufftComplex tile[16][16];
+
+  // for now, let us loop the grid over B-engine frames:
+  for (int bid_out=0; bid_out<num_beng_frames-1; bid_out+=1){
+
+    // input snapshot id
+    int sid_in = (blockIdx.x * blockDim.x + threadIdx.x) & (BENG_SNAPSHOTS-1);
+    // input channel id 
+    int cid = threadIdx.y + blockDim.y * (blockIdx.x / (128 / blockDim.x));
+
+    // shift by 2-snapshots case:
+    if (((cid / 4) & (0x1)) == 0) {
+      sid_out = (sid_in-2) & 0x7f;
+    } else {
+      sid_out = sid_in;
+    }
+
+    // and by 1-B-frame:
+    if (sid_out < 69){
+      bid_in = bid_out;
+    } else {
+      bid_in = bid_out+1;
+    }
+
+    tile[threadIdx.x][threadIdx.y] = beng_data_in[BENG_SNAPSHOTS*num_beng_frames*cid + BENG_SNAPSHOTS*bid_in + sid_in];
+
+    __syncthreads();
+
+    // now we transpose warp orientation over channels and snapshot index
+
+    // snapshot id
+    sid_in = threadIdx.y + (blockIdx.x*blockDim.y) & (BENG_SNAPSHOTS-1);
+    // channel id 
+    cid = threadIdx.x + blockDim.x * (blockIdx.x / (BENG_SNAPSHOTS / blockDim.x)); 
+
+    // shift by 2-snapshots case:
+    if (((cid / 4) & (0x1)) == 0) {
+      sid_out = (sid_in-2) & 0x7f;
+    } else {
+      sid_out = sid_in;
+    }
+
+    beng_data_out[(BENG_SNAPSHOTS*16400)*bid_out + 16400*sid_out + cid] = tile[threadIdx.y][threadIdx.x];
+
+    // zero out nyquist: 
+    if (cid < 16) {
+      beng_data_out[(BENG_SNAPSHOTS*16400)*bid_out + 16400*sid_out + BENG_CHANNELS_] = make_cuComplex(0.,0.);
+    }
+
+    __syncthreads();
+  }
+}
+
 /** @brief Nearest-neighbor interpolation kernel
 This kernel uses a round-half-to-even tie-breaking rule for
 nearest-neighbor interpolation.  This is opposite that of 
@@ -361,5 +432,22 @@ __global__ void quantize2bit(const float *in, unsigned int *out, int N, float th
 		atomicOr(out+idx_out, sample_2bit);
 		idx_out += gridDim.x*blockDim.y;
 	}
+}
+
+/** @brief Use template to detrend SWARM spectra.
+Use a template to detrend SWARM spectra. The corrective template
+is assumed to have the same number of channels as the SWARM spectra.
+This kernel can also be used to mask spurs and remove guard band artifacts.
+@author Katherine Rosenfeld
+@date June 2015
+ */
+__global__ void detrend(cufftComplex *spectra, int32_t N, float *avg){
+  int32_t tid = blockDim.x*blockIdx.x + threadIdx.x;
+  float _avg = avg[tid];
+  for (int32_t i=0; i < N; i++){
+    cufftComplex _spectra = spectra[i*16400+tid];
+    //spectra[i*16400+tid] = make_cuComplex(_avg*(_spectra.x-_spectra.y), _avg*(_spectra.x + _spectra.y));
+    spectra[i*16400+tid] = make_cuComplex(_spectra.x-_avg, _spectra.y-_avg);
+  }
 }
 """

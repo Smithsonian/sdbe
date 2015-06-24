@@ -187,6 +187,65 @@ __global__ void reorderTz_smem(cufftComplex *beng_data_in, cufftComplex *beng_da
   }
 }
 
+__global__ void reorderTzp_smem(cufftComplex *beng_data_in, cufftComplex *beng_data_out, int num_beng_frames){
+  // gridDim.x = 16384 * 128 / (16 * 16) = 8192
+  // blockDim.x = 16; blockDim.y = 16;
+  // --> launches 2097152 threads
+
+  int32_t sid_out,bid_in;
+
+  __shared__ cufftComplex tile[16][16];
+
+  // for now, let us loop the grid over B-engine frames:
+  for (int bid_out=0; bid_out<num_beng_frames-1; bid_out+=1){
+
+    // input snapshot id
+    int sid_in = (blockIdx.x * blockDim.x + threadIdx.x) % 128;
+    // input channel id 
+    int cid = threadIdx.y + blockDim.y * (blockIdx.x / (128 / blockDim.x));
+
+    // shift by 2-snapshots case:
+    if (((cid / 4) & (0x1)) == 0) {
+      sid_out = (sid_in-2) & 0x7f;
+    } else {
+      sid_out = sid_in;
+    }
+
+    if (sid_out < 69){
+      bid_in = bid_out;
+    } else {
+      bid_in = bid_out+1;
+    }
+
+    tile[threadIdx.x][threadIdx.y] = beng_data_in[128*num_beng_frames*cid + 128*bid_in + sid_in];
+
+    __syncthreads();
+
+    // now we transpose warp orientation over channels and snapshot index
+
+    // snapshot id
+    sid_in = threadIdx.y + (blockIdx.x*blockDim.y) % 128;
+    // channel id 
+    cid = threadIdx.x + blockDim.x * (blockIdx.x / (128 / blockDim.x)); 
+
+    // shift by 2-snapshots case:
+    if (((cid / 4) & (0x1)) == 0) {
+      sid_out = (sid_in-2) & 0x7f;
+    } else {
+      sid_out = sid_in;
+    }
+
+    beng_data_out[128*16400*bid_out + 16400*sid_out + cid] = tile[threadIdx.y][threadIdx.x];
+
+    // zero out nyquist: 
+    if (cid < 16) {
+      beng_data_out[128*16400*bid_out + 16400*sid_out + 16384 + cid] = make_cuComplex(0.,0.);
+    }
+
+    __syncthreads();
+  }
+}
+
 """
 
 # two timers for speed-testing
@@ -239,6 +298,7 @@ for ir in range(repeats):
 
 resultT = np.zeros((num_beng_frames,128,16384),dtype=np.complex64)
 cuda.memcpy_dtoh(resultT,gpu_beng_data_2)
+# snip last B-counter
 resultT = resultT[:-1,:,:]
 #####################################################
 
@@ -256,6 +316,7 @@ for ir in range(repeats):
 
 resultT_smem = np.zeros((num_beng_frames,128,16384),dtype=np.complex64)
 cuda.memcpy_dtoh(resultT_smem,gpu_beng_data_3)
+# snip last B-counter
 resultT_smem = resultT_smem[:-1,:,:]
 
 #####################################################
@@ -272,7 +333,26 @@ for ir in range(repeats):
 
 resultTz_smem = np.zeros((num_beng_frames,128,16385),dtype=np.complex64)
 cuda.memcpy_dtoh(resultTz_smem,gpu_beng_data_3)
+# snip last B-counter
 resultTz_smem = resultTz_smem[:-1,:,:]
+
+#####################################################
+reorderTzp_smem = kernel_module.get_function('reorderTzp_smem')
+gpu_beng_data_4 = cuda.mem_alloc(8*16400*128*num_beng_frames)
+
+for ir in range(repeats):
+  tic.record()
+  reorderTzp_smem(gpu_beng_data_1,gpu_beng_data_4,np.int32(num_beng_frames),
+	block=(16,16,1),grid=(16384*128/(16*16),1))
+  toc.record()
+  toc.synchronize()
+  time_gpu = tic.time_till(toc)
+  print 'reorderTzp_smem time:',time_gpu,' ms'
+
+resultTzp_smem = np.zeros((num_beng_frames,128,16400),dtype=np.complex64)
+cuda.memcpy_dtoh(resultTzp_smem,gpu_beng_data_4)
+# snip last B-counter
+resultTzp_smem = resultTzp_smem[:-1,:,:]
 
 #####################################################
 # compute on CPU
@@ -304,6 +384,8 @@ print 'reorder test result:', 'pass' if np.all(cpu_result==result) else 'fail'
 print 'reorderT test result:', 'pass' if np.all(cpu_resultT==resultT) else 'fail'
 print 'reorderT_smem test result:', 'pass' if np.all(cpu_resultT==resultT_smem) else 'fail'
 print 'reorderTz_smem test result:', 'pass' if np.all(cpu_resultT==resultTz_smem[:,:,:-1]) else 'fail'
-print 'reorderTz_smem test result:', 'pass' if np.all(resultTz_smem[:,:,-1] == 0) else 'fail'
+print 'reorderTzp_smem test result:', 'pass' if np.all(cpu_resultT==resultTzp_smem[:,:,:-16]) else 'fail'
+print '\nreorderTz_smem test result:', 'pass' if np.all(resultTz_smem[:,:,-1] == 0) else 'fail'
+print 'reorderTzp_smem test result:', 'pass' if np.all(resultTzp_smem[:,:,-16] == 0) else 'fail'
 
 print '\nprocessed time: %f ms' % (1.680*(num_beng_frames-1))
