@@ -17,4 +17,6 @@ if __name__ == "__main__":
     with open("stdout.log", "w") as stdout, open("stderr.log", "w") as stderr:
         formatted_cmd = HASHPIPE_CMD.format(ID, CPU_IN, CPU_INOUT, CPU_OUT)
         process = Popen(formatted_cmd.split(), stdout=stdout, stderr=stderr)
-        print process.pid, formatted_cmd
+
+    with open("/tmp/aphids.{0}.pid".format(ID), "w") as pidfile:
+        pidfile.write("{0}".format(process.pid))
