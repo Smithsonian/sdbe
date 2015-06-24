@@ -15,7 +15,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
   int rv = 0;
   int index = 0;
-  vdif_packet_block_t null_vdif_packet_block;
+  vdif_packet_block_t null_vdif_packet_block = {};
   vdif_in_databuf_t *db_out = (vdif_in_databuf_t *)args->obuf;
   aphids_context_t aphids_ctx;
 
