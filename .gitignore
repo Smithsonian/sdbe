@@ -5,5 +5,5 @@
 *.so
 *.o
 
-# Ignore APHIDS stdout log
-output.log
+# Ignore all *.log files
+*.log
