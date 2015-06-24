@@ -20,7 +20,7 @@ int aphids_log(aphids_context_t * aphids_ctx, char * level, const char * fmt, ..
   va_end(args);
 
   // use the redis publish command
-  reply = redisCommand(c, "PUBLISH aphids.%s %s", level, message);
+  reply = redisCommand(c, "PUBLISH %s:%s %s", level, aphids_ctx->prefix, message);
 
   // check if the call failed
   if (!reply) {
