@@ -7,3 +7,6 @@
 
 # Ignore all *.log files
 *.log
+
+# Ignore VDIF files
+*.vdif
