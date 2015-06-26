@@ -338,7 +338,8 @@ class sdbe_cupreprocess(object):
       for ib in range(self.num_beng_counts):
         cufft.cufftExecC2R(self.__plan_A,int(phased_sum_in)+int(8*ib*BENG_SNAPSHOTS*16400),int(gpu_swarm)+int(4*ib*BENG_SNAPSHOTS*2*BENG_CHANNELS_))
       phased_sum_in.free()
-      ## resample 
+
+      # resample 
       gpu_resamp = cuda.mem_alloc(4 * self.num_r2dbe_samples) # 25% of device memory
       self.__linear_interp(gpu_swarm,gpu_resamp,int32(self.num_swarm_samples),self.__gpu_wgt,self.__gpu_ida,
 		block=(512,1,1),grid=(2097152/512,1))
@@ -459,13 +460,14 @@ if __name__ == "__main__":
     debias = array(unpack('%df' % (2*BENG_CHANNELS_,),f.read(4*2*BENG_CHANNELS_)),dtype=float32).reshape(2,BENG_CHANNELS_)
     f.close()
     # zero out SWARM spurs appearing every 2048 channels
-    spurs = arange(2048, BENG_CHANNELS_, 2048)
-    debias[:,spurs] = 0
+    #spurs = arange(2048, BENG_CHANNELS_, 2048)
+    #debias[:,spurs] = 0
     # remove guard band artifacts
-    debias[0,:20] = 0 
-    debias[1,15200:] = 0 
+    #debias[0,:20] = 0 
+    #debias[1,15200:] = 0 
     # pad to match 16400 padded spectra chunks
     debias = hstack([debias, zeros((2,16400 - BENG_CHANNELS_), dtype=float32) ]) 
+  else: debias = None
 
   # timers
   clock = defaultdict(float)

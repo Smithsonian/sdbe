@@ -437,17 +437,18 @@ __global__ void quantize2bit(const float *in, unsigned int *out, int N, float th
 /** @brief Use template to detrend SWARM spectra.
 Use a template to detrend SWARM spectra. The corrective template
 is assumed to have the same number of channels as the SWARM spectra.
-This kernel can also be used to mask spurs and remove guard band artifacts.
+This kernel also masks spurs.
 @author Katherine Rosenfeld
 @date June 2015
  */
 __global__ void detrend(cufftComplex *spectra, int32_t N, float *avg){
   int32_t tid = blockDim.x*blockIdx.x + threadIdx.x;
   float _avg = avg[tid];
+  float mask = 1.0f;
+  if ((tid & (BENG_CHANNELS_ - 1)) == 0) mask = 0.0f;
   for (int32_t i=0; i < N; i++){
     cufftComplex _spectra = spectra[i*16400+tid];
-    //spectra[i*16400+tid] = make_cuComplex(_avg*(_spectra.x-_spectra.y), _avg*(_spectra.x + _spectra.y));
-    spectra[i*16400+tid] = make_cuComplex(_spectra.x-_avg, _spectra.y-_avg);
+    spectra[i*16400+tid] = make_cuComplex(mask*(_spectra.x-_avg),mask*( _spectra.y-_avg));
   }
 }
 """
