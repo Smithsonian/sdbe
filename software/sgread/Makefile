@@ -1,21 +1,17 @@
 CC=gcc
-CFLAGS=
-LFLAGS=-lrt -lpthread
-EXEC_READ=sgtool
-OBJS_READ=sgtool.o sg_access.o print_rusage.o
-EXEC_WRITE=sgwrite
-OBJS_WRITE=sgwrite.o
+CFLAGS=-std=gnu99
+LFLAGS=-lrt -lpthread -lscatgat
 
-$(EXEC_READ): $(OBJS_READ)
+EXEC_TRANSCEIVER=sgtxrx
+OBJS_TRANSCEIVER=sgcomm_tx_rx_test.o sgcomm_report.o sgcomm_net.o sgcomm_threads.o
+
+$(EXEC_TRANSCEIVER): $(OBJS_TRANSCEIVER)
 	$(CC) -o $@ $^ $(LFLAGS)
 
-$(EXEC_WRITE): $(OBJS_WRITE)
-	$(CC) -o $@ $^ $(LFLAGS)
-	
 %.o: %.c
-	$(CC) -c -o $@ $<
+	$(CC) -c -o $@ $< $(CFLAGS)
 
 .PHONY: clean
 
 clean:
-	rm -f *.o $(EXEC_READ) $(EXEC_WRITE)
+	rm -f *.o $(EXEC_TRANSCEIVER)
