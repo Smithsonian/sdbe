@@ -5,7 +5,6 @@
 #include <pthread.h>
 
 #include "aphids.h"
-#include "aphids_log.h"
 #include "hiredis/hiredis.h"
 
 

@@ -50,5 +50,6 @@ int aphids_update(aphids_context_t * aphids_ctx);
 */
 int aphids_destroy(aphids_context_t * aphids_ctx);
 #include "aphids_db.h"
+#include "aphids_log.h"
 
 #endif
