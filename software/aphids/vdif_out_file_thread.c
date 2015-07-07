@@ -7,8 +7,6 @@
 #include <sys/time.h>
 
 #include "aphids.h"
-#include "aphids_log.h"
-
 #include "hashpipe.h"
 #include "hashpipe_databuf.h"
 
