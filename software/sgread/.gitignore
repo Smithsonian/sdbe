@@ -7,3 +7,7 @@
 !*.c
 # And Makefile
 !Makefile
+# But keep a few files untracked...
+vdif.h
+sg_access.h
+dplane_proxy.h
