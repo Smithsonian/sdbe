@@ -22,5 +22,5 @@ aphids.so: $(OBJS)
 	$(CC) -shared -o $@ $^ -lhiredis
 
 clean:
-	rm *.o
-	rm *.so
+	rm -f *.o
+	rm -f *.so
