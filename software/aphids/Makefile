@@ -1,15 +1,24 @@
 CC = gcc
 CFLAGS = -fPIC -Wall
-DEPS = aphids.h aphids_db.h aphids_loop.h aphids_log.h vdif_in_databuf.h
-OBJ = aphids_db.o aphids_loop.o aphids_log.o vdif_in_databuf.o \
-	vdif_in_null_thread.o vdif_inout_null_thread.o vdif_out_null_thread.o \
-	vdif_in_file_thread.o vdif_out_file_thread.o
 DBG_ARGS = -D DEBUG
 
-%.o: %.c $(DEPS)
+DATABUFS = vdif_in_databuf.o
+APHIDS = aphids_db.o aphids_loop.o aphids_log.o
+THREADS = vdif_in_null_thread.o vdif_inout_null_thread.o vdif_out_null_thread.o
+THREADS += vdif_in_file_thread.o vdif_out_file_thread.o
+OBJS = $(APHIDS) $(DATABUFS) $(THREADS)
+
+.PHONY: all clean
+
+all: aphids.so
+
+$(OBJS): aphids.h
+$(APHIDS): %.o: %.c %.h
+
+%.o: %.c
 	$(CC) -c -o $@ $< $(CFLAGS) $(DBG_ARGS)
 
-aphids.so: $(OBJ)
+aphids.so: $(OBJS)
 	$(CC) -shared -o $@ $^ -lhiredis
 
 clean:
