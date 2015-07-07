@@ -1,19 +1,10 @@
 #include <errno.h>
-#include <pthread.h>
-#include <signal.h>
+#include <netdb.h> 
+#include <stdarg.h>
 #include <stdio.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <syslog.h>
 #include <unistd.h>
 
-#include <netinet/in.h>
-#include <netdb.h> 
-
-#include <sys/resource.h>
 #include <sys/socket.h>
-#include <sys/time.h>
-#include <sys/types.h> 
 
 #include "sgcomm_net.h"
 #include "sgcomm_report.h"

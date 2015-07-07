@@ -1,7 +1,7 @@
 #ifndef SGCOMM_THREADS_H
 #define SGCOMM_THREADS_H
 
-#include "sgcomm_report.h"
+#include <pthread.h>
 
 #define WAIT_PERIOD_US (10000 + rand()%1000)
 

@@ -1,15 +1,8 @@
 #include <pthread.h>
-#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
-#include <syslog.h>
 #include <unistd.h>
-
-#include <sys/time.h>
-#include <sys/types.h> 
 
 #include "sgcomm_net.h"
 #include "sgcomm_report.h"
