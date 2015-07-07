@@ -1,0 +1,9 @@
+# First ignore everything
+*
+# Add this file
+!.gitignore
+# Then add c/h files
+!*.h
+!*.c
+# And Makefile
+!Makefile
