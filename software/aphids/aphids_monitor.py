@@ -12,7 +12,7 @@ def main(stdscr):
     stdscr.leaveok(0)
 
     # connect to the redis server
-    r = StrictRedis(host='192.168.10.10', port=6379, db=0)
+    r = StrictRedis(host='127.0.0.1', port=6379, db=0)
 
     # main loop
     while True:

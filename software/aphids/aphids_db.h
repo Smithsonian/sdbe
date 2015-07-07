@@ -6,7 +6,7 @@
 #define APHIDS_ERR_GET_FAIL   -3
 #define APHIDS_ERR_SET_FAIL   -4
 
-#define APHIDS_REDIS_HOST "192.168.10.10"
+#define APHIDS_REDIS_HOST "127.0.0.1"
 #define APHIDS_REDIS_PORT 6379
 #define APHIDS_REDIS_TIMEOUT 1 // seconds
 
