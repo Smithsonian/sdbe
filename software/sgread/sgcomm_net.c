@@ -98,7 +98,7 @@ int rx_frame(int sockfd, void *buf, ssize_t buflen) {
 	bytes_received = 0;
 	timeouts = 3;
 	do {
-		//~ log_message(RL_DEBUGVVV,"%s:%s(%d):Point of read",__FILE__,__FUNCTION__,__LINE__);
+		//~ //~ log_message(RL_DEBUGVVV,"%s:%s(%d):Point of read",__FILE__,__FUNCTION__,__LINE__);
 		n = read(sockfd,buf+bytes_received,buflen-bytes_received);
 		if (n < 0) {
 			if (errno == EAGAIN) {
@@ -113,7 +113,7 @@ int rx_frame(int sockfd, void *buf, ssize_t buflen) {
 			}
 		} else {
 			bytes_received += n;
-			break;
+			//~ break;
 		}
 	} while (bytes_received < buflen);
 	return bytes_received;

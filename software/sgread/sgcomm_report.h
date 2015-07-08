@@ -1,6 +1,8 @@
 #ifndef SGCOMM_REPORT_H
 #define SGCOMM_REPORT_H
 
+#include <stdarg.h>
+
 typedef enum {
 	RL_DEBUGVVV,
 	RL_DEBUG,

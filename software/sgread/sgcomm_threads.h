@@ -3,7 +3,8 @@
 
 #include <pthread.h>
 
-#define WAIT_PERIOD_US (10000 + rand()%1000)
+//~ #define WAIT_PERIOD_US (10000 + rand()%1000)
+#define WAIT_PERIOD_US 1000
 
 /* States that define thread behaviour. CTRL_STATE_STOP and higher are
  * conditions that may cause the thread to ignore any control state
