@@ -1,6 +1,6 @@
 #include <string.h>
 
-#include "aphids.h"
+#include "aphids_db.h"
 
 int aphids_set(aphids_context_t * aphids_ctx, char * key, char * value) {
 
