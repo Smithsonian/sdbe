@@ -47,8 +47,8 @@ int main(int argc, char **argv) {
 	char *pattern_read = "input.vdif";
 	char *host = "localhost";
 	uint16_t port = 61234;
-	int n_mod = 2;
-	int mod_list[2] = { 1, 2};
+	int n_mod = 4;
+	int mod_list[4] = { 1, 2, 3, 4};
 	int n_disk = 8;
 	int disk_list_read[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
 	int disk_list_write[8] = { 1, 0, 2, 3, 4, 5, 6, 7 };
@@ -57,11 +57,13 @@ int main(int argc, char **argv) {
 	if (argc > 1)
 		pattern_read = argv[1];
 	if (argc > 2)
-		host = argv[2];
+		fmtstr = argv[2];
 	if (argc > 3)
-		port = atoi(argv[3]);
+		host = argv[3];
+	if (argc > 4)
+		port = atoi(argv[4]);
 	
-	log_message(RL_NOTICE,"%s:Using input file '%s'",__FUNCTION__,pattern_read);
+	log_message(RL_NOTICE,"%s:Using input file '%s' matching pattern '%s'",__FUNCTION__,pattern_read,fmtstr);
 	log_message(RL_NOTICE,"%s:Transmitting to %s:%u",__FUNCTION__,host,port);
 	
 	/* This thread */
