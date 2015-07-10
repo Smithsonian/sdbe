@@ -115,6 +115,9 @@ int rx_frame(int sockfd, void *buf, ssize_t buflen) {
 			bytes_received += n;
 			//~ break;
 		}
+		if (errno == EAGAIN) {
+			printf("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+		}
 	} while (bytes_received < buflen);
 	return bytes_received;
 }

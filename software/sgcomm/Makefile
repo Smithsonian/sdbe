@@ -8,10 +8,16 @@ OBJS_TRANSCEIVER=sgcomm_tx_rx_test.o $(DEPS)
 EXEC_TRANSMITTER=sgtx
 OBJS_TRANSMITTER=sgcomm_tx_test.o $(DEPS)
 
+EXEC_RECEIVER=sgrx
+OBJS_RECEIVER=sgcomm_rx_test.o $(DEPS)
+
 $(EXEC_TRANSCEIVER): $(OBJS_TRANSCEIVER)
 	$(CC) -o $@ $^ $(LFLAGS)
 
 $(EXEC_TRANSMITTER): $(OBJS_TRANSMITTER)
+	$(CC) -o $@ $^ $(LFLAGS)
+
+$(EXEC_RECEIVER): $(OBJS_RECEIVER)
 	$(CC) -o $@ $^ $(LFLAGS)
 
 %.o: %.c
@@ -20,4 +26,4 @@ $(EXEC_TRANSMITTER): $(OBJS_TRANSMITTER)
 .PHONY: clean
 
 clean:
-	rm -f *.o $(EXEC_TRANSCEIVER)
+	rm -f *.o $(EXEC_TRANSCEIVER) $(EXEC_TRANSMITTER) $(EXEC_RECEIVER)

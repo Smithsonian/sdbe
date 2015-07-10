@@ -19,8 +19,8 @@
 #include "sgcomm_threads.h"
 
 #define MAIN_WAIT_PERIOD_US 500000
-#define SHARED_BUFFER_SIZE_TX (2056*10*32)
-#define SHARED_BUFFER_SIZE_RX (2056*10*32)
+#define SHARED_BUFFER_SIZE_TX (264*1000*32)
+#define SHARED_BUFFER_SIZE_RX (264*1000*32)
 
 /* Master thread */
 sgcomm_thread st_main = {
@@ -76,9 +76,6 @@ int main(int argc, char **argv) {
 	sbtx = create_shared_buffer(SHARED_BUFFER_SIZE_TX);
 	if (sbtx == NULL)
 		set_thread_state(st,CS_ERROR,"%s(%d):Cannot create shared buffer for read+transmit",__FUNCTION__,__LINE__);
-	//~ sbrx = create_shared_buffer(SHARED_BUFFER_SIZE_RX);
-	//~ if (sbrx == NULL)
-		//~ set_thread_state(st,CS_ERROR,"%s(%d):Cannot create shared buffer for receive+write",__FUNCTION__,__LINE__);
 	
 	log_message(RL_DEBUG,"%s:Creating slave threads",__FUNCTION__);
 	
@@ -98,6 +95,7 @@ int main(int argc, char **argv) {
 	init_transmitter_msg((transmitter_msg *)st_tx->type_msg, sbtx,
 					host, port);
 	
+	/* Start transmitter thread */
 	if (start_thread(st_tx) != 0)
 		set_thread_state(st,CS_ERROR,"%s(%d):Cannot start transmitter thread",__FUNCTION__,__LINE__);
 	/* Pause, then see if transmitter has error, if so, abort */
