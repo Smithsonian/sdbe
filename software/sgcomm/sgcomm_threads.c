@@ -538,8 +538,6 @@ static void * _threaded_transmitter(void *arg) {
 			continue;
 		}
 		
-		//~ usleep(500000);
-		
 		/* Check if data available */
 		if (obtain_data_lock(src) == 0) {
 			if (src->n_frames > 0) {
@@ -564,7 +562,7 @@ static void * _threaded_transmitter(void *arg) {
 				frames_sent = 0;
 				tx_tries = MAX_TX_TRIES;
 				do {
-					if (tx_frames(sockfd, (void *)(src->buf), src->n_frames, src->frame_size*sizeof(uint32_t)) == 0)
+					if (tx_frames(sockfd, (void *)(src->buf), src->n_frames, src->frame_size*sizeof(uint32_t)) >= 0)
 						break;
 					log_message(RL_WARNING,"%s:%s(%d):Sending frames failed, %d tries left",__FILE__,__FUNCTION__,__LINE__,tx_tries);
 				} while (tx_tries-- > 0);
@@ -618,16 +616,16 @@ static void * _threaded_transmitter(void *arg) {
 
 static void * _threaded_receiver(void *arg) {
 	int frames_received = 0;
-	int frame_size = 0;
+	//~ int frame_size = 0; // this is in units uint32_t
 	int num_bytes_or_err = 0;
-	int max_frames_in_buffer = 0;
+	int max_frames_in_buffer = 1; // Just initialize to greater than 0
 	uint32_t *local_buf = NULL;
 	int sockfd_listen;
 	int sockfd_receive;
 	int wait_after_data = 0;
 	
 	/* Required for new communication protocol */
-	ssize_t nmem, size, frames_to_copy, tmp_buf_offset = 0;
+	ssize_t nmem, frame_size, frames_to_copy, tmp_buf_offset = 0;
 	void *tmp_buf = NULL;
 	
 	sgcomm_thread *st = (sgcomm_thread *)arg; // general thread message
@@ -643,15 +641,15 @@ static void * _threaded_receiver(void *arg) {
 	if (sockfd_listen < 0) 
 		set_thread_state(st, CS_ERROR,"%s:%s(%d):Cannot connect socket",__FILE__,__FUNCTION__,__LINE__);
 	
-	if (obtain_data_lock(dest) == 0) {
-		dest->frame_size = 264; // REDO: We need some other way to set the frame size
-		frame_size = dest->frame_size;
-		max_frames_in_buffer = (uint32_t)dest->buf_size/frame_size;
-		local_buf = (uint32_t *)malloc(max_frames_in_buffer*frame_size*sizeof(uint32_t));
-		if (release_data_lock(dest) != 0)
-			set_thread_state(st, CS_ERROR, "%s:%s(%d):Could not release shared buffer",__FILE__,__FUNCTION__,__LINE__);
-	} else
-		set_thread_state(st, CS_ERROR, "%s:%s(%d):Could not access shared buffer",__FILE__,__FUNCTION__,__LINE__);
+	//~ if (obtain_data_lock(dest) == 0) {
+		//~ dest->frame_size = 264; // REDO: We need some other way to set the frame size
+		//~ frame_size = dest->frame_size;
+		//~ max_frames_in_buffer = (uint32_t)dest->buf_size/frame_size;
+		//~ local_buf = (uint32_t *)malloc(max_frames_in_buffer*frame_size*sizeof(uint32_t));
+		//~ if (release_data_lock(dest) != 0)
+			//~ set_thread_state(st, CS_ERROR, "%s:%s(%d):Could not release shared buffer",__FILE__,__FUNCTION__,__LINE__);
+	//~ } else
+		//~ set_thread_state(st, CS_ERROR, "%s:%s(%d):Could not access shared buffer",__FILE__,__FUNCTION__,__LINE__);
 	
 	/* Set this thread entering infinite loop section */
 	if (get_thread_state(st, &ctrl) == 0 && !(ctrl >= CS_STOP)) {
@@ -698,16 +696,40 @@ static void * _threaded_receiver(void *arg) {
 		if (frames_received < max_frames_in_buffer) {
 			do {
 				if (tmp_buf == NULL) {
-					if (rx_frames(sockfd_receive,&tmp_buf,&nmem,&size) != 0)
+					if (rx_frames(sockfd_receive,&tmp_buf,&nmem,&frame_size) < 0)
 						set_thread_state(st, CS_RUN,"%s:%s(%d):Error on receiving data",__FILE__,__FUNCTION__,__LINE__);
 				}
+				
+				/* Allocate local buffer and set frame size for shared
+				 * buffer */
+				if (local_buf == NULL) {
+					if (obtain_data_lock(dest) == 0) {
+						dest->frame_size = frame_size/sizeof(uint32_t);
+						max_frames_in_buffer = (uint32_t)dest->buf_size*sizeof(uint32_t)/frame_size;
+						local_buf = (uint32_t *)malloc(max_frames_in_buffer*frame_size);
+						if (release_data_lock(dest) != 0) {
+							set_thread_state(st, CS_ERROR, "%s:%s(%d):Could not release shared buffer",__FILE__,__FUNCTION__,__LINE__);
+							break;
+						}
+						if (local_buf == NULL) {
+							set_thread_state(st, CS_ERROR, "%s:%s(%d):Could not allocate memory for local buffer (or zero frame size? %lu)",__FILE__,__FUNCTION__,__LINE__,frame_size);
+							break;
+						}
+					} else {
+						set_thread_state(st, CS_ERROR, "%s:%s(%d):Could not access shared buffer",__FILE__,__FUNCTION__,__LINE__);
+						break;
+					}
+					log_message(RL_DEBUG,"%s:%s(%d):Local buffer created",__FILE__,__FUNCTION__,__LINE__);
+				}
+				
 				/* If zero frames received, that's end-of-transmission */
 				if (nmem == 0) {
 					set_thread_state(st, CS_STOP,"%s:%s(%d):End-of-transmission received",__FILE__,__FUNCTION__,__LINE__);
 					break;
 				}
+				
 				frames_to_copy = frames_received + nmem < max_frames_in_buffer ? nmem : max_frames_in_buffer-frames_received;
-				memcpy((void *)(local_buf+frames_received*frame_size),tmp_buf+tmp_buf_offset,frames_to_copy*size);
+				memcpy((void *)local_buf + frames_received*frame_size,tmp_buf+tmp_buf_offset,frames_to_copy*frame_size);
 				frames_received += frames_to_copy;
 				if (frames_to_copy == nmem) {
 					free(tmp_buf);
@@ -744,7 +766,7 @@ static void * _threaded_receiver(void *arg) {
 		//~ log_message(RL_DEBUGVVV,"%s:%s(%d):                                             Try to get data lock...",__FILE__,__FUNCTION__,__LINE__);
 		if (get_thread_state(st, &ctrl) == 0 && !(ctrl >= CS_ERROR) && obtain_data_lock(dest) == 0) {
 			if (frames_received > 0 && dest->n_frames == 0) {
-				memcpy(dest->buf, local_buf, frames_received*frame_size*sizeof(uint32_t));
+				memcpy(dest->buf, local_buf, frames_received*frame_size);
 				dest->n_frames = frames_received;
 				
 				log_message(RL_DEBUGVVV,"%s:%s(%d):Copied %u frames of data [%u .. %u] into shared buffer",__FILE__,__FUNCTION__,__LINE__,frames_received,dest->buf[0],dest->buf[dest->n_frames*dest->frame_size-1]);
@@ -795,7 +817,7 @@ static void * _threaded_writer(void *arg) {
 	int n_frames = 0; // number of frames available in buffer
 	int n_frames_copied = 0; // number of frames copied from local to shared buffer
 	int n_frames_this_copy = 0; // number for frames copied per iteration
-	int max_frames_in_buffer = 0;
+	int max_frames_in_buffer = 1; // Just initialize to greater than 0
 	int wait_after_data = 0;
 	
 	sgcomm_thread *st = (sgcomm_thread *)arg; // general thread message
@@ -816,16 +838,14 @@ static void * _threaded_writer(void *arg) {
 	// TODO: Need to set the local buffer to some size that is a multiple
 	// of the number of frames written per scatter-gather block.
 	/* THE LOCAL BUFFER IS ASSUMED LARGER THAN THE SHARED BUFFER */
-	if (obtain_data_lock(src) == 0) {
-		src->frame_size = 264; // REDO: We need some other way to set the frame sizes
-		max_frames_in_buffer = (uint32_t)src->buf_size/src->frame_size;
-		local_buf = (uint32_t *)malloc(max_frames_in_buffer*src->frame_size*sizeof(uint32_t));
-		if (release_data_lock(src) != 0)
-			set_thread_state(st, CS_ERROR, "%s:%s(%d):Cannot release shared buffer",__FILE__,__FUNCTION__,__LINE__);
-	} else
-		set_thread_state(st, CS_ERROR, "%s:%s(%d):Cannot access shared buffer",__FILE__,__FUNCTION__,__LINE__);
-	
-	log_message(RL_DEBUG,"%s:%s(%d):Local buffer created",__FILE__,__FUNCTION__,__LINE__);
+	//~ if (obtain_data_lock(src) == 0) {
+		//~ src->frame_size = 264; // REDO: We need some other way to set the frame sizes
+		//~ max_frames_in_buffer = (uint32_t)src->buf_size/src->frame_size;
+		//~ local_buf = (uint32_t *)malloc(max_frames_in_buffer*src->frame_size*sizeof(uint32_t));
+		//~ if (release_data_lock(src) != 0)
+			//~ set_thread_state(st, CS_ERROR, "%s:%s(%d):Cannot release shared buffer",__FILE__,__FUNCTION__,__LINE__);
+	//~ } else
+		//~ set_thread_state(st, CS_ERROR, "%s:%s(%d):Cannot access shared buffer",__FILE__,__FUNCTION__,__LINE__);
 	
 	/* Set this thread entering infinite loop section */
 	if (get_thread_state(st, &ctrl) == 0 && !(ctrl >= CS_STOP))
@@ -847,6 +867,18 @@ static void * _threaded_writer(void *arg) {
 			if (obtain_data_lock(src) == 0) {
 				/* Only copy if shared buffer is not empty */
 				if (src->n_frames > 0) {
+					
+					/* If local buffer not yet allocated, allocate now */
+					if (local_buf == NULL) {
+						max_frames_in_buffer = (uint32_t)src->buf_size/src->frame_size;
+						local_buf = (uint32_t *)malloc(max_frames_in_buffer*src->frame_size*sizeof(uint32_t));
+						if (local_buf == NULL) {
+							set_thread_state(st, CS_ERROR, "%s:%s(%d):Could not allocate memory for local buffer (or zero frame size? %lu)",__FILE__,__FUNCTION__,__LINE__,src->frame_size*sizeof(uint32_t));
+							break;
+						}
+						log_message(RL_DEBUG,"%s:%s(%d):Local buffer created",__FILE__,__FUNCTION__,__LINE__);
+					}
+					
 					/* Calculate copy size, all frames if possible,
 					 * otherwise as many as the shared data buffer can keep */
 					n_frames_this_copy = src->n_frames < (max_frames_in_buffer - n_frames_copied) ? 
@@ -892,13 +924,15 @@ static void * _threaded_writer(void *arg) {
 			} else
 				set_thread_state(st, CS_ERROR, "%s:%s(%d):Could not access shared buffer",__FILE__,__FUNCTION__,__LINE__);
 			
-		} else {
+		} else if (local_buf != NULL) {
 			/* If the local buffer is full, write to disk */
 			log_message(RL_DEBUG,"%s:%s(%d):Local buffer full, writing to disk",__FILE__,__FUNCTION__,__LINE__);
 			// TODO: Scatter-gather write
 			write_vdif_frames(sgpln, local_buf, n_frames_copied);
 			log_message(RL_DEBUG,"%s:%s(%d):Writing to disk done, next",__FILE__,__FUNCTION__,__LINE__);
 			n_frames_copied = 0;
+		} else {
+			usleep(WAIT_PERIOD_US);
 		}
 			
 		// TODO: Add other writer main loop tasks here

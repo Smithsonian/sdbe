@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-std=gnu99
+CFLAGS=-std=gnu99 -O3
 LFLAGS=-lrt -lpthread -lscatgat
 DEPS=sgcomm_report.o sgcomm_net.o sgcomm_threads.o
 EXEC_TRANSCEIVER=sgtxrx
@@ -23,7 +23,9 @@ $(EXEC_RECEIVER): $(OBJS_RECEIVER)
 %.o: %.c
 	$(CC) -c -o $@ $< $(CFLAGS)
 
-.PHONY: clean
+.PHONY : all
+all : $(EXEC_TRANSCEIVER) $(EXEC_RECEIVER) $(EXEC_TRANSMITTER)
 
+.PHONY: clean
 clean:
 	rm -f *.o $(EXEC_TRANSCEIVER) $(EXEC_TRANSMITTER) $(EXEC_RECEIVER)
