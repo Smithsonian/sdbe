@@ -88,7 +88,7 @@ int destroy_thread(sgcomm_thread **st) {
 }
 
 int start_thread(sgcomm_thread *st) {
-	//~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Starting thread",__FILE__,__FUNCTION__,__LINE__);
+	log_message(RL_DEBUGVVV,"%s:%s(%d):Starting thread",__FILE__,__FUNCTION__,__LINE__);
 	if (st->run_method == NULL || st == NULL)
 		return -1;
 	return pthread_create(&(st->thread),NULL,st->run_method,st);
@@ -152,7 +152,7 @@ int destroy_shared_buffer(shared_buffer **sb) {
 }
 
 int obtain_data_lock(shared_buffer *sb) {
-	//~ //~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Waiting on data",__FILE__,__FUNCTION__,__LINE__);
+	//~ log_message(RL_DEBUGVVV,"%s:%s(%d):Waiting on data",__FILE__,__FUNCTION__,__LINE__);
 	if (pthread_mutex_lock(&(sb->mtx)) == 0)
 		return 0;
 	log_message(RL_ERROR,"%s:%s(%d):Could not lock mutex for shared_buffer %lu",__FILE__,__FUNCTION__,__LINE__,sb);
@@ -171,7 +171,7 @@ int set_thread_state(sgcomm_thread *st, ctrl_state state, const char *fmt, ...) 
 	int result;
 	report_level rl;
 	
-	//~ //~**~log_message(RL_DEBUGVVV,"%s:Enter",__FUNCTION__);
+	//~ log_message(RL_DEBUGVVV,"%s:Enter",__FUNCTION__);
 	
 	va_start(ap, fmt);
 	if (state > CS_ERROR || state < CS_INIT) {
@@ -179,7 +179,7 @@ int set_thread_state(sgcomm_thread *st, ctrl_state state, const char *fmt, ...) 
 		result = -1;
 	}
 	
-	//~ //~**~log_message(RL_DEBUGVVV,"%s:Given state okay",__FUNCTION__);
+	//~ log_message(RL_DEBUGVVV,"%s:Given state okay",__FUNCTION__);
 	
 	if (pthread_mutex_lock(&(st->mtx)) == 0) {
 		st->state = state;
@@ -192,7 +192,7 @@ int set_thread_state(sgcomm_thread *st, ctrl_state state, const char *fmt, ...) 
 		result = -1;
 	}
 	
-	//~ //~**~log_message(RL_DEBUGVVV,"%s:State is set",__FUNCTION__);
+	//~ log_message(RL_DEBUGVVV,"%s:State is set",__FUNCTION__);
 	
 	switch (state) {
 	case CS_ERROR:
@@ -205,13 +205,13 @@ int set_thread_state(sgcomm_thread *st, ctrl_state state, const char *fmt, ...) 
 		rl = RL_NOTICE;
 	}
 	
-	//~ //~**~log_message(RL_DEBUGVVV,"%s:Log level is set",__FUNCTION__);
+	//~ log_message(RL_DEBUGVVV,"%s:Log level is set",__FUNCTION__);
 	
 	vlog_message(rl,fmt,ap);
 	result = 0;
 	va_end(ap);
 	
-	//~ //~**~log_message(RL_DEBUGVVV,"%s:Leave",__FUNCTION__);
+	//~ log_message(RL_DEBUGVVV,"%s:Leave",__FUNCTION__);
 	
 	return result;
 }
@@ -399,14 +399,14 @@ static void * _threaded_reader(void *arg) {
 	if (get_thread_state(st, &ctrl) == 0 && !(ctrl >= CS_STOP)) {
 		set_thread_state(st, CS_RUN, NULL);
 		
-		//~**~log_message(RL_DEBUG,"%s:%s(%d):Thread set to enter loop",__FILE__,__FUNCTION__,__LINE__);
+		log_message(RL_DEBUG,"%s:%s(%d):Thread set to enter loop",__FILE__,__FUNCTION__,__LINE__);
 	}
 	
 	/* Continue working until stop condition */
 	while (get_thread_state(st, &ctrl) == 0 && !(ctrl >= CS_STOP)) {
 		/* If this thread is in a wait state, sleep and repeat check */
 		if (ctrl == CS_WAIT) {
-			//~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Waiting due to CS_WAIT",__FILE__,__FUNCTION__,__LINE__);
+			log_message(RL_DEBUGVVV,"%s:%s(%d):Waiting due to CS_WAIT",__FILE__,__FUNCTION__,__LINE__);
 			usleep(WAIT_PERIOD_US);
 			continue;
 		}
@@ -428,7 +428,7 @@ static void * _threaded_reader(void *arg) {
 				break;
 			}
 			
-			//~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Read %d frames",__FILE__,__FUNCTION__,__LINE__,n_frames);
+			log_message(RL_DEBUGVVV,"%s:%s(%d):Read %d frames",__FILE__,__FUNCTION__,__LINE__,n_frames);
 		}
 		
 		/* If there are frames to process, insert into shared buffer */
@@ -441,7 +441,7 @@ static void * _threaded_reader(void *arg) {
 					(n_frames-n_frames_copied) : 
 					(int)(dest->buf_size/dest->frame_size);
 				
-				//~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Copy %d/%d frames to shared buffer (buffer allows %d)",__FILE__,__FUNCTION__,__LINE__,n_frames_this_copy,n_frames,(int)(dest->buf_size/dest->frame_size));
+				log_message(RL_DEBUGVVV,"%s:%s(%d):Copy %d/%d frames to shared buffer (buffer allows %d)",__FILE__,__FUNCTION__,__LINE__,n_frames_this_copy,n_frames,(int)(dest->buf_size/dest->frame_size));
 				
 				/* Copy data to shared buffer and set frame count.
 				 * Source location is offset by the number of frames 
@@ -453,7 +453,7 @@ static void * _threaded_reader(void *arg) {
 				dest->n_frames = n_frames_this_copy;
 				n_frames_copied += n_frames_this_copy;
 				
-				//~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Copied %u (%u/%u) frames of data [%u .. %u] into shared buffer",__FILE__,__FUNCTION__,__LINE__,n_frames_this_copy,n_frames_copied,n_frames,dest->buf[0],dest->buf[dest->n_frames*dest->frame_size-1]);
+				log_message(RL_DEBUGVVV,"%s:%s(%d):Copied %u (%u/%u) frames of data [%u .. %u] into shared buffer",__FILE__,__FUNCTION__,__LINE__,n_frames_this_copy,n_frames_copied,n_frames,dest->buf[0],dest->buf[dest->n_frames*dest->frame_size-1]);
 				
 				/* If all the frames have been copied, reset frames 
 				 * available and free the local buffer */
@@ -468,7 +468,7 @@ static void * _threaded_reader(void *arg) {
 				wait_after_data = 0;
 			} else {
 				wait_after_data = 1;
-				//~ //~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Shared buffer not empty, setting wait state",__FILE__,__FUNCTION__,__LINE__);
+				//~ log_message(RL_DEBUGVVV,"%s:%s(%d):Shared buffer not empty, setting wait state",__FILE__,__FUNCTION__,__LINE__);
 			}
 			
 			/* Finally, release lock on shared data */
@@ -484,10 +484,10 @@ static void * _threaded_reader(void *arg) {
 		// TODO: Add other reader main loop tasks here, outside the
 		// data lock, e.g. update status, etc?
 		
-		//~ //~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Repeat loop",__FILE__,__FUNCTION__,__LINE__);
+		//~ log_message(RL_DEBUGVVV,"%s:%s(%d):Repeat loop",__FILE__,__FUNCTION__,__LINE__);
 	}
 	
-	//~**~log_message(RL_DEBUG,"%s:%s(%d):Thread exited main loop",__FILE__,__FUNCTION__,__LINE__);
+	log_message(RL_DEBUG,"%s:%s(%d):Thread exited main loop",__FILE__,__FUNCTION__,__LINE__);
 	
 	/* In case we exited without properly handling this memory, as is 
 	 * the case when frame request returned non-positive number. */
@@ -507,6 +507,10 @@ static void * _threaded_transmitter(void *arg) {
 	int sockfd;
 	int wait_after_data = 0;
 	
+	/* For new communication protocol */
+	#define MAX_TX_TRIES 3
+	int tx_tries;
+	
 	sgcomm_thread *st = (sgcomm_thread *)arg; // general thread message
 	transmitter_msg *msg = (transmitter_msg *)(st->type_msg); // type specific message
 	shared_buffer *src = msg->src;
@@ -524,7 +528,7 @@ static void * _threaded_transmitter(void *arg) {
 	if (get_thread_state(st, &ctrl) == 0 && !(ctrl >= CS_STOP)) {
 		set_thread_state(st, CS_RUN,"%s:%s(%d):Connected",__FILE__,__FUNCTION__,__LINE__);
 		
-		//~**~log_message(RL_DEBUG,"%s:%s(%d):Thread set to enter loop",__FILE__,__FUNCTION__,__LINE__);
+		log_message(RL_DEBUG,"%s:%s(%d):Thread set to enter loop",__FILE__,__FUNCTION__,__LINE__);
 	}
 	
 	while (get_thread_state(st, &ctrl) == 0 && !(ctrl >= CS_STOP)) {
@@ -540,9 +544,13 @@ static void * _threaded_transmitter(void *arg) {
 		if (obtain_data_lock(src) == 0) {
 			if (src->n_frames > 0) {
 				
-				//~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Send %u frames of data [%u .. %u] from shared buffer",__FILE__,__FUNCTION__,__LINE__,src->n_frames,src->buf[0],src->buf[src->n_frames*src->frame_size-1]);
+				log_message(RL_DEBUGVVV,"%s:%s(%d):Send %u frames of data [%u .. %u] from shared buffer",__FILE__,__FUNCTION__,__LINE__,src->n_frames,src->buf[0],src->buf[src->n_frames*src->frame_size-1]);
 				
 				// TODO: Process data, send, etc
+				/*******************************************************
+				 * This section is being replaced to accommodate a new
+				 * communication protocol
+				 * 
 				frames_sent = 0;
 				do {
 					if (tx_frame(sockfd,(void *)(src->buf+frames_sent*src->frame_size),(src->frame_size)*sizeof(uint32_t)) < 0) {
@@ -550,8 +558,25 @@ static void * _threaded_transmitter(void *arg) {
 						break;
 					}
 				} while (++frames_sent < src->n_frames);
-				
-				//~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Sent %u frames",__FILE__,__FUNCTION__,__LINE__,frames_sent);
+				/* 
+				* *****************************************************
+				* */
+				frames_sent = 0;
+				tx_tries = MAX_TX_TRIES;
+				do {
+					if (tx_frames(sockfd, (void *)(src->buf), src->n_frames, src->frame_size*sizeof(uint32_t)) == 0)
+						break;
+					log_message(RL_WARNING,"%s:%s(%d):Sending frames failed, %d tries left",__FILE__,__FUNCTION__,__LINE__,tx_tries);
+				} while (tx_tries-- > 0);
+				if (tx_tries > 0) {
+					frames_sent = src->n_frames;
+				} else {
+					set_thread_state(st, CS_ERROR, "%s:%s(%d):Could not send frames, stopping",__FILE__,__FUNCTION__,__LINE__);
+					frames_sent = 0;
+				}
+				/*
+				 * ****************************************************/
+				log_message(RL_DEBUGVVV,"%s:%s(%d):Sent %u frames",__FILE__,__FUNCTION__,__LINE__,frames_sent);
 				
 				/* Set frame count to zero */
 				src->n_frames = 0;
@@ -560,7 +585,7 @@ static void * _threaded_transmitter(void *arg) {
 				wait_after_data = 0;
 			} else {
 				wait_after_data = 1;
-				//~ //~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Shared buffer empty, set wait state",__FILE__,__FUNCTION__,__LINE__);
+				//~ log_message(RL_DEBUGVVV,"%s:%s(%d):Shared buffer empty, set wait state",__FILE__,__FUNCTION__,__LINE__);
 			}
 			
 			/* Finally, release lock on shared data */
@@ -574,10 +599,14 @@ static void * _threaded_transmitter(void *arg) {
 		} else
 			set_thread_state(st, CS_ERROR, "%s:%s(%d):Could not access shared buffer",__FILE__,__FUNCTION__,__LINE__);
 		
-		//~ //~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Repeat loop",__FILE__,__FUNCTION__,__LINE__);
+		//~ log_message(RL_DEBUGVVV,"%s:%s(%d):Repeat loop",__FILE__,__FUNCTION__,__LINE__);
 	}
 	
-	//~**~log_message(RL_DEBUG,"%s:%s(%d):Thread exited main loop",__FILE__,__FUNCTION__,__LINE__);
+	log_message(RL_DEBUG,"%s:%s(%d):Thread exited main loop",__FILE__,__FUNCTION__,__LINE__);
+	
+	/* Part of new communication protocol, send zero frames to end */
+	if (tx_frames(sockfd, (void *)(src->buf), src->n_frames, src->frame_size*sizeof(uint32_t)) != 0)
+		log_message(RL_WARNING,"%s:%s(%d):Could not send end-of-transmission",__FILE__,__FUNCTION__,__LINE__);
 	
 	// TODO: Close socket, etc
 	if (sockfd >= 0)
@@ -632,7 +661,7 @@ static void * _threaded_receiver(void *arg) {
 			set_thread_state(st, CS_ERROR,"%s:%s(%d):Cannot accept connection",__FILE__,__FUNCTION__,__LINE__);
 		/* And now ready to run */
 		set_thread_state(st, CS_RUN,"%s:%s(%d):Ready to receive data",__FILE__,__FUNCTION__,__LINE__);
-		//~**~log_message(RL_DEBUG,"%s:%s(%d):Thread set to enter loop",__FILE__,__FUNCTION__,__LINE__);
+		log_message(RL_DEBUG,"%s:%s(%d):Thread set to enter loop",__FILE__,__FUNCTION__,__LINE__);
 	}
 	
 	while (get_thread_state(st, &ctrl) == 0 && !(ctrl >= CS_STOP)) {
@@ -647,9 +676,9 @@ static void * _threaded_receiver(void *arg) {
 		/***************************************************************
 		 * This section is being replaced to accommodate a more 
 		 * sophisticated communication protocol.
-		 * */
+		 * *
 		if (frames_received == 0) {
-			//~ //~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Entering rx_frame loop",__FILE__,__FUNCTION__,__LINE__);
+			//~ log_message(RL_DEBUGVVV,"%s:%s(%d):Entering rx_frame loop",__FILE__,__FUNCTION__,__LINE__);
 			do {
 				num_bytes_or_err = rx_frame(sockfd_receive,(void *)(local_buf + frames_received*frame_size), frame_size*sizeof(uint32_t));
 				if (num_bytes_or_err <= 0) {
@@ -661,16 +690,21 @@ static void * _threaded_receiver(void *arg) {
 					break;
 				}
 				
-				//~ //~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Received %u frames",__FILE__,__FUNCTION__,__LINE__,frames_received+1);
+				//~ log_message(RL_DEBUGVVV,"%s:%s(%d):Received %u frames",__FILE__,__FUNCTION__,__LINE__,frames_received+1);
 			} while (++frames_received < max_frames_in_buffer);
 		/* 
 		* *************************************************************
-		* /
+		* */
 		if (frames_received < max_frames_in_buffer) {
 			do {
 				if (tmp_buf == NULL) {
 					if (rx_frames(sockfd_receive,&tmp_buf,&nmem,&size) != 0)
 						set_thread_state(st, CS_RUN,"%s:%s(%d):Error on receiving data",__FILE__,__FUNCTION__,__LINE__);
+				}
+				/* If zero frames received, that's end-of-transmission */
+				if (nmem == 0) {
+					set_thread_state(st, CS_STOP,"%s:%s(%d):End-of-transmission received",__FILE__,__FUNCTION__,__LINE__);
+					break;
 				}
 				frames_to_copy = frames_received + nmem < max_frames_in_buffer ? nmem : max_frames_in_buffer-frames_received;
 				memcpy((void *)(local_buf+frames_received*frame_size),tmp_buf+tmp_buf_offset,frames_to_copy*size);
@@ -689,7 +723,7 @@ static void * _threaded_receiver(void *arg) {
 		 * End of replacement to accommodate new communication protocol.
 		 * ************************************************************/
 			
-			//~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Received %u frames",__FILE__,__FUNCTION__,__LINE__,frames_received);
+			log_message(RL_DEBUGVVV,"%s:%s(%d):Received %u frames",__FILE__,__FUNCTION__,__LINE__,frames_received);
 			
 		} else
 			usleep(WAIT_PERIOD_US);
@@ -707,37 +741,37 @@ static void * _threaded_receiver(void *arg) {
 		 * went wrong with receiving. Note that CS_STOP is allowed 
 		 * to continue since there may be some frames left to write 
 		 * in that case */
-		//~ //~**~log_message(RL_DEBUGVVV,"%s:%s(%d):                                             Try to get data lock...",__FILE__,__FUNCTION__,__LINE__);
+		//~ log_message(RL_DEBUGVVV,"%s:%s(%d):                                             Try to get data lock...",__FILE__,__FUNCTION__,__LINE__);
 		if (get_thread_state(st, &ctrl) == 0 && !(ctrl >= CS_ERROR) && obtain_data_lock(dest) == 0) {
 			if (frames_received > 0 && dest->n_frames == 0) {
 				memcpy(dest->buf, local_buf, frames_received*frame_size*sizeof(uint32_t));
 				dest->n_frames = frames_received;
 				
-				//~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Copied %u frames of data [%u .. %u] into shared buffer",__FILE__,__FUNCTION__,__LINE__,frames_received,dest->buf[0],dest->buf[dest->n_frames*dest->frame_size-1]);
+				log_message(RL_DEBUGVVV,"%s:%s(%d):Copied %u frames of data [%u .. %u] into shared buffer",__FILE__,__FUNCTION__,__LINE__,frames_received,dest->buf[0],dest->buf[dest->n_frames*dest->frame_size-1]);
 				/* If there was data, optimistic that we don't have to 
 				* wait on next iteration */
 				wait_after_data = 0;
 				frames_received = 0;
 			} else {
 				wait_after_data = 1;
-				//~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Shared buffer not empty, set wait state",__FILE__,__FUNCTION__,__LINE__);
+				//~ log_message(RL_DEBUGVVV,"%s:%s(%d):Shared buffer not empty, set wait state",__FILE__,__FUNCTION__,__LINE__);
 			}
 			/* Finally, release lock on shared data */
 			if (release_data_lock(dest) != 0) {
 				set_thread_state(st, CS_ERROR, "%s:%s(%d):Could not release shared buffer",__FILE__,__FUNCTION__,__LINE__);
 				break;
 			}
-			//~ //~**~log_message(RL_DEBUGVVV,"%s:%s(%d):                                         ...released data lock",__FILE__,__FUNCTION__,__LINE__);
+			//~ log_message(RL_DEBUGVVV,"%s:%s(%d):                                         ...released data lock",__FILE__,__FUNCTION__,__LINE__);
 		} else
 			set_thread_state(st, CS_ERROR, "%s:%s(%d):Could not access shared buffer",__FILE__,__FUNCTION__,__LINE__);
 		
 		if (wait_after_data)
 			usleep(WAIT_PERIOD_US);
 		
-		//~ //~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Repeat loop",__FILE__,__FUNCTION__,__LINE__);
+		//~ log_message(RL_DEBUGVVV,"%s:%s(%d):Repeat loop",__FILE__,__FUNCTION__,__LINE__);
 	}
 	
-	//~**~log_message(RL_DEBUG,"%s:%s(%d):Thread exited main loop",__FILE__,__FUNCTION__,__LINE__);
+	log_message(RL_DEBUG,"%s:%s(%d):Thread exited main loop",__FILE__,__FUNCTION__,__LINE__);
 	
 	// TODO: Close socket, etc
 	if (sockfd_listen >= 0)
@@ -791,13 +825,13 @@ static void * _threaded_writer(void *arg) {
 	} else
 		set_thread_state(st, CS_ERROR, "%s:%s(%d):Cannot access shared buffer",__FILE__,__FUNCTION__,__LINE__);
 	
-	//~**~log_message(RL_DEBUG,"%s:%s(%d):Local buffer created",__FILE__,__FUNCTION__,__LINE__);
+	log_message(RL_DEBUG,"%s:%s(%d):Local buffer created",__FILE__,__FUNCTION__,__LINE__);
 	
 	/* Set this thread entering infinite loop section */
 	if (get_thread_state(st, &ctrl) == 0 && !(ctrl >= CS_STOP))
 		set_thread_state(st, CS_RUN, NULL);
 	
-	//~**~log_message(RL_DEBUG,"%s:%s(%d):Thread set to enter loop",__FILE__,__FUNCTION__,__LINE__);
+	log_message(RL_DEBUG,"%s:%s(%d):Thread set to enter loop",__FILE__,__FUNCTION__,__LINE__);
 	
 	/* Continue working until stop condition */
 	while (get_thread_state(st, &ctrl) == 0 && !(ctrl >= CS_STOP)) {
@@ -809,7 +843,7 @@ static void * _threaded_writer(void *arg) {
 		
 		/* If local buffer is empty, copy from shared buffer. */
 		if (n_frames_copied < max_frames_in_buffer) {
-			//~ //~**~log_message(RL_DEBUGVVV,"%s:%s(%d):                                             Try to get data lock...",__FILE__,__FUNCTION__,__LINE__);
+			//~ log_message(RL_DEBUGVVV,"%s:%s(%d):                                             Try to get data lock...",__FILE__,__FUNCTION__,__LINE__);
 			if (obtain_data_lock(src) == 0) {
 				/* Only copy if shared buffer is not empty */
 				if (src->n_frames > 0) {
@@ -818,18 +852,18 @@ static void * _threaded_writer(void *arg) {
 					n_frames_this_copy = src->n_frames < (max_frames_in_buffer - n_frames_copied) ? 
 						(src->n_frames) : (max_frames_in_buffer-n_frames_copied);
 					
-					//~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Copying %u/%u frames (buffer space left %u)",__FILE__,__FUNCTION__,__LINE__,n_frames_this_copy,(src->n_frames),(max_frames_in_buffer-n_frames_copied));
+					log_message(RL_DEBUGVVV,"%s:%s(%d):Copying %u/%u frames (buffer space left %u)",__FILE__,__FUNCTION__,__LINE__,n_frames_this_copy,(src->n_frames),(max_frames_in_buffer-n_frames_copied));
 					
 					/* Copy data from shared buffer and reset frame 
 					 * count. */
 					memcpy((void *)(local_buf+n_frames_copied*(src->frame_size)),src->buf,
 							n_frames_this_copy*src->frame_size*sizeof(uint32_t));
 					
-					//~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Copied %u frames of data [%u .. %u] from shared to local buffer",__FILE__,__FUNCTION__,__LINE__,n_frames_this_copy,src->buf[0],src->buf[n_frames_this_copy*src->frame_size-1]);
+					log_message(RL_DEBUGVVV,"%s:%s(%d):Copied %u frames of data [%u .. %u] from shared to local buffer",__FILE__,__FUNCTION__,__LINE__,n_frames_this_copy,src->buf[0],src->buf[n_frames_this_copy*src->frame_size-1]);
 					
 					n_frames_copied += n_frames_this_copy;
 					if (src->n_frames > n_frames_this_copy) {
-						//~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Moved %u frames of data in shared buffer",__FILE__,__FUNCTION__,__LINE__,(src->n_frames-n_frames_this_copy));
+						log_message(RL_DEBUGVVV,"%s:%s(%d):Moved %u frames of data in shared buffer",__FILE__,__FUNCTION__,__LINE__,(src->n_frames-n_frames_this_copy));
 						memmove(src->buf,src->buf+n_frames_this_copy*src->frame_size,(src->n_frames-n_frames_this_copy)*src->frame_size*sizeof(uint32_t));
 					}
 					src->n_frames -= n_frames_this_copy;
@@ -844,7 +878,7 @@ static void * _threaded_writer(void *arg) {
 					wait_after_data = 0;
 				} else {
 					wait_after_data = 1;
-					//~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Shared buffer empty, set wait state",__FILE__,__FUNCTION__,__LINE__);
+					//~ log_message(RL_DEBUGVVV,"%s:%s(%d):Shared buffer empty, set wait state",__FILE__,__FUNCTION__,__LINE__);
 				}
 				
 				/* Finally, release lock on shared data */
@@ -852,7 +886,7 @@ static void * _threaded_writer(void *arg) {
 					set_thread_state(st, CS_ERROR, "%s:%s(%d):Could not release shared buffer",__FILE__,__FUNCTION__,__LINE__);
 					break;
 				}
-				//~ //~**~log_message(RL_DEBUGVVV,"%s:%s(%d):                                         ...released data lock",__FILE__,__FUNCTION__,__LINE__);
+				//~ log_message(RL_DEBUGVVV,"%s:%s(%d):                                         ...released data lock",__FILE__,__FUNCTION__,__LINE__);
 				if (wait_after_data)
 					usleep(WAIT_PERIOD_US);
 			} else
@@ -860,16 +894,16 @@ static void * _threaded_writer(void *arg) {
 			
 		} else {
 			/* If the local buffer is full, write to disk */
-			//~**~log_message(RL_DEBUG,"%s:%s(%d):Local buffer full, writing to disk",__FILE__,__FUNCTION__,__LINE__);
+			log_message(RL_DEBUG,"%s:%s(%d):Local buffer full, writing to disk",__FILE__,__FUNCTION__,__LINE__);
 			// TODO: Scatter-gather write
 			write_vdif_frames(sgpln, local_buf, n_frames_copied);
-			//~**~log_message(RL_DEBUG,"%s:%s(%d):Writing to disk done, next",__FILE__,__FUNCTION__,__LINE__);
+			log_message(RL_DEBUG,"%s:%s(%d):Writing to disk done, next",__FILE__,__FUNCTION__,__LINE__);
 			n_frames_copied = 0;
 		}
 			
 		// TODO: Add other writer main loop tasks here
 		
-		//~ //~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Repeat loop",__FILE__,__FUNCTION__,__LINE__);
+		//~ log_message(RL_DEBUGVVV,"%s:%s(%d):Repeat loop",__FILE__,__FUNCTION__,__LINE__);
 	}
 	
 	// TODO: When stopped, do a check if there is data to write out (also check for other threads)
@@ -879,7 +913,7 @@ static void * _threaded_writer(void *arg) {
 		n_frames_copied = 0;
 	}
 	
-	//~**~log_message(RL_DEBUG,"%s:%s(%d):Thread exited main loop",__FILE__,__FUNCTION__,__LINE__);
+	log_message(RL_DEBUG,"%s:%s(%d):Thread exited main loop",__FILE__,__FUNCTION__,__LINE__);
 	
 	/* In case we exited without properly handling this memory, as is 
 	 * the case when frame request returned non-positive number. */

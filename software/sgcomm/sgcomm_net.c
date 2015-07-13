@@ -160,37 +160,37 @@ int rx_frames(int sockfd, void **buf, ssize_t *nmem, ssize_t *size) {
 	/* Complete handshake */
 	log_message(RL_DEBUGVVV,"%s:%s(%d):Sending first response",__FILE__,__FUNCTION__,__LINE__);
 	tx.frame_size = rx.frame_size;
-	tx.n_frames = rx.n_frames;
+	tx.n_frames = 0; // On first response, set number of frames to zero
 	num_bytes_or_err = tx_frame(sockfd, (void *)&tx, sizeof(handshake));
 	if (num_bytes_or_err <= 0) {
 		log_message(RL_ERROR,"%s:%s(%d):Communication failure on completing handshake",__FILE__,__FUNCTION__,__LINE__);
 		return num_bytes_or_err;
 	}
+	*nmem = rx.n_frames;
+	*size = rx.frame_size;
 	/* Receive data */
-	log_message(RL_DEBUGVVV,"%s:%s(%d):Receiving data",__FILE__,__FUNCTION__,__LINE__);
 	if (rx.n_frames > 0) {
+		log_message(RL_DEBUGVVV,"%s:%s(%d):Receiving data",__FILE__,__FUNCTION__,__LINE__);
 		/* Create buffer to store expected data and set size parameters */
-		*nmem = rx.n_frames;
-		*size = rx.frame_size;
 		*buf = malloc((*nmem) * (*size));
-		do {
+		for (frames_received=0; frames_received<*nmem; frames_received++) {
 			num_bytes_or_err = rx_frame(sockfd, *buf + frames_received*(*size), *size);
 			if (num_bytes_or_err <= 0) {
 				log_message(RL_ERROR,"%s:%s(%d):Communication failure during data receiving",__FILE__,__FUNCTION__,__LINE__);
 				return num_bytes_or_err;
 			}
-		} while(++frames_received < *nmem);
+		}
 	}
 	/* Conclude communication by sending last response */
 	log_message(RL_DEBUGVVV,"%s:%s(%d):Sending last response",__FILE__,__FUNCTION__,__LINE__);
 	tx.frame_size = *size;
-	tx.n_frames = 0;
+	tx.n_frames = *nmem; // On last response, set number of frames to all
 	num_bytes_or_err = tx_frame(sockfd, (void *)&tx, sizeof(handshake));
 	if (num_bytes_or_err <= 0) {
 		log_message(RL_ERROR,"%s:%s(%d):Communication failure on sending last response",__FILE__,__FUNCTION__,__LINE__);
 		return num_bytes_or_err;
 	}
-	log_message(RL_DEBUGVVV,"%s:%s(%d):Successful communication",__FILE__,__FUNCTION__,__LINE__);
+	log_message(RL_DEBUGVVV,"%s:%s(%d):Successful communication, received %lu frames",__FILE__,__FUNCTION__,__LINE__,*nmem);
 	return 0;
 }
 
@@ -220,15 +220,15 @@ int tx_frames(int sockfd, void *buf, ssize_t nmem, ssize_t size) {
 		return num_bytes_or_err;
 	}
 	/* Transmit data */
-	log_message(RL_DEBUGVVV,"%s:%s(%d):Transmitting data",__FILE__,__FUNCTION__,__LINE__);
 	if (rx.frame_size == tx.frame_size && rx.n_frames == 0) {
-		do {
+		log_message(RL_DEBUGVVV,"%s:%s(%d):Transmitting data",__FILE__,__FUNCTION__,__LINE__);
+		for (frames_transmitted=0; frames_transmitted<nmem; frames_transmitted++) {
 			num_bytes_or_err = tx_frame(sockfd,buf + frames_transmitted*size, size);
 			if (num_bytes_or_err <= 0) {
 				log_message(RL_ERROR,"%s:%s(%d):Communication failure during data transfer",__FILE__,__FUNCTION__,__LINE__);
 				return num_bytes_or_err;
 			}
-		} while(++frames_transmitted < nmem);
+		}
 	} else {
 		log_message(RL_WARNING,"%s:%s(%d):Invalid ACK received: frame_size = %u (expected %u), n_frames = %u (expected %u)",__FILE__,__FUNCTION__,__LINE__,rx.frame_size,size,rx.n_frames,0);
 		return ERR_NET_INVALID_ACK;
@@ -243,7 +243,7 @@ int tx_frames(int sockfd, void *buf, ssize_t nmem, ssize_t size) {
 		return num_bytes_or_err;
 	}
 	if (rx.frame_size == tx.frame_size && rx.n_frames == nmem) {
-		log_message(RL_DEBUGVVV,"%s:%s(%d):Successful communication",__FILE__,__FUNCTION__,__LINE__);
+		log_message(RL_DEBUGVVV,"%s:%s(%d):Successful communication, sent %lu frames",__FILE__,__FUNCTION__,__LINE__,nmem);
 		return 0;
 	} else {
 		log_message(RL_WARNING,"%s:%s(%d):Invalid ACK received: frame_size = %u (expected %u), n_frames = %u (expected %u)",__FILE__,__FUNCTION__,__LINE__,rx.frame_size,size,rx.n_frames,nmem);
