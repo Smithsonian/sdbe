@@ -562,6 +562,8 @@ static void * _threaded_transmitter(void *arg) {
 				frames_sent = 0;
 				tx_tries = MAX_TX_TRIES;
 				do {
+					// TODO: check number of frames received at other end
+					// against the total number of frames to be sent.
 					if (tx_frames(sockfd, (void *)(src->buf), src->n_frames, src->frame_size*sizeof(uint32_t)) >= 0)
 						break;
 					log_message(RL_WARNING,"%s:%s(%d):Sending frames failed, %d tries left",__FILE__,__FUNCTION__,__LINE__,tx_tries);
@@ -696,6 +698,8 @@ static void * _threaded_receiver(void *arg) {
 		if (frames_received < max_frames_in_buffer) {
 			do {
 				if (tmp_buf == NULL) {
+					// TODO: rx_frames returns the number of expected
+					// frames, an could possibly be used for something?
 					if (rx_frames(sockfd_receive,&tmp_buf,&nmem,&frame_size) < 0)
 						set_thread_state(st, CS_RUN,"%s:%s(%d):Error on receiving data",__FILE__,__FUNCTION__,__LINE__);
 				}
