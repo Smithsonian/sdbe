@@ -69,6 +69,7 @@ class sdbe_cupreprocess(object):
     self.__quantize2bit = kernel_module.get_function('quantize2bit')
     self.__zero_rout = kernel_module.get_function('zero_rout')
     self.__detrend = kernel_module.get_function('detrend')
+    self.__trim_n_shift = kernel_module.get_function('trim_n_shift')
 
     if self.__resamp_kind == 'linear':
       self.__linear_interp = kernel_module.get_function('linear')
@@ -120,13 +121,6 @@ class sdbe_cupreprocess(object):
 					       onembed.ctypes.data, 1, 2048,
 					       cufft.CUFFT_C2R, self.__bandlimit_batch)
     elif self.__resamp_kind == 'fft':
-      # inverse FFT plan
-      #n = array([2*BENG_CHANNELS_],int32)
-      #inembed = array([BENG_CHANNELS],int32)
-      #onembed = array([2*BENG_CHANNELS_],int32)
-      #self.__plan_A = cufft.cufftPlanMany(1, n.ctypes.data, inembed.ctypes.data, 1, BENG_CHANNELS,
-      #                                onembed.ctypes.data, 1, 2*BENG_CHANNELS_,
- 	#			       cufft.CUFFT_C2R, self.num_beng_counts*BENG_SNAPSHOTS)
 
       self.__bandlimit_batch = 32
       # Turn concatenated SWARM time series into single spectrum
@@ -144,6 +138,26 @@ class sdbe_cupreprocess(object):
       onembed = array([32*2*BENG_CHANNELS_],int32)
       self.__plan_C = cufft.cufftPlanMany(1,n.ctypes.data,
 					inembed.ctypes.data,1,39*BENG_CHANNELS_+1,
+					onembed.ctypes.data,1,32*2*BENG_CHANNELS_,
+					cufft.CUFFT_C2R,self.__bandlimit_batch)
+    elif self.__resamp_kind == 'fft_contiguous':
+
+      self.__bandlimit_batch = 32
+      # Turn concatenated SWARM time series into single spectrum
+      n = array([39*2*BENG_CHANNELS_],int32)
+      inembed = array([39*2*BENG_CHANNELS_],int32)
+      onembed = array([39*BENG_CHANNELS_+1],int32)
+      self.__plan_B = cufft.cufftPlanMany(1,n.ctypes.data,
+					inembed.ctypes.data,1,39*2*BENG_CHANNELS_,
+					onembed.ctypes.data,1,39*BENG_CHANNELS_+1,
+					cufft.CUFFT_R2C,self.__bandlimit_batch)
+
+      # Turn trimmed spectrum into 2048 timeseries
+      n = array([32*2*BENG_CHANNELS_],int32)
+      inembed = array([32*BENG_CHANNELS_+1],int32)
+      onembed = array([32*2*BENG_CHANNELS_],int32)
+      self.__plan_C = cufft.cufftPlanMany(1,n.ctypes.data,
+					inembed.ctypes.data,1,32*BENG_CHANNELS_+1,
 					onembed.ctypes.data,1,32*2*BENG_CHANNELS_,
 					cufft.CUFFT_C2R,self.__bandlimit_batch)
 
@@ -240,6 +254,8 @@ class sdbe_cupreprocess(object):
       self.__fft_linear_interp()
     elif self.__resamp_kind == 'fft':
       self.__fft_resample()
+    elif self.__resamp_kind == 'fft_contiguous':
+      self.__fft_rresample()
     elif self.__resamp_kind == 'nearest':
       self.__fft_nearest_interp()
     else:
@@ -274,6 +290,44 @@ class sdbe_cupreprocess(object):
 			int(gpu_tmp)+int(8*150*512),int(phased_sum_out)+
 			int(4*32*2*BENG_CHANNELS_*ib*self.__bandlimit_batch))
       gpu_tmp.free()
+
+    gpu_swarm.free()
+
+  def __fft_rresample(self):
+    '''
+    Resample using FFTs and re-package arrays.
+    individual phased sums resampled at 2048 MHz. 
+    '''
+
+    #device memory allocation
+    self.__gpu_time_series_0 = cuda.mem_alloc(4 * self.num_r2dbe_samples / 2) # 2048 MHz clock
+    self.__gpu_time_series_1 = cuda.mem_alloc(4 * self.num_r2dbe_samples / 2) # 2048 MHz clock
+    gpu_swarm = cuda.mem_alloc(4 * self.num_swarm_samples)
+
+    # loop over phased sums
+    for (phased_sum_in,phased_sum_out) in zip((self.__gpu_beng_0, self.__gpu_beng_1),(self.__gpu_time_series_0,self.__gpu_time_series_1)):
+      # turn SWARM snapshots into timeseries
+      for ib in range(self.num_beng_counts):
+        cufft.cufftExecC2R(self.__plan_A,int(phased_sum_in)+int(8*ib*BENG_SNAPSHOTS*16400),int(gpu_swarm)+int(4*ib*BENG_SNAPSHOTS*2*BENG_CHANNELS_))
+      phased_sum_in.free()
+ 
+      gpu_tmp = cuda.mem_alloc(8*int(39*BENG_CHANNELS_+1)*self.__bandlimit_batch)
+      gpu_bar = cuda.mem_alloc(8*int(39*BENG_CHANNELS_+1-150*512)*self.__bandlimit_batch)
+      for ib in range((BENG_BUFFER_IN_COUNTS-1)*BENG_SNAPSHOTS/39/self.__bandlimit_batch):
+        # Turn concatenated SWARM time series into single spectrum
+        cufft.cufftExecR2C(self.__plan_B,int(gpu_swarm)+
+						int(4*39*2*BENG_CHANNELS_*self.__bandlimit_batch*ib),int(gpu_tmp))
+        # Trim spectrum and return continguous array
+ 	self.__trim_n_shift(gpu_tmp,int32(39*BENG_CHANNELS_+1),
+	 	     gpu_bar,int32(39*BENG_CHANNELS_+1-(150*512)),
+		     int32(150*512), int32(self.__bandlimit_batch),
+			block=(512,1,1),grid=(int(ceil((39.*BENG_CHANNELS_+1)*self.__bandlimit_batch/512)),1))
+        # Turn padded SWARM spectrum into time series with R2DBE sampling rate
+        cufft.cufftExecC2R(self.__plan_C,
+			int(gpu_bar),int(phased_sum_out)+
+			int(4*32*2*BENG_CHANNELS_*ib*self.__bandlimit_batch))
+      gpu_tmp.free()
+      gpu_bar.free()
 
     gpu_swarm.free()
 
@@ -448,7 +502,7 @@ if __name__ == "__main__":
   # use precomputed thresholds for quantization
   if args.resamp_kind == 'linear':
     thresh = [741508.44,773105.12]
-  elif args.resamp_kind == 'fft':
+  elif args.resamp_kind == 'fft' or args.resamp_kind == 'fft_contiguous':
     thresh = [2.80364832e+08, 2.95670688e+08]
   elif args.resamp_kind == 'nearest':
     thresh = [833892.25, 875652.25]
@@ -459,12 +513,6 @@ if __name__ == "__main__":
     f = open(args.basename+'_spline.bin','rb')
     debias = array(unpack('%df' % (2*BENG_CHANNELS_,),f.read(4*2*BENG_CHANNELS_)),dtype=float32).reshape(2,BENG_CHANNELS_)
     f.close()
-    # zero out SWARM spurs appearing every 2048 channels
-    #spurs = arange(2048, BENG_CHANNELS_, 2048)
-    #debias[:,spurs] = 0
-    # remove guard band artifacts
-    #debias[0,:20] = 0 
-    #debias[1,15200:] = 0 
     # pad to match 16400 padded spectra chunks
     debias = hstack([debias, zeros((2,16400 - BENG_CHANNELS_), dtype=float32) ]) 
   else: debias = None
@@ -564,8 +612,6 @@ if __name__ == "__main__":
     xs_bl = sdbe_preprocess.bandlimit_1248_to_1024(xs_shifted[:(xs_shifted.size//4096)*4096],sub_sample=True)
   
     # check correlation given pre-determined time shift
-    s_range = arange(-16,16)
-    s_avg = 128
     offset_swarmdbe_data = d['offset_swarmdbe_data']
     idx_offset = d['get_idx_offset'][0]
     fft_window_size = 32768

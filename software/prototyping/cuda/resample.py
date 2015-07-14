@@ -340,7 +340,7 @@ def fft_interp_1(gpu_1,gpu_2,num_snapshots,interp_kind='linear',cpu_check=True):
 def fft_interp_2(gpu_1,gpu_2,num_snapshots,interp_kind='linear',cpu_check=True):
   '''
   Batched fft to time series and then interpolation to resample.
-  Use devuce memory to store coefficients and index values.
+  Use device memory to store coefficients and index values.
   '''
   tic = cuda.Event()
   toc = cuda.Event()

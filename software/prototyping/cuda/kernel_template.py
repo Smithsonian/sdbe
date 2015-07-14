@@ -451,4 +451,20 @@ __global__ void detrend(cufftComplex *spectra, int32_t N, float *avg){
     spectra[i*16400+tid] = make_cuComplex(mask*(_spectra.x-_avg),mask*( _spectra.y-_avg));
   }
 }
+
+/** @brief Trim and frequency shift SWARM spectrum. 
+@pre size of block must <= 61440 to use shared memory
+@pre grid must cover input.
+*/
+__global__ void trim_n_shift(const cufftComplex *in, const int num_in, 
+	cufftComplex *out, const int num_out,
+	const int num_trim, const int batch){
+  int32_t tid = blockDim.x*blockIdx.x + threadIdx.x;
+
+  if (tid < num_out*batch){
+    int32_t ibatch = tid / num_out;
+    int32_t isample = tid %% num_out;
+    out[tid] = in[ibatch*num_in + num_trim + isample];
+  }
+}
 """
