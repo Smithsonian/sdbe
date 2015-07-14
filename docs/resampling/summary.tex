@@ -1,0 +1,254 @@
+\documentclass[11pt,preprint]{aastex}
+\usepackage{natbib}
+\bibliographystyle{apj}
+\usepackage{amsmath,epstopdf}
+\usepackage{tikz}
+\usetikzlibrary{dsp,chains,shapes,arrows}
+\usepackage{rotating,lscape,threeparttablex}
+\DeclareGraphicsRule{.pdftex}{pdf}{*}{}
+
+\DeclareMathAlphabet{\mathpzc}{OT1}{pzc}{m}{it}
+\newcommand{\z}{\mathpzc{z}}
+\newcommand{\SWARM}[1]{\texttt{#1\,SWARM}}
+\newcommand{\APHIDS}[1]{\texttt{APHIDS}}
+\newcommand{\falign}{0}
+\newcommand{\talign}{7.5}
+
+\begin{document}
+
+\title{Resampling \SWARM{6/11} for VLBI \\ v0.1}
+
+\author{The APHIDS Team\altaffilmark{1}}
+\altaffiltext{1}{Harvard-Smithsonian Center for Astrophysics, 60 Garden Street, Cambridge, MA 02138, USA}
+
+\begin{abstract}
+ABSTRACT
+\end{abstract}
+
+\section{Background} \label{sec:background}
+\subsection{VLBI}
+\subsection{SDBE}
+
+\section{Sample Rate Conversion} \label{sec:src_basics}
+
+Sample rate conversion, or resampling, is the process of taking a signal, $x[i]$, sampled at a rate $f_0$ and 
+calculating new samples $y[i]$ at a different sample rate, $f_1$.  For \APHIDS we are concerned with the case 
+where the ratio between the two sample rates are rational, $f_1/f_0 = L/M$.  Operationally, resampling is the 
+chained combination of upsampling and downsampling \citep{oppenheim10,lyons11}.  Upsampling, or interpolation, 
+increases the sampling rate 
+by an integer factor $L$ with the insertion of $L-1$ zeroes between the original $x[i]$.  A low-pass, 
+anti-imaging filter smooths the signal and supresses the high frequency spectral images greater than the original 
+$f_0$ that have been introduced by the zero inserts.  Figure XX sketches this process in the time and frequency 
+domain for when $L$ equals 3. 
+
+Downsampling, or decimation, by an integer factor of $M$ requires that the signal be first low-pass filtered to 
+avoid aliasing 
+at frequencies greater than the targeted $f_0/M$.  Only then can the sampling rate be reduced to $f_0/M$ by 
+selecting every $M$th sample from the filtered signal.  Figure XX shows this process in the time and frequency 
+domain for when $M$ equals 2.
+
+Sample rate conversion by a rational factor $L/M$ is then a three step process where the original signal is 
+expanded by $L$, filtered, and then decimated by $M$.  As illustrated by Figure \ref{fig:resample_basic}, 
+the anti-imaging and 
+anti-aliasing filters have been combined into a single filter with cutoff frequency of 
+$1/\mathrm{max}(L,M) \times Lf_0/2$.  Under this scheme interpolation must precede decimation otherwise desired 
+frequency components greater than $f_0/M$ cannot be preserved.
+
+\begin{figure}[H!]
+\centering
+\label{fig:resample_basic}
+\begin{tikzpicture}
+   \node[dspnodeopen,dsp/label=left]  (c0) {$x[i]$};
+   \node[dspsquare,right=of c0]                     (c1) {\upsamplertext{L}};
+   \node[dspfilter,right=of c1]                     (c2) {$H(\z)$};
+   \node[dspsquare,right=of c2]                    (c3) {\downsamplertext{M}};
+   \node[dspnodeopen,right=of c3,dsp/label=right]  (c4) {$y[j]$};
+   \foreach \i [evaluate = \i as \j using int(\i+1)] in {0,1,...,3}
+       \draw[dspconn] (c\i) -- (c\j);
+\end{tikzpicture}
+\caption{Basic multirate resampling signal flow graph.}
+\end{figure}
+
+\iffalse % to save time don't compile sampling examples
+\include{upsampling_tikz}
+\include{downsampling_tikz}
+\include{src_tikz}
+\fi %\iffalse
+
+Computationally, the basic sample rate conversion scheme described in \S\ref{sec:src_basics} is highly 
+inefficient.  The filtering is applied at the highest possible sample rate, $Lf_0$, on
+a time-series that is $(L-1)/L$ zeros by fraction. Next, the decimator discards an $(M-1)/M$ fraction of the 
+samples.  As a result, this algorithm requires a lot of memory and spends precious clock 
+time with wasted math.  There are multiple techniques for improving performance including 
+multistage resampling, folded filter structures, and polyphase representations \citep{oppenheim10,lyons11,
+vaidyanathan93}.
+
+%\subsection{FIR filtering using Polyphase Representations}
+\subsection{Polyphase representions and a time-varying FIR filter structure}
+Polyphase filters use the Noble identities to move the filtering to precede the expander
+or follow the decimator.  However, there still appears some waste as the former scheme (operating at $f_1$) 
+produces zero-valued samples and the latter (operating at $f_0$) will discard samples.  An efficient variant
+interchanges the decimator and expander blocks by shuffling the delays and decomposing the original n-tap FIR 
+filter into $L$ sub-filters with $n/L$ taps \citep{crochiere81}.  This algorithm operates at the lowest 
+possible rate of $f_0/M$.
+
+References include \citep{wang01}.
+
+\subsection{Linear and Nearest-Neighbor Interpolation}
+An operationally simple option for resampling is to use linear interpolation to estimate the values that lie in 
+between the original samples:
+\begin{equation}
+y[i] = x[j] + (x[j+1] - x[j]) (if_0/f_1 - j)
+\end{equation}
+where $j = \mathrm{floor}(if_0/f_1)$.  This is equivalent to applying a ``tent'' FIR filter with $2L$ taps on the 
+upsampled $Lf_0$ time series before decimation.  Similarly, a $2L$ tap box-car filter is equivalent to 
+nearest-neighbor interpolation:
+\begin{equation}
+y[i] = x[\mathrm{round}(if_0/f_1)].
+\end{equation}
+
+Figure \ref{fig:windows} shows the frequency response for linear and nearest-neighbor interpolation when 
+the resampling factor $L/M$ is $64/39$.  Both methods have side lobes above $-40$\,dB and will introduce a large 
+slope in the passband (See \S XX).
+
+\begin{figure}[H]
+\epsscale{1.0}
+\plotone{windows.eps}
+\caption{Frequency response for FIR filters equivalent to linear and nearest interpolation when $L/M = 64/39$.
+The orange region shows the first Nyquist zone of the target $L/Mf_0$ sample rate.  Spectral components at all 
+other frequencies are aliased into this region.}
+\label{fig:windows}
+\end{figure}
+ 
+\subsection{Resampling in the Fourier Domain}
+In contrast to the previous methods, one can also implement a rational $L/M$ sample rate conversion in the 
+Fourier domain \citep{gold69,yeh82}.  After accumulating $kM$ samples at a clock rate of $f_0$ 
+(where $k=1,2,3\cdots$), the DFT 
+returns spectral components spaced at $f_0/kM$.  If $f_1 > f_0$, the resampled spectrum is generated by inserting
+$p$ zeros to match the new $f_1$ while maintaining the correct frequency components: 
+\begin{equation}
+\frac{f_1}{kM+p} = \frac{f_0}{kM}
+\end{equation} 
+Solving for $p = k(L - M)$.  If $f_0 < f_1$, the spectrum is instead trimmed by $p$ samples.  The time series
+sampled at $f_1$ can then be constructed from the inverse DFT.  
+
+This method is equivalent to sinc interpolation using an ideal low-pass filter and introduces no 
+error if the signal is perfectly periodic over the $kM$ accumulated samples.  When $L>M$, other values besides 
+zero can 
+be used for padding the spectrum (such as repeating the value at $f_0/2$) with some impact on the resulting 
+error \citep{fraser89,bi11}.  For post-processing SWARM, FFT resampling is a good fit because one can 
+access arbitrary large chunks of the time series without accumulators in hardware and has well-behaved errors
+that can be easily modeled.  However, the speed of the FFT suffers due to the down-sampling factor of 39 and 
+zero-padding in the case that the $L\gg M$ may be costly for memory.
+
+\subsubsection{Effects from short DFTs}
+
+It is not strictly true that DFT resampling requires no filter design. Trimming or padding de-facto multiplies 
+the spectrum by a boxcar window which is equivalent to convolving a normalized sinc function with a 
+\emph{periodic summation} of the original series.
+Consequenty, errors will be wrapped into both edges of the 
+resampled signal.  The extent of this error 
+depends only on the width of the sinc function which is set by the resampling factors $L$ and $M$.  
+\begin{equation} \label{eq:sinc}
+B\,\mathrm{sinc}(B t) \overset{\mathcal{F}}{\Longleftrightarrow} \begin{cases} 1 \quad |f| < B/2 \\ 0 \quad |f| > B/2 \end{cases}
+\end{equation}
+where $B = \mathrm{min}(f_0,L/Mf_0)$.  
+Therefore, the fraction of samples affected is inversely proportional to the number of samples.  Regardless, the 
+number of samples for which this makes a large difference is small and can be roughly treated as less than a 
+1\% effect when $N > 100\,\mathrm{max}(L/M,1)$.  One option to mitigate this error to stitch together 
+overlapping, resampled segments \citep{bi11}, requiring more computation and memory.  A second strategy is to 
+multiply the original signal by some window function that tapers to zero at its edges \citep{fraser89}.
+
+Another phenomenon that becomes increasingly important for small DFTs is aliasing from the initial end-point
+discontinuities.  The process of selecting $kM$ samples from the continuous signal $x(t)$ is represented as 
+multiplication by a box-car window or convolution with a sinc function in the frequency domain.  The sinc window
+widens for narrower box-car windows, causing spectral leakage and aliasing.  The ultimate result is also a loss 
+in correlation amplitude.
+
+\section{APHIDS} \label{sec:aphids}
+
+\subsection{Resampling Block}
+
+%% Loss table : /home/krosenfe/resampling/losses.py
+% losses for FIR filtering, interpolation schemes, and FFT
+\begin{deluxetable}{l|ccc}
+\tablecolumns{4}
+\tablewidth{0pc}
+\tablecaption{Correlation coefficient loss from resampling \label{tab:loss}}
+\tablehead{\colhead{Method} & \colhead{64/39} & \colhead{32/39} & \colhead{128/125}}
+\startdata
+Nearest-Neighbor            & 13\% & 17\% & 13\% \\
+Linear                      &  5\% &  7\% &  5\% \\
+Hamming window ($16L$ taps) &  1\% &  2\% &  2\% \\
+FFT ($N=M$)                 &  1\% &  1\% & 0.2\%
+\enddata
+\end{deluxetable}
+
+\subsection{Bit Growth}
+
+\subsection{Quantization}
+
+\subsection{Future Development}
+
+\tikzstyle{line} = [draw,-latex']
+\tikzstyle{cpu} = [rectangle, draw, fill=blue!20,
+    text width=5em, text centered, rounded corners, minimum height=4em]
+\tikzstyle{gpu} = [rectangle, draw, fill=red!20,
+    text width=5em, text centered, rounded corners, minimum height=4em]
+\tikzstyle{resamp} = [rectangle, draw, minimum height=4.5em, align=center, minimum width=15em] 
+
+\begin{sidewaysfigure}
+\begin{center}
+%\caption{Overview of APHIDS.}
+\begin{tikzpicture} [node distance = 5cm, auto]
+\node [cpu] (mark6_in) {Mark6 Reader};
+\node[gpu,below of=mark6_in](reader){Reader};
+\node[gpu,right of=reader](rIFFT){rIFFT};
+\node[gpu,right of=rIFFT](resampler){Resampler};
+\node[cpu,right of=resampler](VDIF_pkt){VDIF packet \\ \& header};
+\node[cpu,below of=VDIF_pkt](mark6_out){Mark6 Writer};
+
+\path[line] (mark6_in) -- node[align=center] {BENG @ 2496 GHz \\ quantized to 2-bits}(reader);
+\path[line] (reader) -- node[align=center] {spectra of \\ 16k complex64} (rIFFT);
+\path[line] (rIFFT) --  node[align=center] {time series of \\ 32k float32} (resampler);
+\path[line] (resampler) --  node[align=center] {time series \\ @ 2048 GHz}(VDIF_pkt);
+\path[line] (VDIF_pkt) -- node[align=center]{VDIF @ 4096 GHz \\ quantized to 2-bits}(mark6_out);
+\end{tikzpicture}
+\end{center}
+\end{sidewaysfigure}
+
+\begin{figure}
+\centering
+\begin{tikzpicture}[node distance = 2.2cm, auto]
+\node[align=center](init){};
+\node[resamp,below of=init](rfft){batched real FFT \\ dimension of $39 \times N$};
+\node[resamp,below of=rfft](trim){Trim band and shift frequency};
+\node[resamp,below of=trim](rifft){batched real IFFT \\ dimension of $32 \times N$};
+\node[align=center,below of=rifft](final){};
+
+\path[line](init) -- node[align=left]{ time series \\ @ 2496\,MHz} (rfft);
+\path[line](rfft) -- (trim);
+\path[line](trim) -- (rifft);
+\path[line](rifft) -- node[align=left]{ time series \\ @ 2048\,MHz}(final);
+\end{tikzpicture}
+\label{fig:resampling_block}
+\caption{The resampling block trims the SWARM guard bands and shifts the passband to DC as part of the 
+resampling operation.}
+\end{figure}
+
+\begin{figure}[H]
+\epsscale{1.0}
+\plotone{SWARM_amp_spectra.eps}
+% /home/krosenfe/sdbe/software/prototyping/cuda/SWARM_amp_spectra.eps
+\caption{This figure shows both channels of the detrended amplitude spectral density of SWARM along with the 
+R2DBE (SMA single-dish in gray).}
+\label{fig:swarm_amp_spec}
+\end{figure}
+
+\section{Results}
+
+\acknowledgments 
+\clearpage
+
+\bibliography{sdbe}
+\end{document}
