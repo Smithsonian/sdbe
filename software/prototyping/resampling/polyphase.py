@@ -89,7 +89,7 @@ if __name__ == "__main__":
   # SSB modulation
   # comput analytic signal using Hilbert transform.
   xs1_a = signal.hilbert(xs1.flatten())
-  # module the signal
+  # modulate the signal
   xs1_a *= np.exp(-2j*np.pi*np.arange(xs1_a.size)/read_r2dbe_vdif.SWARM_RATE*args.freq_shift*1e6)
   # take the real part
   xs1_ssb = xs1_a.real
@@ -143,5 +143,5 @@ if __name__ == "__main__":
 
     print ' (max,min) corr coeffs:\t\t', s_0x1.max(), s_0x1.min()
 
-  plt.ion()
+  #plt.ion()
   plt.show()
