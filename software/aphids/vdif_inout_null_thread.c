@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include <syslog.h>
 #include <unistd.h>
 #include <pthread.h>
@@ -9,16 +10,18 @@
 #include "hashpipe_databuf.h"
 
 #include "vdif_in_databuf.h"
+#include "vdif_out_databuf.h"
 
 
 static void *run_method(hashpipe_thread_args_t * args) {
 
+  int i = 0;
   int rv = 0;
   int index_in = 0;
   int index_out = 0;
   vdif_in_packet_block_t this_vdif_packet_block;
   vdif_in_databuf_t *db_in = (vdif_in_databuf_t *)args->ibuf;
-  vdif_in_databuf_t *db_out = (vdif_in_databuf_t *)args->obuf;
+  vdif_out_databuf_t *db_out = (vdif_out_databuf_t *)args->obuf;
   aphids_context_t aphids_ctx;
 
   // initialize the aphids context
@@ -73,8 +76,11 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
     }
 
-    // send the received packet right back out
-    db_out->blocks[index_out] = this_vdif_packet_block;
+    // since the output buffer is a different size,
+    // we have to manually fill it with the input data
+    for (i = 0; i < VDIF_IN_PKTS_PER_BLOCK; i++) {
+      memcpy(&db_out->blocks[index_out].packets[i], &this_vdif_packet_block.packets[i], sizeof(vdif_in_packet_t));
+    }
 
     // let hashpipe know we're done with the buffer (for now)
     hashpipe_databuf_set_filled((hashpipe_databuf_t *)db_out, index_out);
@@ -99,7 +105,7 @@ static hashpipe_thread_desc_t vdif_inout_null_thread = {
  init: NULL,
  run:  run_method,
  ibuf_desc: {vdif_in_databuf_create},
- obuf_desc: {vdif_in_databuf_create}
+ obuf_desc: {vdif_out_databuf_create}
 };
 
 static __attribute__((constructor)) void ctor()

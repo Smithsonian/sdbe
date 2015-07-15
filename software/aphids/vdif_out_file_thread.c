@@ -10,7 +10,7 @@
 #include "hashpipe.h"
 #include "hashpipe_databuf.h"
 
-#include "vdif_in_databuf.h"
+#include "vdif_out_databuf.h"
 
 
 static void *run_method(hashpipe_thread_args_t * args) {
@@ -18,7 +18,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
   int rv = 0;
   int index = 0;
   int fd, bytes_written = 0, blocks_written = 0;
-  vdif_in_databuf_t *db_in = (vdif_in_databuf_t *)args->ibuf;
+  vdif_out_databuf_t *db_in = (vdif_out_databuf_t *)args->ibuf;
   aphids_context_t aphids_ctx;
 
   // initialize the aphids context
@@ -54,8 +54,8 @@ static void *run_method(hashpipe_thread_args_t * args) {
     }
 
     // write one vdif packet block from the buffer at this index
-    while (bytes_written < sizeof(vdif_in_packet_block_t)) {
-      bytes_written += write(fd, &db_in->blocks[index] + bytes_written, sizeof(vdif_in_packet_block_t) - bytes_written);
+    while (bytes_written < sizeof(vdif_out_packet_block_t)) {
+      bytes_written += write(fd, &db_in->blocks[index] + bytes_written, sizeof(vdif_out_packet_block_t) - bytes_written);
     }
 
     // reset bytes_written
@@ -96,7 +96,7 @@ static hashpipe_thread_desc_t vdif_out_file_thread = {
  skey: "VDIFOUT",
  init: NULL,
  run:  run_method,
- ibuf_desc: {vdif_in_databuf_create},
+ ibuf_desc: {vdif_out_databuf_create},
  obuf_desc: {NULL}
 };
 
