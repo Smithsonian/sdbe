@@ -2,7 +2,6 @@
 #include <string.h>
 #include <syslog.h>
 #include <unistd.h>
-#include <pthread.h>
 #include <sys/time.h>
 
 #include "aphids.h"
@@ -11,6 +10,10 @@
 
 #include "vdif_in_databuf.h"
 #include "vdif_out_databuf.h"
+
+#define STATE_ERROR    -1
+#define STATE_INIT      0
+#define STATE_COPY      1
 
 
 static void *run_method(hashpipe_thread_args_t * args) {
@@ -23,73 +26,118 @@ static void *run_method(hashpipe_thread_args_t * args) {
   vdif_in_databuf_t *db_in = (vdif_in_databuf_t *)args->ibuf;
   vdif_out_databuf_t *db_out = (vdif_out_databuf_t *)args->obuf;
   aphids_context_t aphids_ctx;
+  int state = STATE_INIT;
 
   // initialize the aphids context
   rv = aphids_init(&aphids_ctx, args);
   if (rv != APHIDS_OK) {
     hashpipe_error(__FUNCTION__, "error waiting for free databuf");
-    pthread_exit(NULL);
+    return NULL;
   }
 
   while (run_threads()) { // hashpipe wants us to keep running
 
-    // read from the input buffer first
-    while ((rv = hashpipe_databuf_wait_filled((hashpipe_databuf_t *)db_in, index_in)) != HASHPIPE_OK) {
+    switch(state) {
 
-      if (rv == HASHPIPE_TIMEOUT) { // index_in is not ready
-	continue;
+    case STATE_ERROR:
 
-      } else { // any other return value is an error
+      {
 
-	// raise an error and exit thread
-	hashpipe_error(__FUNCTION__, "error waiting for filled databuf");
-	pthread_exit(NULL);
+	// set status to show we're in error
+	aphids_set(&aphids_ctx, "status", "error");
+
+	// do nothing, wait to be killed
+	sleep(1);
+
 	break;
 
       }
 
-    }
+    case STATE_INIT:
 
-    // grab the data at this index_in
-    this_vdif_packet_block = (vdif_in_packet_block_t)db_in->blocks[index_in];
+      {
 
-    // let hashpipe know we're done with the buffer (for now)
-    hashpipe_databuf_set_free((hashpipe_databuf_t *)db_in, index_in);
+	// set status to show we're going to generate
+	aphids_set(&aphids_ctx, "status", "copying input to output");
 
-    // update the index_in modulo the maximum buffer depth
-    index_in = (index_in + 1) % db_in->header.n_block;
-
-    // now, write to the output buffer
-    while ((rv = hashpipe_databuf_wait_free((hashpipe_databuf_t *)db_out, index_out)) != HASHPIPE_OK) {
-
-      if (rv == HASHPIPE_TIMEOUT) { // index_out is not ready
-	continue;
-
-      } else { // any other return value is an error
-
-	// raise an error and exit thread
-	hashpipe_error(__FUNCTION__, "error waiting for free databuf");
-	pthread_exit(NULL);
-	break;
+	// and set our next state
+	state = STATE_COPY;
 
       }
 
-    }
+    case STATE_COPY:
 
-    // since the output buffer is a different size,
-    // we have to manually fill it with the input data
-    for (i = 0; i < VDIF_IN_PKTS_PER_BLOCK; i++) {
-      memcpy(&db_out->blocks[index_out].packets[i], &this_vdif_packet_block.packets[i], sizeof(vdif_in_packet_t));
-    }
+      {
 
-    // let hashpipe know we're done with the buffer (for now)
-    hashpipe_databuf_set_filled((hashpipe_databuf_t *)db_out, index_out);
+	// read from the input buffer first
+	while ((rv = hashpipe_databuf_wait_filled((hashpipe_databuf_t *)db_in, index_in)) != HASHPIPE_OK) {
 
-    // update the index_out modulo the maximum buffer depth
-    index_out = (index_out + 1) % db_out->header.n_block;
+	  if (rv == HASHPIPE_TIMEOUT) { // index_in is not ready
+	    aphids_log(&aphids_ctx, APHIDS_LOG_ERROR, "hashpipe input databuf timeout");
 
-    // update aphids statistics
-    aphids_update(&aphids_ctx);
+	    // need to check run_threads here again
+	    if (run_threads())
+	      continue;
+	    else
+	      break;
+
+	  } else { // any other return value is an error
+
+	    // raise an error and exit thread
+	    hashpipe_error(__FUNCTION__, "error waiting for filled databuf");
+	    state = STATE_ERROR;
+	    break;
+
+	  }
+
+	}
+
+	// grab the data at this index_in
+	this_vdif_packet_block = (vdif_in_packet_block_t)db_in->blocks[index_in];
+
+	// let hashpipe know we're done with the buffer (for now)
+	hashpipe_databuf_set_free((hashpipe_databuf_t *)db_in, index_in);
+
+	// update the index_in modulo the maximum buffer depth
+	index_in = (index_in + 1) % db_in->header.n_block;
+
+	// now, write to the output buffer
+	while ((rv = hashpipe_databuf_wait_free((hashpipe_databuf_t *)db_out, index_out)) != HASHPIPE_OK) {
+
+	  if (rv == HASHPIPE_TIMEOUT) { // index_out is not ready
+	    aphids_log(&aphids_ctx, APHIDS_LOG_ERROR, "hashpipe output databuf timeout");
+	    continue;
+
+	  } else { // any other return value is an error
+
+	    // raise an error and exit thread
+	    hashpipe_error(__FUNCTION__, "error waiting for free databuf");
+	    state = STATE_ERROR;
+	    break;
+
+	  }
+
+	}
+
+	// since the output buffer is a different size,
+	// we have to manually fill it with the input data
+	for (i = 0; i < VDIF_IN_PKTS_PER_BLOCK; i++) {
+	  memcpy(&db_out->blocks[index_out].packets[i], &this_vdif_packet_block.packets[i], sizeof(vdif_in_packet_t));
+	}
+
+	// let hashpipe know we're done with the buffer (for now)
+	hashpipe_databuf_set_filled((hashpipe_databuf_t *)db_out, index_out);
+
+	// update the index_out modulo the maximum buffer depth
+	index_out = (index_out + 1) % db_out->header.n_block;
+
+	// update aphids statistics
+	aphids_update(&aphids_ctx);
+
+	break;
+      } // case STATE_COPY
+
+    } // switch(state)
 
   } // end while(run_threads())
 
