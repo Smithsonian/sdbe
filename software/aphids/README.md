@@ -7,7 +7,7 @@ APHIDS stands for: **A**daptive **P**hased-array and **H**eterogenous **I**nterp
 In order to run APHIDS as a regular user with large shared memory buffers you will need to create the following file:
 
 ```
-# /usr/security/limits.d/memlock.conf
+# /etc/security/limits.d/memlock.conf
 # Set the memlock limits higher
 
 *               soft    memlock            64
