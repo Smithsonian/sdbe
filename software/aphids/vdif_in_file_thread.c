@@ -55,8 +55,8 @@ static void *run_method(hashpipe_thread_args_t * args) {
     }
 
     // read one vdif packet block and write it to the index
-    while (bytes_read < sizeof(vdif_packet_block_t)) {
-      bytes_read += read(fd, &db_out->blocks[index] + bytes_read, sizeof(vdif_packet_block_t) - bytes_read);
+    while (bytes_read < sizeof(vdif_in_packet_block_t)) {
+      bytes_read += read(fd, &db_out->blocks[index] + bytes_read, sizeof(vdif_in_packet_block_t) - bytes_read);
       if (bytes_read == 0) {
 	aphids_log(&aphids_ctx, APHIDS_LOG_INFO, "reached end-of-file");
 	lseek(fd, 0, SEEK_SET);

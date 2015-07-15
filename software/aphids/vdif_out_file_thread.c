@@ -54,8 +54,8 @@ static void *run_method(hashpipe_thread_args_t * args) {
     }
 
     // write one vdif packet block from the buffer at this index
-    while (bytes_written < sizeof(vdif_packet_block_t)) {
-      bytes_written += write(fd, &db_in->blocks[index] + bytes_written, sizeof(vdif_packet_block_t) - bytes_written);
+    while (bytes_written < sizeof(vdif_in_packet_block_t)) {
+      bytes_written += write(fd, &db_in->blocks[index] + bytes_written, sizeof(vdif_in_packet_block_t) - bytes_written);
     }
 
     // reset bytes_written

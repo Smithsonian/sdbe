@@ -15,7 +15,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
   int rv = 0;
   int index = 0;
-  vdif_packet_block_t this_vdif_packet_block;
+  vdif_in_packet_block_t this_vdif_packet_block;
   vdif_in_databuf_t *db_in = (vdif_in_databuf_t *)args->ibuf;
   aphids_context_t aphids_ctx;
 
@@ -45,7 +45,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
     }
 
     // grab the data at this index
-    this_vdif_packet_block = (vdif_packet_block_t)db_in->blocks[index];
+    this_vdif_packet_block = (vdif_in_packet_block_t)db_in->blocks[index];
 
     // let hashpipe know we're done with the buffer (for now)
     hashpipe_databuf_set_free((hashpipe_databuf_t *)db_in, index);
