@@ -1,1 +1,12 @@
+# Ignored Python bytecode
 *.pyc
+
+# Ignored object files
+*.so
+*.o
+
+# Ignore all *.log files
+*.log
+
+# Ignore VDIF files
+*.vdif
