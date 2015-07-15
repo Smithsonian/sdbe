@@ -2,7 +2,7 @@
 
 from subprocess import Popen
 
-HASHPIPE_CMD = "hashpipe -I {0.instance} -p aphids -c {0.cpu_in} vdif_in_{0.in_type}_thread -c ${0.cpu_inout} vdif_inout_null_thread -c {0.cpu_out} vdif_out_{0.out_type}_thread"
+HASHPIPE_CMD = "hashpipe -I {0.instance} -p aphids -c {0.cpu_in} vdif_in_{0.in_type}_thread -c ${0.cpu_inout} vdif_inout_{0.inout_type}_thread -c {0.cpu_out} vdif_out_{0.out_type}_thread"
 
 if __name__ == "__main__":
 
@@ -20,6 +20,8 @@ if __name__ == "__main__":
                         help="set CPU affinity to CPU_OUT for the output thread (default=3)")
     parser.add_argument("--in-type", metavar="IN_TYPE", type=str, default="null", choices=["null", "file"],
                         help="set the type of input thread (default='null')")
+    parser.add_argument("--inout-type", metavar="INOUT_TYPE", type=str, default="null", choices=["null", "gpu"],
+                        help="set the type of input/output thread (default='null')")
     parser.add_argument("--out-type", metavar="OUT_TYPE", type=str, default="null", choices=["null", "file"],
                         help="set the type of output thread (default='null')")
     args = parser.parse_args()
