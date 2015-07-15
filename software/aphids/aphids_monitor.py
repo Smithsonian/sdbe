@@ -28,10 +28,18 @@ def main(stdscr):
 
         # get and show all aphids keys
         for i, k in enumerate(akeys):
-            v = r.get(k)
+
+            # get the type of this key
+            k_type = r.type(k)
+
+            # read differently depending on type
+            if k_type == "string":
+                v = r.get(k)
+            elif k_type == "list":
+                v = r.lrange(k, 0, -1)
             opts = A_STANDOUT if k.endswith('seg_rate') else 0
             stdscr.addstr(i+2, 8, k)
-            stdscr.addstr(i+2, 68, v, opts)
+            stdscr.addstr(i+2, 68, "{0}".format(v), opts)
 
         # refresh screen
         stdscr.refresh()
