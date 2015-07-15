@@ -10,14 +10,15 @@
 \DeclareMathAlphabet{\mathpzc}{OT1}{pzc}{m}{it}
 \newcommand{\z}{\mathpzc{z}}
 \newcommand{\SWARM}[1]{\texttt{#1\,SWARM}}
-\newcommand{\SDBE}[1]{\texttt{#1\,SDBE}}
-\newcommand{\APHIDS}[1]{\texttt{APHIDS}}
+\newcommand{\SDBE}{\texttt{SDBE}}
+\newcommand{\APHIDS}{\texttt{APHIDS}}
+\newcommand{\DIFX}{\texttt{DIFX}}
 \newcommand{\falign}{0}
 \newcommand{\talign}{7.5}
 
 \begin{document}
 
-\title{Resampling \SWARM{6/11} for VLBI \\ v0.1}
+\title{Resampling \SWARM{} for VLBI \\ v0.1}
 
 \author{The APHIDS Team\altaffilmark{1}}
 \altaffiltext{1}{Harvard-Smithsonian Center for Astrophysics, 60 Garden Street, Cambridge, MA 02138, USA}
@@ -30,16 +31,18 @@ ABSTRACT
 \subsection{VLBI}
 
 \subsection{\SDBE}
-The \SWARM Digital Back End (\SDBE) is amazing.
+The \SWARM{} Digital Back End (\SDBE) is amazing.
 
 \section{Sample Rate Conversion} \label{sec:src_basics}
 
 Sample rate conversion, or resampling, is the process of taking a signal, $x[i]$, sampled at a rate $f_0$ and 
-calculating new samples $y[i]$ at a different sample rate, $f_1$.  For \APHIDS we are concerned with the case 
-where the ratio between the two sample rates are rational, $f_1/f_0 = L/M$.  Operationally, resampling is the 
-chained combination of upsampling and downsampling \citep{oppenheim10,lyons11}.  Upsampling, or interpolation, 
+calculating new samples $y[i]$ at a different sample rate, $f_1$.  For \APHIDS, the ratio between the two 
+sample rates is rational: $f_1/f_0 = L/M$, where $L$ and $M$ are relatively prime integers.  Operationally, 
+resampling is the 
+chained combination of upsampling and downsampling \citep{oppenheim10,lyons11}.  Upsampling, (also commonly 
+called interpolation or expansion), 
 increases the sampling rate 
-by an integer factor $L$ with the insertion of $L-1$ zeroes between the original $x[i]$.  A low-pass, 
+by a factor of $L$ with the insertion of $L-1$ zeroes between the original $x[i]$.  A low-pass, 
 anti-imaging filter smooths the signal and supresses the high frequency spectral images greater than the original 
 $f_0$ that have been introduced by the zero inserts.  Figure XX sketches this process in the time and frequency 
 domain for when $L$ equals 3. 
@@ -50,11 +53,11 @@ at frequencies greater than the targeted $f_0/M$.  Only then can the sampling ra
 selecting every $M$th sample from the filtered signal.  Figure XX shows this process in the time and frequency 
 domain for when $M$ equals 2.
 
-Sample rate conversion by a rational factor $L/M$ is then a three step process where the original signal is 
-expanded by $L$, filtered, and then decimated by $M$.  As illustrated by Figure \ref{fig:resample_basic}, 
-the anti-imaging and 
-anti-aliasing filters have been combined into a single filter with cutoff frequency of 
-$1/\mathrm{max}(L,M) \times Lf_0/2$.  Under this scheme interpolation must precede decimation otherwise desired 
+Sample rate conversion by a factor $L/M$ can be conceptualized as a three step process where the original signal 
+is expanded by $L$, filtered, and then decimated by $M$.  As illustrated by Figure \ref{fig:resample_basic}, 
+the serial anti-imaging and 
+anti-aliasing filters are combined into a single filter with cutoff frequency of 
+$1/\mathrm{max}(L,M) \times Lf_0/2$.  Under this scheme, interpolation must precede decimation otherwise desired 
 frequency components greater than $f_0/M$ cannot be preserved.
 
 \begin{figure}[H!]
@@ -75,44 +78,51 @@ frequency components greater than $f_0/M$ cannot be preserved.
 \iffalse % to save time don't compile sampling examples
 \include{upsampling_tikz}
 \include{downsampling_tikz}
-\include{src_tikz}
+%\include{src_tikz} % integer ratio sample rate conversion sketch
 \fi %\iffalse
 
-Computationally, the basic sample rate conversion scheme described in \S\ref{sec:src_basics} is highly 
+Computationally, the basic sample rate conversion scheme naively described in \S\ref{sec:src_basics} is highly 
 inefficient.  The filtering is applied at the highest possible sample rate, $Lf_0$, on
-a time-series that is $(L-1)/L$ zeros by fraction. Next, the decimator discards an $(M-1)/M$ fraction of the 
-samples.  As a result, this algorithm requires a lot of memory and spends precious clock 
-time with wasted math.  There are multiple techniques for improving performance including 
-multistage resampling, folded filter structures, and polyphase representations \citep{oppenheim10,lyons11,
-vaidyanathan93}.
+a time-series that is $(L-1)/L$ zeros by fraction. Furthermore, the decimator discards an $(M-1)/M$ fraction of 
+the samples.  As a result, this algorithm requires a lot of memory and spends precious clock 
+time with wasted math.  There is a vast literature of techniques and algorithms that improve performance 
+including multistage resampling, folded filter structures, and polyphase representations 
+\citep{oppenheim10,lyons11,vaidyanathan93}.
 
-%\subsection{FIR filtering using Polyphase Representations}
-\subsection{Polyphase representions and a time-varying FIR filter structure}
-Polyphase filters use the Noble identities to move the filtering to precede the expander
-or follow the decimator.  However, there still appears some waste as the former scheme (operating at $f_1$) 
-produces zero-valued samples and the latter (operating at $f_0$) will discard samples.  An efficient variant
-interchanges the decimator and expander blocks by shuffling the delays and decomposing the original n-tap FIR 
-filter into $L$ sub-filters with $n/L$ taps \citep{crochiere81}.  This algorithm operates at the lowest 
-possible rate of $f_0/M$.
+There have been recent development of polyphase filter representations for GPU architectures 
+\citep[i.e.][]{vanderveldt12,adamek14,kim14a}.  These filter structures can operate at the low sample rate of $f_0/M$
+by introducing delays to switch the expander and decimatator \citep{crochiere81}.  However, they require 
+some filter design and careful book-keeping or buffering to keep track of sample indices \citep{wang01}.
+The implementation in \citet{kim14a} assigned each thread to a filter coefficient, parallelizing the 
+inner product operation.  However, \citet{kim14a} found that their GPU kernel was dominated by the 
+indexing operations.  \citet{adamek14} (building on the work by \citet{vanderveldt12}) presented tantalizing 
+implementations of 
+polyphase filter banks that could run at data rates in excess of 6.5\,GB/s (their estimate for the single channel 
+output of the SKA's Low Frequency Aperture Array).
 
-References include \citep{wang01}.
+%  https://github.com/wesarmour/astro-accelerate
 
-\subsection{Linear and Nearest-Neighbor Interpolation}
 An operationally simple option for resampling is to use linear interpolation to estimate the values that lie in 
 between the original samples:
 \begin{equation}
 y[i] = x[j] + (x[j+1] - x[j]) (if_0/f_1 - j)
 \end{equation}
 where $j = \mathrm{floor}(if_0/f_1)$.  This is equivalent to applying a ``tent'' FIR filter with $2L$ taps on the 
-upsampled $Lf_0$ time series before decimation.  Similarly, a $2L$ tap box-car filter is equivalent to 
-nearest-neighbor interpolation:
+upsampled $Lf_0$ time series before decimation \citep{oppenhim10}.  Similarly, a $2L$ tap box-car filter is 
+equivalent to nearest-neighbor interpolation:
 \begin{equation}
 y[i] = x[\mathrm{round}(if_0/f_1)].
 \end{equation}
 
-Figure \ref{fig:windows} shows the frequency response for linear and nearest-neighbor interpolation when 
-the resampling factor $L/M$ is $64/39$.  Both methods have side lobes above $-40$\,dB and will introduce a large 
-slope in the passband (See \S XX).
+Neither of these methods consider the frequency content of the original signal and, as a result, perform
+poorly for signals with power near Nyquist \citep{fraser89}.  To further emphasize this point, Figure 
+\ref{fig:windows} shows the frequency response for linear and nearest-neighbor interpolation when 
+the resampling factor $L/M$ is $64/39$.  Note that both methods have side lobes above $-40$\,dB and so the 
+resampled signal will introduce a large slope in the passband (see \S XX).  However, GPUs can compute 
+these low-order interpolations directly on the card using texture memory.  \citet{kim15b} utilize this feature 
+by using the cuFFT library to upsample the signal in the Fourier domain and then using texture memory to 
+interpolate.  Figure \ref{fig:windows} also shows the resulting frequency response and has markedly improved 
+performance, albeit at the cost of two FFTs and much larger memory requirements.
 
 \begin{figure}[H]
 \epsscale{1.0}
@@ -124,8 +134,8 @@ other frequencies are aliased into this region.}
 \end{figure}
  
 \subsection{Resampling in the Fourier Domain}
-In contrast to the previous methods, one can also implement a rational $L/M$ sample rate conversion in the 
-Fourier domain \citep{gold69,yeh82}.  After accumulating $kM$ samples at a clock rate of $f_0$ 
+In contrast to the previous methods, one can also implement a rational $L/M$ sample rate conversion entirely in 
+the Fourier domain \citep{gold69,yeh82}.  After accumulating $kM$ samples at a clock rate of $f_0$ 
 (where $k=1,2,3\cdots$), the DFT 
 returns spectral components spaced at $f_0/kM$.  If $f_1 > f_0$, the resampled spectrum is generated by inserting
 $p$ zeros to match the new $f_1$ while maintaining the correct frequency components: 
@@ -133,18 +143,23 @@ $p$ zeros to match the new $f_1$ while maintaining the correct frequency compone
 \frac{f_1}{kM+p} = \frac{f_0}{kM}
 \end{equation} 
 Solving for $p = k(L - M)$.  If $f_0 < f_1$, the spectrum is instead trimmed by $p$ samples.  The time series
-sampled at $f_1$ can then be constructed from the inverse DFT.  
+sampled at $f_1$ can then be constructed from the inverse DFT.  This method is equivalent to sinc 
+interpolation using an ideal low-pass filter and is a perfect interpolator
+if the original, continuous signal has a discrete spectral density distribution that is band-limited below the 
+Nyquist limit.  In practice, small errors may be introduced from aliased spectral leakage (see \S 
+\ref{sec:short_DFT}). 
 
-This method is equivalent to sinc interpolation using an ideal low-pass filter and introduces no 
-error if the signal is perfectly periodic over the $kM$ accumulated samples.  When $L>M$, other values besides 
-zero can 
-be used for padding the spectrum (such as repeating the value at $f_0/2$) with some impact on the resulting 
-error \citep{fraser89,bi11}.  For post-processing SWARM, FFT resampling is a good fit because one can 
+For post-processing SWARM, DFT resampling is a good fit because one can 
 access arbitrary large chunks of the time series without accumulators in hardware and has well-behaved errors
-that can be easily modeled.  However, the speed of the FFT suffers due to the down-sampling factor of 39 and 
-zero-padding in the case that the $L\gg M$ may be costly for memory.
+that can be easily modeled.  However, the speed of the FFT depends on the resampling factors ($L/M = 32/39$ for 
+\SWARM{6/11}) and zero-padding in the case that the $L\gg M$ may be costly for memory.  The famous Cooley-Tukey 
+FFT algorithm reduces the DFT computation time from $\mathcal{O}(N^2)$ to $\mathcal{O}(N\log N)$ by decomposing 
+the DFT matrix into sparse radix-2 block matrices \citep{cooley65}.  The cuFFT library also supplies radix-3, 
+radix-5 and radix-7 matrices to 
+leverage highly optimized FFT algorimths and provide the best performace for transform sizes that can be written 
+in the form $2^a \times 3^b \times 5^c \times 7^d$ \citep{cufft_API}.
 
-\subsubsection{Effects from short DFTs}
+\subsubsection{Effects from short DFTs} \label{sec:short_DFT}
 
 It is not strictly true that DFT resampling requires no filter design. Trimming or padding de-facto multiplies 
 the spectrum by a boxcar window which is equivalent to convolving a normalized sinc function with a 
@@ -170,6 +185,9 @@ in correlation amplitude.
 
 \section{APHIDS} \label{sec:aphids}
 
+APHIDS is the \textbf{A}daptive \textbf{P}hased-array and \textbf{H}eteregeneous \textbf{I}nterpolator 
+and \textbf{D}ownsampler for \textbf{S}WARM.
+
 \subsection{Resampling Block}
 
 %% Loss table : /home/krosenfe/resampling/losses.py
@@ -190,8 +208,22 @@ FFT ($N=M$)                 &  1\% &  1\% & 0.2\%
 \subsection{Bit Growth}
 
 \subsection{Quantization}
+Another important source of loss and distortion to consider is the requantization back to 2-bits that is done
+before writing back to disk on the Mark6 (see Figure \ref{fig:aphids_flow_chart}).  In theory, \APHIDS\,could 
+record higher bit data (or even the full 32 bits for floating point), but this adds complications for 
+correlation 
+in \DIFX\ and would incur costs for both disk space and output data rate.  While the former cost is monetary, the 
+latter could be an important limiting factor for real-time operation of \APHIDS\,at the back end of the \SDBE\,
+(see \S XX).  The signal-to-noise loss expected from 2-bit quantization is a function of the quantization 
+thresholds, but for Gaussian noise and Nyquist sampling is at best 12\% \citep{cooper70,thompson01}.
 
 \subsection{Future Development}
+
+Include some discussion on how quantization choice could limit the data rate for APHIDS. 
+Mention interest in recording 4-bit data to deal with SWARM unbalanced state counts.
+%Use GTX 980 specs: http://www.geforce.com/hardware/desktop-gpus/geforce-gtx-980/specifications
+
+Include some discussion on operation of hamster at the summit.  Will cooling be an issue?
 
 \tikzstyle{line} = [draw,-latex']
 \tikzstyle{cpu} = [rectangle, draw, fill=blue!20,
@@ -200,9 +232,8 @@ FFT ($N=M$)                 &  1\% &  1\% & 0.2\%
     text width=5em, text centered, rounded corners, minimum height=4em]
 \tikzstyle{resamp} = [rectangle, draw, minimum height=4.5em, align=center, minimum width=15em] 
 
-\begin{sidewaysfigure}
+\begin{figure}
 \begin{center}
-%\caption{Overview of APHIDS.}
 \begin{tikzpicture} [node distance = 5cm, auto]
 \node [cpu] (mark6_in) {Mark6 Reader};
 \node[gpu,below of=mark6_in](reader){Reader};
@@ -215,10 +246,12 @@ FFT ($N=M$)                 &  1\% &  1\% & 0.2\%
 \path[line] (reader) -- node[align=center] {spectra of \\ 16k complex64} (rIFFT);
 \path[line] (rIFFT) --  node[align=center] {time series of \\ 32k float32} (resampler);
 \path[line] (resampler) --  node[align=center] {time series \\ @ 2048 GHz}(VDIF_pkt);
-\path[line] (VDIF_pkt) -- node[align=center]{VDIF @ 4096 GHz \\ quantized to 2-bits}(mark6_out);
+\path[line] (VDIF_pkt) -- node[align=center, left]{VDIF @ 4096 GHz \\ quantized to 2-bits}(mark6_out);
 \end{tikzpicture}
+\label{fig:aphids_flow_chart}
+\caption{This signal flow chart shows an overview of \APHIDS.  The red boxes represent operations on the GPU while blue boxes are for the CPU.}
 \end{center}
-\end{sidewaysfigure}
+\end{figure}
 
 \begin{figure}
 \centering
@@ -249,6 +282,15 @@ R2DBE (SMA single-dish in gray).}
 \end{figure}
 
 \section{Results}
+
+Include AY initial correlation tests with single dish and reported SWARM fringes with LMT.
+We should reproduce these results using \APHIDS\ (or as much of it as possible).
+
+\section{The Team}
+The text to this document was written by KR with referral to intermediate documents written by
+members of the \APHIDS\ team.  LB ran simulations on 2-bit quantization and suggested the DFT resampling 
+architecture appropriate for \SWARM{6/11}. AY wrote the front and back-end kernels de-and re-packetizing 
+the data along with quantization. RP has magic and LV is a boss. etc etc etc
 
 \acknowledgments 
 \clearpage
