@@ -13,7 +13,7 @@
 
 #define STATE_ERROR    -1
 #define STATE_INIT      0
-#define STATE_COPY      1
+#define STATE_PROC      1
 
 
 static void *run_method(hashpipe_thread_args_t * args) {
@@ -34,6 +34,8 @@ static void *run_method(hashpipe_thread_args_t * args) {
     hashpipe_error(__FUNCTION__, "error waiting for free databuf");
     return NULL;
   }
+
+  /* GPU initialization code */
 
   while (run_threads()) { // hashpipe wants us to keep running
 
@@ -57,15 +59,15 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
       {
 
-	// set status to show we're going to generate
-	aphids_set(&aphids_ctx, "status", "copying input to output");
+	// set status to show we're going to run GPU code
+	aphids_set(&aphids_ctx, "status", "processing data on GPU");
 
 	// and set our next state
-	state = STATE_COPY;
+	state = STATE_PROC;
 
       }
 
-    case STATE_COPY:
+    case STATE_PROC:
 
       {
 
@@ -119,11 +121,15 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
 	}
 
+	/* GPU processing code ---> */
+
 	// since the output buffer is a different size,
 	// we have to manually fill it with the input data
 	for (i = 0; i < VDIF_IN_PKTS_PER_BLOCK; i++) {
 	  memcpy(&db_out->blocks[index_out].packets[i], &this_vdif_packet_block.packets[i], sizeof(vdif_in_packet_t));
 	}
+
+	/* <--- GPU processing code */
 
 	// let hashpipe know we're done with the buffer (for now)
 	hashpipe_databuf_set_filled((hashpipe_databuf_t *)db_out, index_out);
@@ -135,11 +141,13 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	aphids_update(&aphids_ctx);
 
 	break;
-      } // case STATE_COPY
+      } // case STATE_PROC
 
     } // switch(state)
 
   } // end while(run_threads())
+
+  /* GPU clean-up code */
 
   // destroy aphids context and exit
   aphids_destroy(&aphids_ctx);
@@ -147,8 +155,8 @@ static void *run_method(hashpipe_thread_args_t * args) {
   return NULL;
 }
 
-static hashpipe_thread_desc_t vdif_inout_null_thread = {
- name: "vdif_inout_null_thread",
+static hashpipe_thread_desc_t vdif_inout_gpu_thread = {
+ name: "vdif_inout_gpu_thread",
  skey: "VDIFIO",
  init: NULL,
  run:  run_method,
@@ -158,5 +166,5 @@ static hashpipe_thread_desc_t vdif_inout_null_thread = {
 
 static __attribute__((constructor)) void ctor()
 {
-  register_hashpipe_thread(&vdif_inout_null_thread);
+  register_hashpipe_thread(&vdif_inout_gpu_thread);
 }
