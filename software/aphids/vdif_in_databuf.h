@@ -9,7 +9,7 @@
 #define VDIF_IN_PKTS_PER_BLOCK 16
 #define VDIF_IN_BUFFER_SIZE 8
 
-typedef struct vdif_in_hdr {
+typedef struct vdif_in_header {
     struct word0 {
         uint32_t secs_inre:30;
         uint32_t legacy:1;
@@ -38,10 +38,10 @@ typedef struct vdif_in_hdr {
         uint64_t c:8;
     } beng;
     uint64_t edh_psn;
-} vdif_in_hdr_t;
+} vdif_in_header_t;
 
 typedef struct vdif_in_packet {
-  vdif_in_hdr_t header;
+  vdif_in_header_t header;
   char data[VDIF_IN_PKT_DATA_SIZE];
 } vdif_in_packet_t;
 
