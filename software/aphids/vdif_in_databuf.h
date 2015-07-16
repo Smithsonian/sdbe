@@ -46,6 +46,7 @@ typedef struct vdif_in_packet {
 } vdif_in_packet_t;
 
 typedef struct vdif_in_packet_block {
+  int n_packets;
   vdif_in_packet_t packets[VDIF_IN_PKTS_PER_BLOCK];
 } vdif_in_packet_block_t;
 

@@ -170,7 +170,8 @@ static void *run_method(hashpipe_thread_args_t * args) {
 					copy_count = (nmem-offset_in) < (VDIF_IN_PKTS_PER_BLOCK-offset_out) ? (nmem-offset_in) : (VDIF_IN_PKTS_PER_BLOCK-offset_out);
 					//~ snprintf(tmp_msg,TMP_MSG_LEN,"%d",copy_count);
 					//~ aphids_set(&aphids_ctx,"vars:copy_count",tmp_msg);
-					memcpy(&db_out->blocks[index]+offset_out*sizeof(vdif_in_packet_t), local_buf+offset_in*sizeof(vdif_in_packet_t), copy_count*sizeof(vdif_in_packet_t));
+					memcpy(&db_out->blocks[index].packets+offset_out*sizeof(vdif_in_packet_t), local_buf+offset_in*sizeof(vdif_in_packet_t), copy_count*sizeof(vdif_in_packet_t));
+					db_out->blocks[index].n_packets += copy_count;
 					// update offset into local and shared buffers
 					offset_in += copy_count;
 					//~ snprintf(tmp_msg,TMP_MSG_LEN,"%d",offset_in);
