@@ -1,6 +1,8 @@
 CC=gcc
-CFLAGS=-std=gnu99 -O3
-LFLAGS=-lrt -lpthread -lscatgat
+OPTIM=-O3
+CFLAGS=-std=gnu99 -fPIC $(OPTIM)
+LIBS=-lrt -lpthread -lscatgat
+LFLAGS=$(LIBS)
 DEPS=sgcomm_report.o sgcomm_net.o sgcomm_threads.o
 EXEC_TRANSCEIVER=sgtxrx
 OBJS_TRANSCEIVER=sgcomm_tx_rx_test.o $(DEPS)
