@@ -31,7 +31,7 @@ typedef struct channel_completion {
 
 typedef struct beng_completion {
 	uint64_t b; // B-engine counter value
-	uint16_t frame_count; // Number of frames found for this B-engine counter
+	uint16_t vdif_packet_count; // Number of VDIF packets found for this B-engine counter
 	channel_completion_t ch_comp[CHAN_PER_BENG]; // Bit-array that flags found frames
 } beng_completion_t;
 
