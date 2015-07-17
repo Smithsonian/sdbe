@@ -4,6 +4,8 @@
 #include "hashpipe.h"
 #include "hashpipe_databuf.h"
 
+#include "vdif_in_databuf.h"
+
 #define FID_PER_CHAN 8
 #define CHAN_PER_BENG 256
 #define VDIF_PER_BENG_FRAME 2048
@@ -31,12 +33,14 @@ typedef struct channel_completion {
 
 typedef struct beng_completion {
 	uint64_t b; // B-engine counter value
-	uint16_t vdif_packet_count; // Number of VDIF packets found for this B-engine counter
+	uint16_t bframe_vdif_packet_count; // Number of VDIF packets found for this B-engine counter
 	channel_completion_t ch_comp[CHAN_PER_BENG]; // Bit-array that flags found frames
 } beng_completion_t;
 
 typedef struct vdif_upload_to_gpu_block {
-	beng_frame_vdif_buffer_t *gpu_beng_vdif_buf;
+	int32_t total_vdif_packet_count; // Number of VDIF packets found for this group of B-engine counters
+	beng_frame_vdif_buffer_t *cpu_beng_vdif_buf; // Pointer to local buffer (used on input side) <<<--- THIS SHOULD BE REMOVED AND WORKED AROUND
+	beng_frame_vdif_buffer_t *gpu_beng_vdif_buf; // Pointer to GPU buffer (used on output side)
 	beng_completion_t b_comp[BENG_FRAMES_PER_BLOCK];
 } vdif_upload_to_gpu_block_t;
 
