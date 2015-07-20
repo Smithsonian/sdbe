@@ -14,7 +14,12 @@
 #define STATE_ERROR    -1
 #define STATE_INIT      0
 #define STATE_PROC      1
+//********************************************** B-engine bookkeeping //
+#define STATE_VDIF_IN  10
+// B-engine bookkeeping **********************************************//
 
+//********************************************** B-engine bookkeeping //
+// B-engine bookkeeping **********************************************//
 
 static void *run_method(hashpipe_thread_args_t * args) {
 
@@ -27,7 +32,15 @@ static void *run_method(hashpipe_thread_args_t * args) {
   vdif_out_databuf_t *db_out = (vdif_out_databuf_t *)args->obuf;
   aphids_context_t aphids_ctx;
   int state = STATE_INIT;
-
+  
+//********************************************** B-engine bookkeeping //
+	#define NUM_GPU 4
+	int64_t b_first = -1;
+	beng_group_completion_buffer_t bgc_buf;
+	beng_group_vdif_buffer_t *bgv_buf_cpu[BENG_GROUPS_IN_BUFFER];
+	beng_group_vdif_buffer_t *bgv_buf_gpu[BENG_GROUPS_IN_BUFFER];
+// B-engine bookkeeping **********************************************//
+  
   // initialize the aphids context
   rv = aphids_init(&aphids_ctx, args);
   if (rv != APHIDS_OK) {
@@ -61,6 +74,32 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
 	// set status to show we're going to run GPU code
 	aphids_set(&aphids_ctx, "status", "processing data on GPU");
+
+//********************************************** B-engine bookkeeping //
+for (ii=0; ii<BENG_GROUPS_IN_BUFFER; ii++) {
+	// allocate memory on CPU
+	bgv_buf_cpu[ii] = (beng_group_vdif_buffer_t *)malloc(sizeof(beng_group_vdif_buffer_t));
+#if PLATFORM == PLATFORM_CPU
+	// allocate memory on GPU
+	bgv_buf_gpu[ii] = (beng_group_vdif_buffer_t *)malloc(sizeof(beng_group_vdif_buffer_t));
+#elif PLATFORM == PLATFORM_GPU
+	// select GPU
+	device_id = ii % NUM_GPU;
+	err_gpu = cudaSetDevice(device_id);
+	if (err_gpu != cudaSuccess) {
+		hashpipe_error(__FUNCTION__, "error selecting GPU device");
+		state = STATE_ERROR;
+		break; // for (ii=0; ...) ...
+	}
+	// allocate memory on GPU
+	err_gpu = cudaMalloc((void **)&bgv_buf_gpu[ii], sizeof(beng_group_vdif_buffer_t));
+	if (err_gpu != cudaSuccess) {
+		hashpipe_error(__FUNCTION__, "error allocating memory on GPU device");
+		state = STATE_ERROR;
+		break; // for (ii=0; ...) ...
+	}
+}
+// B-engine bookkeeping **********************************************//
 
 	// and set our next state
 	state = STATE_PROC;
@@ -102,6 +141,20 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
 	// update the index_in modulo the maximum buffer depth
 	index_in = (index_in + 1) % db_in->header.n_block;
+
+//********************************************** B-engine bookkeeping //
+// On first frame received, initialize all completion buffers
+if (b_first == -1) {
+	b_first = get_packet_b_count(&this_vdif_packet_block->packets[0].header);
+	// from there on range starts with end value for previous range
+	for (ii=0; ii<VDIF_UPLOAD_TO_GPU_BUFFER_SIZE; ii++) {
+		// initialize output databuffer blocks
+		init_beng_group(bgc, beng_group_vdif_buffer_t *bgv_buf, int64_t b_start);
+		init_block(&bgc_buf, beng_vdif_buf_gpu, b_first+1+(BENG_FRAMES_PER_BLOCK-1)*ii);
+	}
+}
+// B-engine bookkeeping **********************************************//
+
 
 	// now, write to the output buffer
 	while ((rv = hashpipe_databuf_wait_free((hashpipe_databuf_t *)db_out, index_out)) != HASHPIPE_OK) {
