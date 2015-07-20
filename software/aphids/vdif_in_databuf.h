@@ -32,10 +32,11 @@ typedef struct vdif_in_header {
         uint32_t dt:1;
     } w3;
     struct beng_hdr {
-        uint64_t b:40;
-        uint64_t f:8;
-        uint64_t z:8;
-        uint64_t c:8;
+        uint32_t b_upper;
+        uint8_t  c;
+        uint8_t  z;
+        uint8_t  f;
+        uint8_t  b_lower;
     } beng;
     uint64_t edh_psn;
 } vdif_in_header_t;
@@ -56,5 +57,7 @@ typedef struct vdif_in_databuf {
 } vdif_in_databuf_t;
 
 hashpipe_databuf_t *vdif_in_databuf_create(int instance_id, int databuf_id);
+
+int64_t get_packet_b_count(vdif_in_header_t *vdif_pkt_hdr);
 
 #endif
