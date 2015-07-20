@@ -34,7 +34,8 @@ typedef struct beng_frame_completion {
 
 typedef struct beng_group_completion {
 	int32_t beng_group_vdif_packet_count; // Number of VDIF packets found for this group of B-engine counters
-	beng_group_vdif_buffer_t *bgv_buf; // Pointer to buffer filled with VDIF packets
+	beng_group_vdif_buffer_t *bgv_buf_cpu; // Pointer to CPU buffer filled with VDIF packets
+	beng_group_vdif_buffer_t *bgv_buf_gpu; // Pointer to GPU buffer filled with VDIF packets
 	beng_frame_completion_t bfc[BENG_FRAMES_PER_GROUP];
 } beng_group_completion_t;
 
@@ -45,6 +46,8 @@ typedef struct beng_group_completion_buffer {
 void init_beng_group(beng_group_completion_t *bgc, beng_group_vdif_buffer_t *bgv_buf, int64_t b_start);
 int get_beng_group_index_offset(beng_group_completion_buffer_t *bgc_buf, int index_ref, vdif_in_packet_t *vdif_pkt);
 int insert_vdif_in_beng_group_buffer(beng_group_completion_buffer_t *bgc_buf, int index_ref, int offset, vdif_in_packet_t *vdif_pkt);
-int check_beng_group_complete(beng_group_completion_buffer_t *bgc_buf,int index);
+int check_beng_group_complete(beng_group_completion_buffer_t *bgc_buf, int index);
+int transfer_beng_group_to_gpu(beng_group_completion_buffer_t *bgc_buf, int index);
+int check_transfer_complete(beng_group_completion_buffer_t *bgc_buf, int index);
 
 #endif // BENG_VDIF_BUFFER_H

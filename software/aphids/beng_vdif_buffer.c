@@ -12,9 +12,10 @@
 #include "vdif_in_databuf.h"
 #include "beng_vdif_buffer.h"
 
-void init_beng_group(beng_group_completion_t *bgc, beng_group_vdif_buffer_t *bgv_buf, int64_t b_start) {
+void init_beng_group(beng_group_completion_t *bgc, beng_group_vdif_buffer_t *bgv_buf_cpu, beng_group_vdif_buffer_t *bgv_buf_gpu, int64_t b_start) {
 	int ii = 0;
-	bgc->bgv_buf = bgv_buf;
+	bgc->bgv_buf_cpu = bgv_buf_cpu;
+	bgc->bgv_buf_gpu = bgv_buf_gpu;
 	//~ printf("%ld: [",b_start);
 	for (ii=0; ii<BENG_FRAMES_PER_GROUP; ii++) {
 		beng_frame_completion_t *bfc = &bgc->bfc[ii];
@@ -109,3 +110,12 @@ int check_beng_group_complete(beng_group_completion_buffer_t *bgc_buf,int index)
 	}
 	return 0;
 }
+
+int transfer_beng_group_to_gpu(beng_group_completion_buffer_t *bgc_buf, int index) {
+	return -1;
+}
+
+int check_transfer_complete(beng_group_completion_buffer_t *bgc_buf, int index) {
+	return -1;
+}
+
