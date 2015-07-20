@@ -126,6 +126,10 @@ static void *run_method(hashpipe_thread_args_t * args) {
 				//   size is the size of frames received
 				rv = rx_frames(sockfd_data, &local_buf, &nmem, &size);
 				if (rv < 0) {
+					if (rv == ERR_NET_TIMEOUT) {
+						aphids_set(&aphids_ctx,"status:net","timeout, retry");
+						break;
+					}
 					aphids_set(&aphids_ctx,"status:net","error-on-receive");
 					hashpipe_error(__FUNCTION__,"error receiving data");
 					state = STATE_ERROR;
