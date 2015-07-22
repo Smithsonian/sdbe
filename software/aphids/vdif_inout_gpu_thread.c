@@ -17,8 +17,9 @@
 #include <vector_types.h>
 #include <cufft.h>
 
-#define GPU_DEBUG
+//#define GPU_DEBUG		// slows down performance
 #define GPU_COMPUTE
+#define GPU_MULTI
 
 #define STATE_ERROR    -1
 #define STATE_INIT      0
@@ -33,7 +34,6 @@ void reportDeviceMemInfo(void){
 }
 #endif
 
-/*
 static void HandleError( cudaError_t err,const char *file,int line ) {
 #ifdef GPU_DEBUG
     if (err != cudaSuccess) {
@@ -43,35 +43,41 @@ static void HandleError( cudaError_t err,const char *file,int line ) {
 #endif
 }
 #define HANDLE_ERROR( err ) (HandleError( err, __FILE__, __LINE__ ))
-*/
 
 
 typedef struct aphids_resampler {
     int deviceId;
-    cudaStream_t stream;
     int skip_chan;
     cufftComplex *gpu_A_0, *gpu_A_1;
     cufftComplex *gpu_B_0, *gpu_B_1;
     int fft_size[3],batch[3],repeat[3];
     cufftHandle cufft_plan[3];
+#ifdef GPU_DEBUG
+    cudaStream_t stream;
     cudaEvent_t tic,toc;
+#endif
 
 } aphids_resampler_t;
 
 // constructor
 int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
-  resampler->deviceId = _deviceId;
 
   // create FFT plans
   int inembed[3], onembed[3];
   cufftResult cufft_status = CUFFT_SUCCESS;
-  size_t workSize[1];
+
+  resampler->deviceId = _deviceId;
 
   // switch to device
   cudaSetDevice(resampler->deviceId);
 
+#ifdef GPU_DEBUG
+  int i;
+  size_t workSize[1];
+  cudaStreamCreate(&(resampler->stream));
   cudaEventCreate(&(resampler->tic));
   cudaEventCreate(&(resampler->toc));
+#endif // GPU_DEBUG
 
   // allocate device memory
   cudaMalloc((void **)&(resampler->gpu_A_0), BENG_FRAMES_PER_BLOCK*BENG_SNAPSHOTS*BENG_CHANNELS_*sizeof(cufftComplex));	// 671088640B
@@ -153,7 +159,12 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
     hashpipe_error(__FILE__, "CUFFT error: plan 2 creation failed");
     //state = STATE_ERROR;
   }
+
+
 #ifdef GPU_DEBUG
+  for (i=0; i<3; ++i){
+    cufftSetStream(resampler->cufft_plan[i], resampler->stream);
+  }
   cufftGetSize(resampler->cufft_plan[2],workSize);
   fprintf(stdout,"GPU_DEBUG : plan 2 is %dx%dx%d\n", resampler->repeat[2],resampler->batch[2],resampler->fft_size[2]);
   fprintf(stdout,"GPU_DEBUG : masking first %d channels \n",resampler->skip_chan);
@@ -164,16 +175,18 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
   return 1;
 }
 
-int aphids_resampler_run(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
+/** @brief Transform SWARM spectra into timeseries
+ */
+int SwarmC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
   int i;
-  float elapsedTime;
   cufftResult cufft_status;
 #ifdef GPU_COMPUTE
-  // transform SWARM spectra into timeseries
   cudaSetDevice(resampler->deviceId);
 #ifdef GPU_DEBUG
+  float elapsedTime;
   cudaEventRecord(resampler->tic,resampler->stream);
-#endif
+#endif // GPU_DEBUG
+  // transform SWARM spectra into timeseries
   for (i = 0; i < resampler->repeat[0]; ++i) {
 	cufft_status = cufftExecC2R(resampler->cufft_plan[0],
 			resampler->gpu_B_0 + i*resampler->batch[0]*UNPACKED_BENG_CHANNELS, 
@@ -196,81 +209,105 @@ int aphids_resampler_run(aphids_resampler_t *resampler, aphids_context_t *aphids
 			elapsedTime,  2*resampler->repeat[0]*resampler->batch[0]*resampler->fft_size[0] / (elapsedTime * 1e-3) /1e9 /2);
 	}
 #endif // GPU_DEBUG
+#endif // GPU_COMPUTE
+  return STATE_PROC;
+}
 
-#ifdef GPU_DEBUG
-	cudaEventRecord(resampler->tic,resampler->stream);
-#endif
-	// transform timeseries into reconfigured spectra
-	for (i = 0; i < resampler->repeat[1]; ++i) {
-		cufft_status = cufftExecR2C(resampler->cufft_plan[1],
-			(cufftReal *) resampler->gpu_A_0 + i*resampler->batch[1]*RESAMPLING_CHUNK_SIZE,
-			resampler->gpu_B_0 + i*resampler->batch[1]*(RESAMPLING_CHUNK_SIZE/2+1));
-#ifdef GPU_DEBUG
-		if (cufft_status != CUFFT_SUCCESS){
-		    hashpipe_error(__FILE__, "CUFFT error: plan 1 execution failed");
-		    return STATE_ERROR;
- 		}
-#endif // GPU_DEBUG
-	}
-#ifdef GPU_DEBUG
-	cudaEventRecord(resampler->toc,resampler->stream);
-	cudaEventSynchronize(resampler->toc);
-	if (aphids_ctx->iters % APHIDS_UPDATE_EVERY == 0) {
-		cudaEventElapsedTime(&elapsedTime,resampler->tic,resampler->toc);
-		aphids_log(aphids_ctx, APHIDS_LOG_INFO, "plan 1 cufft took %f ms [%f Gbps]",
-			elapsedTime,  2*resampler->repeat[1]*resampler->batch[1]*resampler->fft_size[1] / (elapsedTime * 1e-3) /1e9 /2);
-		fprintf(stdout,"GPU_DEBUG : plan 1 took %f ms [%f Gbps] \n", 
-			elapsedTime,  2*resampler->repeat[1]*resampler->batch[1]*resampler->fft_size[1] / (elapsedTime * 1e-3) /1e9 /2);
-		fflush(stdout);
-	}
-#endif // GPU_DEBUG
+/** @brief Transform SWARM timeseries into R2DBE compatible spectrum
+ */
+int SwarmR2C(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
+  int i;
+  cufftResult cufft_status;
 
+#ifdef GPU_COMPUTE
+  cudaSetDevice(resampler->deviceId);
 #ifdef GPU_DEBUG
-	cudaEventRecord(resampler->tic,resampler->stream);
-#endif
-	// mask and transform reconfigured spectra into resampled timeseries 
-	for (i = 0; i < resampler->repeat[2]; ++i) {
-		cufft_status = cufftExecC2R(resampler->cufft_plan[2],
-			resampler->gpu_B_0 + i*resampler->batch[2]*(RESAMPLING_CHUNK_SIZE/2+1) + resampler->skip_chan,
-			(cufftReal *) resampler->gpu_A_0 + i*resampler->batch[2]*(RESAMPLING_CHUNK_SIZE*EXPANSION_FACTOR/DECIMATION_FACTOR));
-#ifdef GPU_DEBUG
-		if (cufft_status != CUFFT_SUCCESS){
-		    hashpipe_error(__FILE__, "CUFFT error: plan 2 execution failed");
-		    return STATE_ERROR;
- 		}
+  float elapsedTime;
+  cudaEventRecord(resampler->tic,resampler->stream);
 #endif // GPU_DEBUG
-	}
+  // transform timeseries into reconfigured spectra
+  for (i = 0; i < resampler->repeat[1]; ++i) {
+	cufft_status = cufftExecR2C(resampler->cufft_plan[1],
+		(cufftReal *) resampler->gpu_A_0 + i*resampler->batch[1]*RESAMPLING_CHUNK_SIZE,
+		resampler->gpu_B_0 + i*resampler->batch[1]*(RESAMPLING_CHUNK_SIZE/2+1));
 #ifdef GPU_DEBUG
-	cudaEventRecord(resampler->toc,resampler->stream);
-	cudaEventSynchronize(resampler->toc);
-	if (aphids_ctx->iters % APHIDS_UPDATE_EVERY == 0) {
-		cudaEventElapsedTime(&elapsedTime,resampler->tic,resampler->toc);
-		aphids_log(aphids_ctx, APHIDS_LOG_INFO, "plan 2 cufft took %f ms [%f Gbps]",
-			elapsedTime,  2*resampler->repeat[2]*resampler->batch[2]*resampler->fft_size[2] / (elapsedTime * 1e-3) /1e9 /2);
-		fprintf(stdout,"GPU_DEBUG : plan 2 took %f ms [%f Gbps] \n", 
-			elapsedTime,  2*resampler->repeat[2]*resampler->batch[2]*resampler->fft_size[2] / (elapsedTime * 1e-3) /1e9 /2);
-		fflush(stdout);
-	}
+	if (cufft_status != CUFFT_SUCCESS){
+	    hashpipe_error(__FILE__, "CUFFT error: plan 1 execution failed");
+	    return STATE_ERROR;
+ 	}
+#endif // GPU_DEBUG
+  }
+#ifdef GPU_DEBUG
+  cudaEventRecord(resampler->toc,resampler->stream);
+  cudaEventSynchronize(resampler->toc);
+  if (aphids_ctx->iters % APHIDS_UPDATE_EVERY == 0) {
+	cudaEventElapsedTime(&elapsedTime,resampler->tic,resampler->toc);
+	aphids_log(aphids_ctx, APHIDS_LOG_INFO, "plan 1 cufft took %f ms [%f Gbps]",
+		elapsedTime,  2*resampler->repeat[1]*resampler->batch[1]*resampler->fft_size[1] / (elapsedTime * 1e-3) /1e9 /2);
+	fprintf(stdout,"GPU_DEBUG : plan 1 took %f ms [%f Gbps] \n", 
+		elapsedTime,  2*resampler->repeat[1]*resampler->batch[1]*resampler->fft_size[1] / (elapsedTime * 1e-3) /1e9 /2);
+	fflush(stdout);
+  }
 #endif // GPU_DEBUG
 #endif // GPU_COMPUTE
-  return 1;
+  return STATE_PROC;
+}
+
+/** @brief Transform half R2DBE spectrum into timeseries
+ */
+int Hr2dbeC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
+  int i;
+  cufftResult cufft_status;
+#ifdef GPU_COMPUTE
+  cudaSetDevice(resampler->deviceId);
+#ifdef GPU_DEBUG
+  float elapsedTime;
+  cudaEventRecord(resampler->tic,resampler->stream);
+#endif // GPU_DEBUG
+	// mask and transform reconfigured spectra into resampled timeseries 
+  for (i = 0; i < resampler->repeat[2]; ++i) {
+	cufft_status = cufftExecC2R(resampler->cufft_plan[2],
+		resampler->gpu_B_0 + i*resampler->batch[2]*(RESAMPLING_CHUNK_SIZE/2+1) + resampler->skip_chan,
+		(cufftReal *) resampler->gpu_A_0 + i*resampler->batch[2]*(RESAMPLING_CHUNK_SIZE*EXPANSION_FACTOR/DECIMATION_FACTOR));
+#ifdef GPU_DEBUG
+	if (cufft_status != CUFFT_SUCCESS){
+	    hashpipe_error(__FILE__, "CUFFT error: plan 2 execution failed");
+	    return STATE_ERROR;
+ 	}
+#endif // GPU_DEBUG
+  }
+#ifdef GPU_DEBUG
+  cudaEventRecord(resampler->toc,resampler->stream);
+  cudaEventSynchronize(resampler->toc);
+  if (aphids_ctx->iters % APHIDS_UPDATE_EVERY == 0) {
+	cudaEventElapsedTime(&elapsedTime,resampler->tic,resampler->toc);
+	aphids_log(aphids_ctx, APHIDS_LOG_INFO, "plan 2 cufft took %f ms [%f Gbps]",
+		elapsedTime,  2*resampler->repeat[2]*resampler->batch[2]*resampler->fft_size[2] / (elapsedTime * 1e-3) /1e9 /2);
+	fprintf(stdout,"GPU_DEBUG : plan 2 took %f ms [%f Gbps] \n", 
+		elapsedTime,  2*resampler->repeat[2]*resampler->batch[2]*resampler->fft_size[2] / (elapsedTime * 1e-3) /1e9 /2);
+	fflush(stdout);
+  }
+#endif // GPU_DEBUG
+#endif // GPU_COMPUTE
+  return STATE_PROC;
 }
 
 // destructor
 int aphids_resampler_destroy(aphids_resampler_t *resampler) {
   int i;
-  cudaSetDevice(resampler->deviceId);
-  cudaFree(resampler->gpu_A_0);
-  cudaFree(resampler->gpu_B_0);
-  cudaFree(resampler->gpu_A_1);
-  cudaFree(resampler->gpu_B_1);
+  HANDLE_ERROR( cudaSetDevice(resampler->deviceId) );
+  HANDLE_ERROR( cudaFree(resampler->gpu_A_0) );
+  HANDLE_ERROR( cudaFree(resampler->gpu_B_0) );
+  HANDLE_ERROR( cudaFree(resampler->gpu_A_1) );
+  HANDLE_ERROR( cudaFree(resampler->gpu_B_1) );
   for (i=0; i < 3; ++i){
     cufftDestroy(resampler->cufft_plan[i]);
   }
+#ifdef GPU_DEBUG
   cudaEventDestroy(resampler->tic);
   cudaEventDestroy(resampler->toc);
-  cudaStreamDestroy(resampler->stream);
-
+  HANDLE_ERROR( cudaStreamDestroy(resampler->stream) );
+#endif
   return 1;
 }
 
@@ -286,7 +323,8 @@ static void *run_method(hashpipe_thread_args_t * args) {
   aphids_context_t aphids_ctx;
   int state = STATE_INIT;
 
-  aphids_resampler_t resampler_0;
+  aphids_resampler_t resampler_0, resampler_1;
+  aphids_resampler_t resampler_2, resampler_3;
 
   // initialize the aphids context
   rv = aphids_init(&aphids_ctx, args);
@@ -296,6 +334,9 @@ static void *run_method(hashpipe_thread_args_t * args) {
   }
 
   aphids_resampler_init(&resampler_0, 0);
+  aphids_resampler_init(&resampler_1, 1);
+  aphids_resampler_init(&resampler_2, 2);
+  aphids_resampler_init(&resampler_3, 3);
 
   while (run_threads()) { // hashpipe wants us to keep running
 
@@ -382,7 +423,40 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	}
 
 	/* GPU processing code ---> */
-	aphids_resampler_run(&resampler_0, &aphids_ctx);
+#ifdef GPU_MULTI 
+/*
+	state = SwarmC2R(&resampler_0, &aphids_ctx);
+	state = SwarmC2R(&resampler_1, &aphids_ctx);
+	state = SwarmC2R(&resampler_2, &aphids_ctx);
+	state = SwarmC2R(&resampler_3, &aphids_ctx);
+	state = SwarmR2C(&resampler_0, &aphids_ctx);
+	state = SwarmR2C(&resampler_1, &aphids_ctx);
+	state = SwarmR2C(&resampler_2, &aphids_ctx);
+	state = SwarmR2C(&resampler_3, &aphids_ctx);
+	state = Hr2dbeC2R(&resampler_0, &aphids_ctx);
+	state = Hr2dbeC2R(&resampler_1, &aphids_ctx);
+	state = Hr2dbeC2R(&resampler_2, &aphids_ctx);
+	state = Hr2dbeC2R(&resampler_3, &aphids_ctx);
+*/
+	state = SwarmC2R(&resampler_0, &aphids_ctx);
+	state = SwarmR2C(&resampler_0, &aphids_ctx);
+	state = Hr2dbeC2R(&resampler_0, &aphids_ctx);
+	state = SwarmC2R(&resampler_1, &aphids_ctx);
+	state = SwarmR2C(&resampler_1, &aphids_ctx);
+	state = Hr2dbeC2R(&resampler_1, &aphids_ctx);
+	state = SwarmC2R(&resampler_2, &aphids_ctx);
+	state = SwarmR2C(&resampler_2, &aphids_ctx);
+	state = Hr2dbeC2R(&resampler_2, &aphids_ctx);
+	state = SwarmC2R(&resampler_3, &aphids_ctx);
+	state = SwarmR2C(&resampler_3, &aphids_ctx);
+	state = Hr2dbeC2R(&resampler_3, &aphids_ctx);
+#else
+	for (i=0; i< 4; i++){
+	  state = SwarmC2R(&resampler_0, &aphids_ctx);
+	  state = SwarmR2C(&resampler_0, &aphids_ctx);
+	  state = Hr2dbeC2R(&resampler_0, &aphids_ctx);
+	}
+#endif
 
 	// since the output buffer is a different size,
 	// we have to manually fill it with the input data
@@ -410,6 +484,9 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
   /* GPU clean-up code */
   aphids_resampler_destroy(&resampler_0);
+  aphids_resampler_destroy(&resampler_1);
+  aphids_resampler_destroy(&resampler_2);
+  aphids_resampler_destroy(&resampler_3);
 
   // destroy aphids context and exit
   aphids_destroy(&aphids_ctx);
