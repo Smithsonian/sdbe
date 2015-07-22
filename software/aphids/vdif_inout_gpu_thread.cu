@@ -1,3 +1,5 @@
+extern "C" {
+
 #include <stdio.h>
 #include <string.h>
 #include <syslog.h>
@@ -12,6 +14,7 @@
 #include "vdif_out_databuf.h"
 #include "vdif_upload_to_gpu_databuf.h"
 #include "vdif_inout_gpu_thread.h"
+}
 
 #include <cuda_runtime.h>
 #include <vector_types.h>
@@ -20,6 +23,13 @@
 //#define GPU_DEBUG		// slows down performance
 #define GPU_COMPUTE
 #define GPU_MULTI
+#define QUANTIZE_THRESHOLD 1.f
+
+#ifdef GPU_MULTI
+#define NUM_GPU 4
+#else
+#define NUM_GPU 1
+#endif
 
 #define STATE_ERROR    -1
 #define STATE_INIT      0
@@ -44,6 +54,10 @@ static void HandleError( cudaError_t err,const char *file,int line ) {
 }
 #define HANDLE_ERROR( err ) (HandleError( err, __FILE__, __LINE__ ))
 
+/**
+ * Structure for APHIDS resampling 
+ * @author Katherine Rosenfeld
+ * */
 
 typedef struct aphids_resampler {
     int deviceId;
@@ -59,7 +73,8 @@ typedef struct aphids_resampler {
 
 } aphids_resampler_t;
 
-// constructor
+/** @brief Initialize resampler structure (including device memory).
+ */
 int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
 
   // create FFT plans
@@ -175,6 +190,106 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
   return 1;
 }
 
+/**@brief Reorder B-engine data for BENG_FRAMES_OUT_CONSECUTIVE_SNAPSHOTS
+Reorder B-engine data that is snapshot contiguous and where consecutive channels
+are separated by 128 snapshots time the number of B-engine frames in the buffer.
+This kernel must be called with a (16,16) thread block and enough x-blocks
+to cover 1 B-engine.  The output has 16400 zero-padded channels
+- blockDim.x = 16
+- blockDim.y = 16;
+- gridDim.x = BENG_CHANNELS_ * BENG_SNAPSHOTS / (blockDim.x*blockDim.y)
+@author Katherine Rosenfeld
+@date June 2015
+*/
+__global__ void reorderTzp_smem(cufftComplex *beng_data_in, cufftComplex *beng_data_out, int num_beng_frames){
+  // gridDim.x = 16384 * 128 / (16 * 16) = 8192
+  // blockDim.x = 16; blockDim.y = 16;
+  // --> launches 2097152 threads
+
+  int32_t sid_out,bid_in;
+
+  __shared__ cufftComplex tile[16][16];
+
+  // for now, let us loop the grid over B-engine frames:
+  for (int bid_out=0; bid_out<num_beng_frames-1; bid_out+=1){
+
+    // input snapshot id
+    int sid_in = (blockIdx.x * blockDim.x + threadIdx.x) & (BENG_SNAPSHOTS-1);
+    // input channel id 
+    int cid = threadIdx.y + blockDim.y * (blockIdx.x / (128 / blockDim.x));
+
+    // shift by 2-snapshots case:
+    if (((cid / 4) & (0x1)) == 0) {
+      sid_out = (sid_in-2) & 0x7f;
+    } else {
+      sid_out = sid_in;
+    }
+
+    // and by 1-B-frame:
+    if (sid_out < 69){
+      bid_in = bid_out;
+    } else {
+      bid_in = bid_out+1;
+    }
+
+    tile[threadIdx.x][threadIdx.y] = beng_data_in[BENG_SNAPSHOTS*num_beng_frames*cid + BENG_SNAPSHOTS*bid_in + sid_in];
+
+    __syncthreads();
+
+    // now we transpose warp orientation over channels and snapshot index
+
+    // snapshot id
+    sid_in = threadIdx.y + (blockIdx.x*blockDim.y) & (BENG_SNAPSHOTS-1);
+    // channel id 
+    cid = threadIdx.x + blockDim.x * (blockIdx.x / (BENG_SNAPSHOTS / blockDim.x)); 
+
+    // shift by 2-snapshots case:
+    if (((cid / 4) & (0x1)) == 0) {
+      sid_out = (sid_in-2) & 0x7f;
+    } else {
+      sid_out = sid_in;
+    }
+
+    beng_data_out[(BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS)*bid_out + UNPACKED_BENG_CHANNELS*sid_out + cid] 
+	= tile[threadIdx.y][threadIdx.x];
+
+    // zero out nyquist: 
+    if (cid < 16) {
+      beng_data_out[(BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS)*bid_out + UNPACKED_BENG_CHANNELS*sid_out + BENG_CHANNELS_]	= make_cuComplex(0.,0.);
+    }
+
+    __syncthreads();
+  }
+}
+
+/** @brief 2-bit quantization kernel
+
+This 2bit quantization kernel must be called with 16 x-threads,
+any number of y-threads, and any number of x-blocks.
+@author Andre Young
+@date June 2015
+*/
+__global__ void quantize2bit(const float *in, unsigned int *out, int N, float thresh)
+{
+	int idx_in = blockIdx.x*blockDim.x*blockDim.y + threadIdx.y*blockDim.x + threadIdx.x;
+	int idx_out = blockIdx.x*blockDim.y + threadIdx.y;
+	
+	for (int ii=0; (idx_in+ii)<N; ii+=gridDim.x*blockDim.x*blockDim.y)
+	{
+		//This is is for 00 = -2, 01 = -1, 10 = 0, 11 = 1.
+		/* Assume sample x > 0, lower bit indicates above threshold. Then
+		 * test, if x < 0, XOR with 11.
+		 */
+		//int sample_2bit = ( ((fabsf(in[idx_in+ii]) >= thresh) | 0x02) ^ (0x03*(in[idx_in+ii] < 0)) ) & 0x3;
+		int sample_2bit = ( ((fabsf(in[idx_in+ii]) >= thresh) | 0x02) ^ (0x03*(in[idx_in+ii] < 0)) ) & OUTPUT_MAX_VALUE_MASK;
+		//~ //This is for 11 = -2, 10 = -1, 01 = 0, 10 = 1
+		//~ int sample_2bit = ((fabsf(in[idx_in+ii]) <= thresh) | ((in[idx_in+ii] < 0)<<1)) & OUTPUT_MAX_VALUE_MASK;
+		sample_2bit = sample_2bit << (threadIdx.x*2);
+		atomicOr(out+idx_out, sample_2bit);
+		idx_out += gridDim.x*blockDim.y;
+	}
+}
+
 /** @brief Transform SWARM spectra into timeseries
  */
 int SwarmC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
@@ -191,12 +306,12 @@ int SwarmC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
 	cufft_status = cufftExecC2R(resampler->cufft_plan[0],
 			resampler->gpu_B_0 + i*resampler->batch[0]*UNPACKED_BENG_CHANNELS, 
 			(cufftReal *)resampler->gpu_A_0 + i*resampler->batch[0]*(2*BENG_CHANNELS_));
-#ifdef GPU_DEBUG
 		if (cufft_status != CUFFT_SUCCESS){
+#ifdef GPU_DEBUG
 		    hashpipe_error(__FILE__, "CUFFT error: plan 0 execution failed");
 		    return STATE_ERROR;
- 		}
 #endif // GPU_DEBUG
+ 		}
 	}
 #ifdef GPU_DEBUG
 	cudaEventRecord(resampler->toc,resampler->stream);
@@ -230,12 +345,12 @@ int SwarmR2C(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
 	cufft_status = cufftExecR2C(resampler->cufft_plan[1],
 		(cufftReal *) resampler->gpu_A_0 + i*resampler->batch[1]*RESAMPLING_CHUNK_SIZE,
 		resampler->gpu_B_0 + i*resampler->batch[1]*(RESAMPLING_CHUNK_SIZE/2+1));
-#ifdef GPU_DEBUG
 	if (cufft_status != CUFFT_SUCCESS){
+#ifdef GPU_DEBUG
 	    hashpipe_error(__FILE__, "CUFFT error: plan 1 execution failed");
 	    return STATE_ERROR;
- 	}
 #endif // GPU_DEBUG
+ 	}
   }
 #ifdef GPU_DEBUG
   cudaEventRecord(resampler->toc,resampler->stream);
@@ -269,12 +384,12 @@ int Hr2dbeC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
 	cufft_status = cufftExecC2R(resampler->cufft_plan[2],
 		resampler->gpu_B_0 + i*resampler->batch[2]*(RESAMPLING_CHUNK_SIZE/2+1) + resampler->skip_chan,
 		(cufftReal *) resampler->gpu_A_0 + i*resampler->batch[2]*(RESAMPLING_CHUNK_SIZE*EXPANSION_FACTOR/DECIMATION_FACTOR));
-#ifdef GPU_DEBUG
 	if (cufft_status != CUFFT_SUCCESS){
+#ifdef GPU_DEBUG
 	    hashpipe_error(__FILE__, "CUFFT error: plan 2 execution failed");
 	    return STATE_ERROR;
- 	}
 #endif // GPU_DEBUG
+ 	}
   }
 #ifdef GPU_DEBUG
   cudaEventRecord(resampler->toc,resampler->stream);
@@ -295,19 +410,26 @@ int Hr2dbeC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
 // destructor
 int aphids_resampler_destroy(aphids_resampler_t *resampler) {
   int i;
+  cufftResult cufft_status;
   HANDLE_ERROR( cudaSetDevice(resampler->deviceId) );
   HANDLE_ERROR( cudaFree(resampler->gpu_A_0) );
   HANDLE_ERROR( cudaFree(resampler->gpu_B_0) );
   HANDLE_ERROR( cudaFree(resampler->gpu_A_1) );
   HANDLE_ERROR( cudaFree(resampler->gpu_B_1) );
   for (i=0; i < 3; ++i){
-    cufftDestroy(resampler->cufft_plan[i]);
+	cufft_status = cufftDestroy(resampler->cufft_plan[i]);
+	if (cufft_status != CUFFT_SUCCESS){
+#ifdef GPU_DEBUG
+          hashpipe_error(__FILE__, "CUFFT error: problem destroying plan %d\n", i);
+#endif
+	} 
   }
 #ifdef GPU_DEBUG
   cudaEventDestroy(resampler->tic);
   cudaEventDestroy(resampler->toc);
   HANDLE_ERROR( cudaStreamDestroy(resampler->stream) );
 #endif
+  HANDLE_ERROR( cudaDeviceReset() );
   return 1;
 }
 
@@ -323,8 +445,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
   aphids_context_t aphids_ctx;
   int state = STATE_INIT;
 
-  aphids_resampler_t resampler_0, resampler_1;
-  aphids_resampler_t resampler_2, resampler_3;
+  aphids_resampler_t *resampler;
 
   // initialize the aphids context
   rv = aphids_init(&aphids_ctx, args);
@@ -333,10 +454,12 @@ static void *run_method(hashpipe_thread_args_t * args) {
     return NULL;
   }
 
-  aphids_resampler_init(&resampler_0, 0);
-  aphids_resampler_init(&resampler_1, 1);
-  aphids_resampler_init(&resampler_2, 2);
-  aphids_resampler_init(&resampler_3, 3);
+
+  // initalize resampler
+  resampler = (aphids_resampler_t *) malloc(NUM_GPU*sizeof(aphids_resampler_t));
+  for (i=0; i< NUM_GPU; i++){
+    aphids_resampler_init(&(resampler[i]), i);
+  }
 
   while (run_threads()) { // hashpipe wants us to keep running
 
@@ -414,7 +537,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	  } else { // any other return value is an error
 
 	    // raise an error and exit thread
-	    hashpipe_error(__FUNCTION__, "error waiting for free databuf");
+	    hashpipe_error(__FILE__, "error waiting for free databuf");
 	    state = STATE_ERROR;
 	    break;
 
@@ -423,40 +546,38 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	}
 
 	/* GPU processing code ---> */
-#ifdef GPU_MULTI 
-/*
-	state = SwarmC2R(&resampler_0, &aphids_ctx);
-	state = SwarmC2R(&resampler_1, &aphids_ctx);
-	state = SwarmC2R(&resampler_2, &aphids_ctx);
-	state = SwarmC2R(&resampler_3, &aphids_ctx);
-	state = SwarmR2C(&resampler_0, &aphids_ctx);
-	state = SwarmR2C(&resampler_1, &aphids_ctx);
-	state = SwarmR2C(&resampler_2, &aphids_ctx);
-	state = SwarmR2C(&resampler_3, &aphids_ctx);
-	state = Hr2dbeC2R(&resampler_0, &aphids_ctx);
-	state = Hr2dbeC2R(&resampler_1, &aphids_ctx);
-	state = Hr2dbeC2R(&resampler_2, &aphids_ctx);
-	state = Hr2dbeC2R(&resampler_3, &aphids_ctx);
-*/
-	state = SwarmC2R(&resampler_0, &aphids_ctx);
-	state = SwarmR2C(&resampler_0, &aphids_ctx);
-	state = Hr2dbeC2R(&resampler_0, &aphids_ctx);
-	state = SwarmC2R(&resampler_1, &aphids_ctx);
-	state = SwarmR2C(&resampler_1, &aphids_ctx);
-	state = Hr2dbeC2R(&resampler_1, &aphids_ctx);
-	state = SwarmC2R(&resampler_2, &aphids_ctx);
-	state = SwarmR2C(&resampler_2, &aphids_ctx);
-	state = Hr2dbeC2R(&resampler_2, &aphids_ctx);
-	state = SwarmC2R(&resampler_3, &aphids_ctx);
-	state = SwarmR2C(&resampler_3, &aphids_ctx);
-	state = Hr2dbeC2R(&resampler_3, &aphids_ctx);
-#else
-	for (i=0; i< 4; i++){
-	  state = SwarmC2R(&resampler_0, &aphids_ctx);
-	  state = SwarmR2C(&resampler_0, &aphids_ctx);
-	  state = Hr2dbeC2R(&resampler_0, &aphids_ctx);
-	}
-#endif
+	for (i=0; i<NUM_GPU; i++) {
+
+	  // de-packetize vdif
+
+	  // reorder BENG data
+	  cudaSetDevice(i);
+	  dim3 threads(16,16,1);
+	  dim3 blocks((BENG_CHANNELS_*BENG_SNAPSHOTS/(16*16)),1,1);
+	  reorderTzp_smem<<<blocks,threads>>>(resampler[i].gpu_A_0, resampler[i].gpu_B_0, BENG_BUFFER_IN_COUNTS);
+
+	  // transform SWARM spectra to time series
+	  state = SwarmC2R(&(resampler[i]), &aphids_ctx);
+
+	  // transform SWARM time series to R2DBE compatible spectra
+	  state = SwarmR2C(&(resampler[i]), &aphids_ctx);
+
+	  // transform R2DBE spectra to trimmed and resampled time series
+	  state = Hr2dbeC2R(&(resampler[i]), &aphids_ctx);
+
+	  // calculate threshold for quantization?
+
+	  // quantize to 2-bits
+	  cudaSetDevice(i);
+	  threads.x = 16; threads.y = 32; threads.z = 1;
+	  blocks.x = 512; blocks.y = 1; blocks.z = 1;
+	  quantize2bit<<<blocks,threads>>>((float *) resampler[i].gpu_A_0, (unsigned int*) resampler[i].gpu_B_0, 
+		(2*BENG_CHANNELS_*BENG_SNAPSHOTS*EXPANSION_FACTOR),
+		QUANTIZE_THRESHOLD);
+
+	  // load data to host memory
+	  
+        }
 
 	// since the output buffer is a different size,
 	// we have to manually fill it with the input data
@@ -483,10 +604,9 @@ static void *run_method(hashpipe_thread_args_t * args) {
   } // end while(run_threads())
 
   /* GPU clean-up code */
-  aphids_resampler_destroy(&resampler_0);
-  aphids_resampler_destroy(&resampler_1);
-  aphids_resampler_destroy(&resampler_2);
-  aphids_resampler_destroy(&resampler_3);
+  for (i=0; i<NUM_GPU; i++)
+    aphids_resampler_destroy(&(resampler[i]));
+  free(resampler);
 
   // destroy aphids context and exit
   aphids_destroy(&aphids_ctx);
