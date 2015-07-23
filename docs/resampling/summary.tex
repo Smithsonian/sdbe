@@ -13,6 +13,7 @@
 \newcommand{\SDBE}{\texttt{SDBE}}
 \newcommand{\APHIDS}{\texttt{APHIDS}}
 \newcommand{\DIFX}{\texttt{DIFX}}
+\newcommand{\HASHPIPE}{\texttt{HASHPIPE}}
 \newcommand{\falign}{0}
 \newcommand{\talign}{7.5}
 
@@ -120,11 +121,18 @@ poorly for signals with power near Nyquist \citep{fraser89}.  To further emphasi
 the resampling factor $L/M$ is $64/39$.  Note that both methods have side lobes above $-40$\,dB and so the 
 resampled signal will introduce a large slope in the passband (see \S XX).  However, GPUs can compute 
 these low-order interpolations directly on the card using texture memory.  \citet{kim15b} utilize this feature 
-by using the cuFFT library to upsample the signal in the Fourier domain and then using texture memory to 
-interpolate.  Figure \ref{fig:windows} also shows the resulting frequency response and has markedly improved 
-performance, albeit at the cost of two FFTs and much larger memory requirements.
+by using the cuFFT library to upsample the signal in the Fourier domain by some initial factor, $U$, and then using texture memory to 
+interpolate.  The resulting frequency response will follow that for a linear interpolator operating at a ...
+at \citep{oppenheim10},
+\begin{equation}
+H_{\mathrm{lin}} = \frac{1}{L} \left[ \frac{\sin(2 \pi f L/2}{\pi f} \right]^2,
+\end{equation}
+multiplied by a low-pass box-car filter with cutoff frequency $f_0/2$.  It would be straight forward to 
+expand upon the framework introduced by \citet{kim15b} to handle cases where $M$ is greater than $L$.  
+This scheme should help reduce loss from aliasing, albeit 
+at the cost of two FFTs and much larger memory requirements.
 
-\begin{figure}[H]
+\begin{figure}[H!]
 \epsscale{1.0}
 \plotone{windows.eps}
 \caption{Frequency response for FIR filters equivalent to linear and nearest interpolation when $L/M = 64/39$.
@@ -133,7 +141,7 @@ other frequencies are aliased into this region.}
 \label{fig:windows}
 \end{figure}
  
-\subsection{Resampling in the Fourier Domain}
+\subsection{Resampling in the Fourier Domain} \label{sec:fourier_resampling}
 In contrast to the previous methods, one can also implement a rational $L/M$ sample rate conversion entirely in 
 the Fourier domain \citep{gold69,yeh82}.  After accumulating $kM$ samples at a clock rate of $f_0$ 
 (where $k=1,2,3\cdots$), the DFT 
@@ -152,14 +160,10 @@ Nyquist limit.  In practice, small errors may be introduced from aliased spectra
 For post-processing SWARM, DFT resampling is a good fit because one can 
 access arbitrary large chunks of the time series without accumulators in hardware and has well-behaved errors
 that can be easily modeled.  However, the speed of the FFT depends on the resampling factors ($L/M = 32/39$ for 
-\SWARM{6/11}) and zero-padding in the case that the $L\gg M$ may be costly for memory.  The famous Cooley-Tukey 
-FFT algorithm reduces the DFT computation time from $\mathcal{O}(N^2)$ to $\mathcal{O}(N\log N)$ by decomposing 
-the DFT matrix into sparse radix-2 block matrices \citep{cooley65}.  The cuFFT library also supplies radix-3, 
-radix-5 and radix-7 matrices to 
-leverage highly optimized FFT algorimths and provide the best performace for transform sizes that can be written 
-in the form $2^a \times 3^b \times 5^c \times 7^d$ \citep{cufft_API}.
+\SWARM{6/11}) and zero-padding in the case that the $L\gg M$ may be costly for memory.  The relative speed of the 
+FFT algorithm will also depend on the conversion factors ($L$ and $M$).
 
-\subsubsection{Effects from short DFTs} \label{sec:short_DFT}
+%\subsubsection{Effects from short DFTs} \label{sec:short_DFT}
 
 It is not strictly true that DFT resampling requires no filter design. Trimming or padding de-facto multiplies 
 the spectrum by a boxcar window which is equivalent to convolving a normalized sinc function with a 
@@ -185,10 +189,100 @@ in correlation amplitude.
 
 \section{APHIDS} \label{sec:aphids}
 
-APHIDS is the \textbf{A}daptive \textbf{P}hased-array and \textbf{H}eteregeneous \textbf{I}nterpolator 
-and \textbf{D}ownsampler for \textbf{S}WARM.
+We are developing a software solution to the resampling problem called \APHIDS\, (\textbf{A}daptive 
+\textbf{P}hased-array and 
+\textbf{H}eteregeneous \textbf{I}nterpolator and \textbf{D}ownsampler for \textbf{S}WARM).  This open-source 
+code \footnote{\url{https://github.com/sma-wideband/sdbe}} is written in C/CUDA using
+\HASHPIPE (\textbf{H}igh \textbf{A}vailibility \textbf{Sh}ared \textbf{Pipe}line
+ Engine)\footnote{\url{https://github.com/david-macmahon/hashpipe}}.  The software is designed to use 
+modularized, lightweight threads to handle reading data packets from hard drives, resampling on a GPU cluster, 
+and then writing back to separate disks.  These three steps are each loosely mapped to threads we call the 
+vdif\_in\_net thread, vdif\_inout\_gpu\_thread, and vdif\_out\_net thread. 
+The ultimate goal of is to process data streamed directly from the 
+\SDBE\, at the telescope.  The flowchart in Figure \ref{fig:aphids_flow_chart} shows how data progresses 
+through the pipeline and this section will describe each block covering the major hardware components, software 
+design, and data formats.  We will conclude with a short discussion of future development and applications of \APHIDS.
+
+\tikzstyle{line} = [draw,-latex']
+\tikzstyle{cpu} = [rectangle, draw, fill=blue!20,
+    text width=5em, text centered, rounded corners, minimum height=4em]
+\tikzstyle{gpu} = [rectangle, draw, fill=red!20,
+    text width=5em, text centered, rounded corners, minimum height=4em]
+\tikzstyle{resamp} = [rectangle, draw, minimum height=4.5em, align=center, minimum width=15em] 
+
+\begin{figure}[H]
+\begin{center}
+\begin{tikzpicture} [node distance = 5cm, auto]
+\node [cpu] (mark6_in) {Mark6 Reader};
+\node[gpu,below of=mark6_in](reader){Reader};
+\node[gpu,right of=reader](rIFFT){rIFFT};
+\node[gpu,right of=rIFFT](resampler){Resampler};
+\node[cpu,right of=resampler](VDIF_pkt){VDIF packet \\ \& header};
+\node[cpu,below of=VDIF_pkt](mark6_out){Mark6 Writer};
+
+\path[line] (mark6_in) -- node[align=center] {BENG @ 2496 GHz \\ quantized to 2-bits}(reader);
+\path[line] (reader) -- node[align=center] {spectra of \\ 16k complex64} (rIFFT);
+\path[line] (rIFFT) --  node[align=center] {time series of \\ 32k float32} (resampler);
+\path[line] (resampler) --  node[align=center] {time series \\ @ 2048 GHz}(VDIF_pkt);
+\path[line] (VDIF_pkt) -- node[align=center, left]{VDIF @ 4096 GHz \\ quantized to 2-bits}(mark6_out);
+\end{tikzpicture}
+\label{fig:aphids_flow_chart}
+\caption{This signal flow chart shows an overview of \APHIDS.  The red boxes represent operations on the GPU while blue boxes are for the CPU.}
+\end{center}
+\end{figure}
+
+\subsection{Hardware description}
+
+\APHIDS\, freatures three main components of hardware: an I/O data system, CPU, and GPU server.  For I/O, the 
+EHT observations taken by \SWARM\, in March, 2015 have been stored on four disk-packs that each hold eight, 
+6\,TB hard drives (totaling $48 \times 4 = 192$\,TB of data).  The Mark6 VLBI data system has four modules that can hold one disk-pack and we use
+two seprate Mark6 units to handle the recording and playback of data.  \APHIDS\, itself is run on a separate CPU 
+that controls the GPU server.  Our machine has two 6-core Intel Xeon 2.4 Ghz 
+processors which limits the number of concurrent threads to 12.
+
+The GPU server as four GTX 980 GPUs, each with 4GB of local memory.  Data from the CPU (or host) is copied over 
+a PCI-E bus into the local GPU (or device) memory.  Once the data is transferred, the host directs the device
+to perform functions (or kernels) on the data which must be again moved from the local device memory onto 
+on-chip memory for the individual streaming multiprocessors that make up the GPU.  After computation is done, 
+the host transfers the data off of the device memory.
+
+\subsection{Data I/O and formats}
+
+The observations were recorded using a scatter/gather file system which disperses the 
+data composing individual scans over the four modules.  \APHIDS\, uses fast, general purpose software called 
+sgcomm (\textbf{s}catter \textbf{g}ather \textbf{comm}unication) to read in 
+the scattered data into CPU shared memory over a 10 Gigabit Ethernet network.  In order to keep the \HASHPIPE\, 
+threads sufficiently lightweight, each input thread handles XX bytes which are accumulated into an XX byte 
+buffer by the inout thread.  Similarly, each output thread is fed only XX bytes of the total XX bytes of the 
+resamped data and are then streamed back over 10 Gigabit Ethernet to a separate Mark6 for recording.
+
+Data from the \SDBE\, follows a customized B-engine format where each
+frame is composed of 1024, 1056B VDIF frames \footnote{\url{http://www.vlbi.org/vdif/}}.  128 snapshots of a 
+16384 sample \SWARM{}\, spectrum makes up one B-engine frame. However, the current \SDBE\, bitcode packs
+neither the snapshots contiguously in time nor the spectrum samples contiguously in frequency.  Furthermore, 
+each B-frames overlaps the preceding one in memory.  Our resampling algorithm handles $39n$\,\SWARM{}\, snapshots
+simultaneously, so in order to reduce the amount of book-keeping the inout thread has 4 buffer XX bytes, 
+each of which holds 39 complete B-engine frames.  The inout thread does preliminary checks to ensure that the 
+B-engine frames are complete before assigning each buffer to a GPU.
+
+The data is written as a time series using VDIF format.  More to come on that.
 
 \subsection{Resampling Block}
+
+\APHIDS\, resamples the data in the Fourier domain (see \S \ref{sec:fourier_resampling}).  There were several 
+contributing factors that led us to make
+this choice rather than apply filters in the time domain.  First, the GPU cluster can handle relatively large 
+chunks of data at a time so there losses from the DFT are very manageable.  Second, regardless of 
+what resampling algorithm is used the \SWARM\, spectra must 
+be transformed into the time domain, the guard bands trimmed and the signal modulated.  These operations are done 
+very simply using FFTs and in the Fourier domain.  However, the cost of the
+resampling operation will be dominated by these operations.  Lastly, we can use the optimized cuFFT library
+\footnote{\url{https://developer.nvidia.com/cuFFT}} to 
+perform the FFTs which makes the codebase smaller and reduces development time.
+
+\subsection{Timing?}
+
+The Mark6 can record data to the four modules at 16 Gbps.
 
 %% Loss table : /home/krosenfe/resampling/losses.py
 % losses for FIR filtering, interpolation schemes, and FFT
@@ -225,33 +319,6 @@ Mention interest in recording 4-bit data to deal with SWARM unbalanced state cou
 
 Include some discussion on operation of hamster at the summit.  Will cooling be an issue?
 
-\tikzstyle{line} = [draw,-latex']
-\tikzstyle{cpu} = [rectangle, draw, fill=blue!20,
-    text width=5em, text centered, rounded corners, minimum height=4em]
-\tikzstyle{gpu} = [rectangle, draw, fill=red!20,
-    text width=5em, text centered, rounded corners, minimum height=4em]
-\tikzstyle{resamp} = [rectangle, draw, minimum height=4.5em, align=center, minimum width=15em] 
-
-\begin{figure}
-\begin{center}
-\begin{tikzpicture} [node distance = 5cm, auto]
-\node [cpu] (mark6_in) {Mark6 Reader};
-\node[gpu,below of=mark6_in](reader){Reader};
-\node[gpu,right of=reader](rIFFT){rIFFT};
-\node[gpu,right of=rIFFT](resampler){Resampler};
-\node[cpu,right of=resampler](VDIF_pkt){VDIF packet \\ \& header};
-\node[cpu,below of=VDIF_pkt](mark6_out){Mark6 Writer};
-
-\path[line] (mark6_in) -- node[align=center] {BENG @ 2496 GHz \\ quantized to 2-bits}(reader);
-\path[line] (reader) -- node[align=center] {spectra of \\ 16k complex64} (rIFFT);
-\path[line] (rIFFT) --  node[align=center] {time series of \\ 32k float32} (resampler);
-\path[line] (resampler) --  node[align=center] {time series \\ @ 2048 GHz}(VDIF_pkt);
-\path[line] (VDIF_pkt) -- node[align=center, left]{VDIF @ 4096 GHz \\ quantized to 2-bits}(mark6_out);
-\end{tikzpicture}
-\label{fig:aphids_flow_chart}
-\caption{This signal flow chart shows an overview of \APHIDS.  The red boxes represent operations on the GPU while blue boxes are for the CPU.}
-\end{center}
-\end{figure}
 
 \begin{figure}
 \centering
@@ -289,8 +356,9 @@ We should reproduce these results using \APHIDS\ (or as much of it as possible).
 \section{The Team}
 The text to this document was written by KR with referral to intermediate documents written by
 members of the \APHIDS\ team.  LB ran simulations on 2-bit quantization and suggested the DFT resampling 
-architecture appropriate for \SWARM{6/11}. AY wrote the front and back-end kernels de-and re-packetizing 
-the data along with quantization. RP has magic and LV is a boss. etc etc etc
+architecture appropriate for \SWARM{6/11}. AY wrote sgcomm, the front and back-end kernels de-and re-packetizing 
+the data along with quantization. RP handled \HASHPIPE\, and the pipeline design.  The B-engine data format along 
+with the \SDBE\, bit code was developed by LV and RP.
 
 \acknowledgments 
 \clearpage
