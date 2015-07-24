@@ -265,6 +265,8 @@ simultaneously, so in order to reduce the amount of book-keeping the inout threa
 each of which holds 39 complete B-engine frames.  The inout thread does preliminary checks to ensure that the 
 B-engine frames are complete before assigning each buffer to a GPU.
 
+
+
 The data is written as a time series using VDIF format.  More to come on that.
 
 \subsection{Resampling Block}
@@ -276,9 +278,67 @@ chunks of data at a time so there losses from the DFT are very manageable.  Seco
 what resampling algorithm is used the \SWARM\, spectra must 
 be transformed into the time domain, the guard bands trimmed and the signal modulated.  These operations are done 
 very simply using FFTs and in the Fourier domain.  However, the cost of the
-resampling operation will be dominated by these operations.  Lastly, we can use the optimized cuFFT library
-\footnote{\url{https://developer.nvidia.com/cuFFT}} to 
-perform the FFTs which makes the codebase smaller and reduces development time.
+resampling operation will be dominated by these operations.  Lastly, we can utilize the optimized cuFFT library
+\footnote{\url{https://developer.nvidia.com/cuFFT}} to ensure good performace, reduce development time and 
+maintain a manageably sized codebase.
+
+The \APHIDS\, resampling block is composed of three 1-dimensional FFTs (A, B, and C; see Figure \ref{fig:resampling_block}).  
+Following the cuFFT API reference to improve performace, we utilize batched
+FFTs (launching more than one FFT at a time using the cuFFT API), out-of-place transforms, 
+and ensure that transforms operate on contiguous chunks of memory.  We also use single precisiong transforms to 
+reduce the memory transfer bandwidth and ensure that 
+the resampling block can be run on a single device.  The latter point is important since it allows the inout
+thread to parallelize the resampling operation across the cluster and provide a x4 speedup.
+
+The first FFT (A) takes the complex valued, 16385 sample \SWARM\, 
+spectrum into the time domain, returning 
+32768 real samples.  Since \SWARM\, omits the Nyquist sample which is far outside the \SWARM\, cutoff frequency, 
+we insert a zero as the 16385th sample.  Since this transform is radix-2, the performance should benefit from 
+the Cooley-Tukey algorithm.  However, on our cluster the cuFFT library exhibits linear improvement in Gflops 
+with transform size up to N of 16384 (see Figure \ref{fig:C2R_performance}).  This behavior is consistent with the CUDA 7.0 performance 
+report\footnote{\url{http://on-demand.gputechconf.com/gtc/2015/webinar/gtc-express-cuda7-performance-overview.pdf}} 
+and we find that this transform, just ouside of the optimal regime, operates at 6.7 Gsps.
+
+Next, we Fourier transform chunks of $N_B = 19968$ consecutive time series samples (B).  The resulting 
+spectrum has a frequency resolution of $2496$\,MHz$/19958=125$\,kHz.  The next step is to apply a third
+complex-to-real transform (C) on a subset of the spectrum, using only frequences from $150$\,MHz to $1174$\,MHz.  
+The final time series has size $N_C= 2\times(1174-150)/0.125=16384$ per batch element and our desired 
+sampling rate of 
+$16384 \times 0.125$\,MHz$ = 2048$\,MHz.  This simple operation simultaneously resamples the signal, modulates 
+the signal, and trims the guard bands.  Furthermore, it is easily implemented using cuFFT by using the same 
+batch size as the second real-to-complex transform, increasing the input pointer index by $150 / 0.125 = 1200$
+(equivalent to masking out the first 1200 channels) and then using a input stride of $9980$ for the 
+$N=16384$ complex-to-real transform.
+
+The choice of FFT size was set to maximize performance.  In order for the target sampling rate to be achieved
+$N_B$ must be a multiple of 39.  Furthermore, so that the 150\,MHz guard band can be removed, we must ensure that 
+150 is a multiple of $2496/N_B$:
+\begin{equation}
+\frac{150\times39}{2496} = \frac{75}{32} = \frac{i}{j}, \quad i,j = 1, 2,3, \ldots
+\end{equation}
+To ensure this, $j$ should be a multiple of 32 so that 
+\begin{equation}
+N_B = 39j = 1248i, \quad i=1,2,3,\ldots
+\end{equation}
+Lastly, the size of the C transform is then determined:
+\begin{equation}
+N_C = \frac{32}{39} N_B.
+\end{equation}
+The dashed line in Figure \ref{fig:C2R_performance} shows the performance for candidate $N_B$s.  Unlike for 
+the radix-2 cases, the configuration that has the best Gflop performance does not also provide the best Gsps
+rate.  This is likely because the Gflop calculation is not an actual flop count, but a scaling from the 
+original Cooley-Tukey algorithm \citep{cooley59}.  The Gsps metric is perhaps more useful in this case as it
+shows that choices of $N_B <= 19968$ will have good performance.  However, the figure also clearly demonstrates
+that this non radix-2 FFT is about $2\times$ slower than the radix-2 case.
+
+
+\begin{figure}[H!]
+\epsscale{0.95}
+\plotone{C2R_performance.eps}
+\caption{This figure shows the performance of radix-2, single precision, batched, complex-to-real, 1D transforms 
+measured on hamster. The benchmark conventions follow FFTW  (http://www.fftw.org/speed/method.html).}
+\label{fig:C2R_performance}
+\end{figure}
 
 \subsection{Timing?}
 
