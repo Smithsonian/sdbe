@@ -269,7 +269,7 @@ B-engine frames are complete before assigning each buffer to a GPU.
 
 The data is written as a time series using VDIF format.  More to come on that.
 
-\subsection{Resampling Block}
+\subsection{Resampling Block}\label{sec:resamp_block}
 
 \APHIDS\, resamples the data in the Fourier domain (see \S \ref{sec:fourier_resampling}).  There were several 
 contributing factors that led us to make
@@ -359,10 +359,31 @@ FFT ($N=M$)                 &  1\% &  1\% & 0.2\%
 \enddata
 \end{deluxetable}
 
-\subsection{Bit Growth}
+\subsection{FFT Accuracy}
+One concern with using multiple FFTs to change the sampling rate is the error introduced by bit growth.
+The floating point error grows as $\mathcal{O}\sqrt{\log{N}}$ \citep{schatzman96} on average for the Cooley-Tukey
+algorithm, but errors can be exacerbated by innacurate twiddle factors or choice of FFT algorithm (CITE
+benchFFT?).  We have computed the accuracy of the cufft library using single precision for 
+radix-2 transforms as well as the $N_b = 19968$ case in Figure \ref{fig:fft_accuracy}.  These values 
+were computed using benchFFT\footnote{\url{http://www.fftw.org/accuracy/}} and we compare against 
+fftw3\footnote{\url{http://www.fftw.org/}}
+results also computed on hamster.  For random input, the cufft library follows the expected $\mathcal{O}\sqrt{\log{N}}$ behavior
+but with larger scatter and slightly worse performance than fftw3.
+
+\begin{figure}[H!]
+\plotone{fft_accuracy.eps}
+\caption{Accuracy of the FFT algorithm as measured by the $L_2$ error from benchFFT} \label{fig:fft_accuracy}
+%/home/krosenfe/testing/cufft_accuracy/make_figure.py
+\end{figure}
+
+Round off error and bit growth is a general concern for scientific computing on GPUs.  
+Increasing the precision to double can significantly slow down performance and then 
+require reoptimization or even the redesign of kernels.  Generally, well implemented FFTs can 
+be very stable options.  The results of ours test suggest that 
+bit growth will not be a large source of loss for the resampling scheme presented in \S\ref{sec:resampling_block}.
 
 \subsection{Quantization}
-Another important source of loss and distortion to consider is the requantization back to 2-bits that is done
+Another source of loss and distortion to consider is the requantization back to 2-bits that is done
 before writing back to disk on the Mark6 (see Figure \ref{fig:aphids_flow_chart}).  In theory, \APHIDS\,could 
 record higher bit data (or even the full 32 bits for floating point), but this adds complications for 
 correlation 
