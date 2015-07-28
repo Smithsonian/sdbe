@@ -22,7 +22,7 @@ extern "C" {
 
 //#define GPU_DEBUG		// slows down performance
 #define GPU_COMPUTE
-#define GPU_MULTI
+//#define GPU_MULTI
 #define QUANTIZE_THRESHOLD 1.f
 
 #ifdef GPU_MULTI
@@ -454,6 +454,10 @@ static void *run_method(hashpipe_thread_args_t * args) {
     return NULL;
   }
 
+
+  /* Initialize GPU  */
+  fprintf(stdout, "sizeof(vdif_in_packet_block_t): %d\n", sizeof(vdif_in_packet_block_t));
+  fprintf(stdout, "sizeof(vdif_out_packet_block_t): %d\n", sizeof(vdif_out_packet_block_t));
 
   // initalize resampler
   resampler = (aphids_resampler_t *) malloc(NUM_GPU*sizeof(aphids_resampler_t));
