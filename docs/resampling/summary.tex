@@ -28,11 +28,47 @@
 ABSTRACT
 \end{abstract}
 
-\section{Background} \label{sec:background}
-\subsection{VLBI}
+\section{Introduction}
 
-\subsection{\SDBE}
-The \SWARM{} Digital Back End (\SDBE) is amazing.
+Very Long Baseline Interferometry (VLBI) combines radio signals taken at many different observing sites.  Using
+detectors located thousands of miles away, perhaps on different continents or even in space,
+this technique can achieve amazing angular and time resolution.  Each station must have its own clock and record 
+the data to be correlated elsewhere.  While the general practice of VLBI is well established, there continue to 
+be exciting technical developments in the field that are unveiling singular scientific opportunities 
+and providing great promise.
+
+One exciting example is the development of mm and sub-mm wave VLBI by collaborations such as the Event Horizon
+Telescope (EHT).  Using these extremely high resolution data, the EHT can study features of 
+super massive black holes on scales of the Schwarzschild radii, providing new tests of general relativity and 
+resolved observations of black hole accretion.  One of the challenges that the EHT faces is the inhomogeneity 
+of its array.  In order to make the experiment financially viable, the EHT utilizes many pre-existing telescopes.
+While many of these telescopes use state-of-the-art digital backends developed by the EHT to handle large 
+bandwidths and produce standard products a few key sites cannot use these systems and produce very 
+different data products. In particular, the sampling rate of the phased ALMA, SMA, and CARMA arrays are all 
+different than the standard R2DBE (VLBI) output.  Before the EHT's software correlator
+\citep[DIFX][]{deller09} can find fringes using these data, they must be resampled to the R2DBE rate of 
+4096\,MHz.  
+
+This document summarizes the \textbf{A}daptive \textbf{P}hased-array and \textbf{H}eterogeneous 
+\textbf{I}nterpolator, and \textbf{D}ownsampler for \textbf{S}WARM (\APHIDS), a resampling software designed for 
+phased SMA data products.  We concentrate our discussion to early development and design in the project with 
+a particular emphasis on the resampling problem.  \APHIDS\, also has very general applications for 
+post-processing of VLBI data since it features fast read/write capabilities and a modular threaded pipeline 
+that uses a GPU cluster for fast data processing.  The code is open-source and is available online at 
+\url{https://github.com/sma-wideband/sdbe}.
+
+\APHIDS\, is written to take data recorded at the Submillimeter Array (SMA) and process it for correlation in 
+DIFx.  The SMA is a 6 antenna interferometer on the summit of Maunakea, Hawaii that has been a historically 
+important member of the EHT and provides important EW baselines.  The phased sum is produces in the SMA 
+correlator, SWARM (\textbf{S}MA \textbf{W}ideband \textbf{A}stronomical \textbf{R}OACH2 \textbf{M}achine), which is currently being deployed in stages as the array's bandwidth capabilities are 
+upgraded.  For EHT observations in 2015, SWARM recorded at a sampling rate of 2496\,MHz in 2 separate phased
+sums.
+
+We discuss the sampling rate conversion problem and several common solutions in \S\ref{sec:src_basics}.
+The current \APHIDS\, resampling algorithm is described in \S\ref{sec:aphids} along with brief notes about related 
+design issues such as data handling and quantization.  We include measurements of performance as well as a 
+demonstration of zero-baseline fringes and larger triangles for the 2015 EHT.  We end with a summary and 
+goals for near and long-term project development.
 
 \section{Sample Rate Conversion} \label{sec:src_basics}
 
@@ -187,6 +223,23 @@ multiplication by a box-car window or convolution with a sinc function in the fr
 widens for narrower box-car windows, causing spectral leakage and aliasing.  The ultimate result is also a loss 
 in correlation amplitude.
 
+Short paragraph here describing experiments on correlation coefficient loss.
+
+%% Loss table : /home/krosenfe/resampling/losses.py
+% losses for FIR filtering, interpolation schemes, and FFT
+\begin{deluxetable}{l|ccc}
+\tablecolumns{4}
+\tablewidth{0pc}
+\tablecaption{Correlation coefficient loss from resampling \label{tab:loss}}
+\tablehead{\colhead{Method} & \colhead{64/39} & \colhead{32/39} & \colhead{128/125}}
+\startdata
+Nearest-Neighbor            & 13\% & 17\% & 13\% \\
+Linear                      &  5\% &  7\% &  5\% \\
+Hamming window ($16L$ taps) &  1\% &  2\% &  2\% \\
+FFT ($N=M$)                 &  1\% &  1\% & 0.2\%
+\enddata
+\end{deluxetable}
+
 \section{APHIDS} \label{sec:aphids}
 
 We are developing a software solution to the resampling problem called \APHIDS\, (\textbf{A}daptive 
@@ -265,8 +318,6 @@ simultaneously, so in order to reduce the amount of book-keeping the inout threa
 each of which holds 39 complete B-engine frames.  The inout thread does preliminary checks to ensure that the 
 B-engine frames are complete before assigning each buffer to a GPU.
 
-
-
 The data is written as a time series using VDIF format.  More to come on that.
 
 \subsection{Resampling Block}\label{sec:resamp_block}
@@ -340,24 +391,37 @@ measured on hamster. The benchmark conventions follow FFTW  (http://www.fftw.org
 \label{fig:C2R_performance}
 \end{figure}
 
-\subsection{Timing?}
+\subsection{Timing Performance}
 
-The Mark6 can record data to the four modules at 16 Gbps.
+In this section we report on timing measurements of the \APHIDS\, resampling kernels.  We report the cost of 
+loading the data onto the device separately and do not include it in the scores of the individual kernels.  
+Furthermore, we do not include the cost of building the FFT plan since this operation is done at the initial
+constuction of the hashpipe program.
+We have designed the resampling block to operate on a single GPU so there is no time spent moving data 
+between devices and we can parralelize across each card.  As shown in Figure \ref{fig:aphids_block}, the
+kernels (except for the depacketer) must be called
+twice, once on each phased sum.  Our current implementation uses synchronous calls (one kernel function is 
+called at a time).  We tested an asynchronous setup, but saw no speedup.  This indicates that the majority of 
+the GPU resources are being used.  Tabel \ref{tab:kernel_times} lists the time it takes for the kernel to be 
+executed a single time and also the speed of the kernel assuming it is operating on a buffered 0.32\,Gb data 
+chunk (see \S\ref{sec:resamp_block}).
 
 %% Loss table : /home/krosenfe/resampling/losses.py
 % losses for FIR filtering, interpolation schemes, and FFT
-\begin{deluxetable}{l|ccc}
-\tablecolumns{4}
+\begin{deluxetable}{l|cc}
+\tablecolumns{3}
 \tablewidth{0pc}
-\tablecaption{Correlation coefficient loss from resampling \label{tab:loss}}
-\tablehead{\colhead{Method} & \colhead{64/39} & \colhead{32/39} & \colhead{128/125}}
+\tablecaption{Timing measurements of \APHIDS\, kernels \label{tab:kernel_times}}
+\tablehead{\colhead{Kernel} & \colhead{time [ms]} & \colhead{rate [Gbps]}}
 \startdata
-Nearest-Neighbor            & 13\% & 17\% & 13\% \\
-Linear                      &  5\% &  7\% &  5\% \\
-Hamming window ($16L$ taps) &  1\% &  2\% &  2\% \\
-FFT ($N=M$)                 &  1\% &  1\% & 0.2\%
+Reorder                & 10.5 & 31.5 \\
+FFT A (N=32768)        & 25.4 & 12.9 \\
+FFT B (N=19968)        & 38.0 & 8.6  \\
+FFT C (N=16384)        & 13.8 & 23.7 \\
+Quantize (2-bit)       & 12.0 & 27.3
 \enddata
 \end{deluxetable}
+
 
 \subsection{FFT Accuracy}
 One concern with using multiple FFTs to change the sampling rate is the error introduced by bit growth.
@@ -391,6 +455,34 @@ in \DIFX\ and would incur costs for both disk space and output data rate.  While
 latter could be an important limiting factor for real-time operation of \APHIDS\,at the back end of the \SDBE\,
 (see \S XX).  The signal-to-noise loss expected from 2-bit quantization is a function of the quantization 
 thresholds, but for Gaussian noise and Nyquist sampling is at best 12\% \citep{cooper70,thompson01}.
+
+\subsection{Inverting the Polyphase Filterbank}
+Under normal operation, \SWARM{} uses a polyphase filter bank (PFB) to generate its spectra.  The PFB is an 
+extension of the DFT which uses windowing and a polyphase filter structure to reduce the effects of leakage
+and scalloping.  However, for VLBI observations we must transform the spectrum into the original time series to
+resample the data.  Inverting the PFB is a non-trivial operation so the operators use a version of the \SWARM{}
+bit-code that replaces the PFB with an FFT.  However, for one night of the 2015 EHT campaign this version was not
+used and so we must consider the consequences of inverting the PFB for the data.
+
+One option is to simply apply the generic \APHIDS\, pipeline on the PFP spectra which applies an inverse Fourier 
+transform.  The resulting pseudo time-series is a series of weighted 
+averages of the original time series (CITE).  The weights are determined by the window function used in the 
+PFB and the number of elements in the sum by the number of taps, $N_T$.  For example, if the window function is 
+a box car, then the weights are equal and the correlation coefficient for a white noise time stream goes like:
+\begin{equation}
+\rho = \frac{1}{\sqrt{N_T}}.
+\end{equation}
+\SWARM{} uses four taps and a Hanning filter.  We simulated the resulting correlation loss and saw a 34\% loss, 
+exceeding the largest loss we expect in the pipeline from the 2-bit quantization (12\%).  Using the PFB inversion
+technique developed by Richard Shaw\footnote{\url{https://github.com/jrs65/pfb-inverse}} we see excellent 
+recovery with a loss of only 0.5\% although the inversion routine takes about 10 times longer than numpy's
+iFFT and already uses the highly optimized LAPACK library.  CUDA libraries offer many of the required functions 
+to implement this solution on the GPU.  However, prototyping suggests that the performance many not be very good. 
+In particular, Richard Shaw's solution requires solving many small systems of linear equations for which there is 
+no good batched solution in cuBLAS. Streams, which allow multiple kernels to be executed simultaneously, is a 
+limited fix since only a few can launched at a time.  What might be necessary is to write a custon kernel solver
+for the PFB inverse that does not use the cuBLAS library.  Since the PFB problem is applicable for a minor subset 
+of the 2015 EHT data, this problem will need to be addressed after the inital data processing run.
 
 \subsection{Future Development}
 
