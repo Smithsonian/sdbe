@@ -484,14 +484,30 @@ limited fix since only a few can launched at a time.  What might be necessary is
 for the PFB inverse that does not use the cuBLAS library.  Since the PFB problem is applicable for a minor subset 
 of the 2015 EHT data, this problem will need to be addressed after the inital data processing run.
 
-\subsection{Future Development}
+\subsection{Conclusion and Future Development}
 
-Include some discussion on how quantization choice could limit the data rate for APHIDS. 
-Mention interest in recording 4-bit data to deal with SWARM unbalanced state counts.
-%Use GTX 980 specs: http://www.geforce.com/hardware/desktop-gpus/geforce-gtx-980/specifications
+\APHIDS\, promises to be an important tool for the EHT.  It crucially enables the correlation in
+DIFx of non-standard sampling rates and also provides a platform for any general pre-processing of 
+VLBI data.  It features fast data IO from Mark6 recorders and GPU accelarated processing.  
+We have demonstrated the correctness and speed of this design and its immediate applicability to 
+the 2015 EHT data as well as technical tests with phased ALMA.  However,
+there remain a number of challenges for future development of the software.
 
-Include some discussion on operation of hamster at the summit.  Will cooling be an issue?
+For future VLBI campaigns at the SMA, it would be ideal if \APHIDS\, could run in real-time 
+at the backend of the \SDBE.  This would reduce the media requirements and also the 
+hassle of post-processing the data offsite.  However, the timing may need to be improved as the
+SWARM data reates increase and the front-end of the pipeline is  optimized to reduce the 
+amount of SNR loss from quantization.  Additionally, some analysis on the cooling requiremeents 
+of the cards should be conducted to ensure that the GTX980s used in hamster can safely run 
+at the altitude of the SMA (4100\,meters).  Regardless of where it operates, \APHIDS\, will need 
+maintence to remain compatible with \SWARM\, as it and the \SDBE\, are updated.  The current 
+git repository and its wiki is a good solution for keeping track of versioning and performance status.
 
+In order to handle phased ALMA data products, a separate \APHIDS\, resampling block would need 
+to be developed.  In some ways this is a simpler design since there are no guard-bands, but 
+there are more phased sums for book-keeping and larger data requirements for the higher 
+sampling rate. APP expertise is located at Haystack and in close collaboration with members of 
+the \APHIDS\, team.  
 
 \begin{figure}
 \centering
@@ -523,7 +539,7 @@ R2DBE (SMA single-dish in gray).}
 
 \section{Results}
 
-Include AY initial correlation tests with single dish and reported SWARM fringes with LMT.
+Include AY initial correlation tests with single dish and SWARM fringes with LMT.
 We should reproduce these results using \APHIDS\ (or as much of it as possible).
 
 \section{The Team}
