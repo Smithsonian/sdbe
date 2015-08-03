@@ -18,7 +18,7 @@ if __name__ == "__main__":
                         help="set CPU affinity to CPU_INOUT for the input/output thread (default=2)")
     parser.add_argument("--cpu-out", metavar="CPU_OUT", type=int, default=3,
                         help="set CPU affinity to CPU_OUT for the output thread (default=3)")
-    parser.add_argument("--in-type", metavar="IN_TYPE", type=str, default="null", choices=["null", "file"],
+    parser.add_argument("--in-type", metavar="IN_TYPE", type=str, default="null", choices=["null", "file", "net"],
                         help="set the type of input thread (default='null')")
     parser.add_argument("--inout-type", metavar="INOUT_TYPE", type=str, default="null", choices=["null", "gpu"],
                         help="set the type of input/output thread (default='null')")
