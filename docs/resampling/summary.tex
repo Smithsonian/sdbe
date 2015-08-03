@@ -46,7 +46,7 @@ While many of these telescopes use state-of-the-art digital backends developed b
 bandwidths and produce standard products a few key sites cannot use these systems and produce very 
 different data products. In particular, the sampling rate of the phased ALMA, SMA, and CARMA arrays are all 
 different than the standard R2DBE (VLBI) output.  Before the EHT's software correlator
-\citep[DIFX][]{deller09} can find fringes using these data, they must be resampled to the R2DBE rate of 
+\citep[DIFX][]{deller07} can find fringes using these data, they must be resampled to the R2DBE rate of 
 4096\,MHz.  
 
 This document summarizes the \textbf{A}daptive \textbf{P}hased-array and \textbf{H}eterogeneous 
@@ -60,7 +60,7 @@ that uses a GPU cluster for fast data processing.  The code is open-source and i
 \APHIDS\, is written to take data recorded at the Submillimeter Array (SMA) and process it for correlation in 
 DIFx.  The SMA is a 6 antenna interferometer on the summit of Maunakea, Hawaii that has been a historically 
 important member of the EHT and provides important EW baselines.  The phased sum is produces in the SMA 
-correlator, SWARM (\textbf{S}MA \textbf{W}ideband \textbf{A}stronomical \textbf{R}OACH2 \textbf{M}achine), which is currently being deployed in stages as the array's bandwidth capabilities are 
+correlator, SWARM \citep[\textbf{S}MA \textbf{W}ideband \textbf{A}stronomical \textbf{R}OACH2 \textbf{M}achine][]{weintroub14}, which is currently being deployed in stages as the array's bandwidth capabilities are 
 upgraded.  For EHT observations in 2015, SWARM recorded at a sampling rate of 2496\,MHz in 2 separate phased
 sums.
 
@@ -145,7 +145,7 @@ between the original samples:
 y[i] = x[j] + (x[j+1] - x[j]) (if_0/f_1 - j)
 \end{equation}
 where $j = \mathrm{floor}(if_0/f_1)$.  This is equivalent to applying a ``tent'' FIR filter with $2L$ taps on the 
-upsampled $Lf_0$ time series before decimation \citep{oppenhim10}.  Similarly, a $2L$ tap box-car filter is 
+upsampled $Lf_0$ time series before decimation \citep{oppenheim10}.  Similarly, a $2L$ tap box-car filter is 
 equivalent to nearest-neighbor interpolation:
 \begin{equation}
 y[i] = x[\mathrm{round}(if_0/f_1)].
@@ -156,7 +156,7 @@ poorly for signals with power near Nyquist \citep{fraser89}.  To further emphasi
 \ref{fig:windows} shows the frequency response for linear and nearest-neighbor interpolation when 
 the resampling factor $L/M$ is $64/39$.  Note that both methods have side lobes above $-40$\,dB and so the 
 resampled signal will introduce a large slope in the passband (see \S XX).  However, GPUs can compute 
-these low-order interpolations directly on the card using texture memory.  \citet{kim15b} utilize this feature 
+these low-order interpolations directly on the card using texture memory.  \citet{kim14b} utilize this feature 
 by using the cuFFT library to upsample the signal in the Fourier domain by some initial factor, $U$, and then using texture memory to 
 interpolate.  The resulting frequency response will follow that for a linear interpolator operating at a ...
 at \citep{oppenheim10},
@@ -164,7 +164,7 @@ at \citep{oppenheim10},
 H_{\mathrm{lin}} = \frac{1}{L} \left[ \frac{\sin(2 \pi f L/2}{\pi f} \right]^2,
 \end{equation}
 multiplied by a low-pass box-car filter with cutoff frequency $f_0/2$.  It would be straight forward to 
-expand upon the framework introduced by \citet{kim15b} to handle cases where $M$ is greater than $L$.  
+expand upon the framework introduced by \citet{kim14b} to handle cases where $M$ is greater than $L$.  
 This scheme should help reduce loss from aliasing, albeit 
 at the cost of two FFTs and much larger memory requirements.
 
@@ -378,7 +378,7 @@ N_C = \frac{32}{39} N_B.
 The dashed line in Figure \ref{fig:C2R_performance} shows the performance for candidate $N_B$s.  Unlike for 
 the radix-2 cases, the configuration that has the best Gflop performance does not also provide the best Gsps
 rate.  This is likely because the Gflop calculation is not an actual flop count, but a scaling from the 
-original Cooley-Tukey algorithm \citep{cooley59}.  The Gsps metric is perhaps more useful in this case as it
+original Cooley-Tukey algorithm \citep{cooley65}.  The Gsps metric is perhaps more useful in this case as it
 shows that choices of $N_B <= 19968$ will have good performance.  However, the figure also clearly demonstrates
 that this non radix-2 FFT is about $2\times$ slower than the radix-2 case.
 
