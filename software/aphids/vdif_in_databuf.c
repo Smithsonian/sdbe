@@ -1,13 +1,24 @@
+#include <string.h>
+
 #include "hashpipe.h"
 #include "hashpipe_databuf.h"
 
 #include "vdif_in_databuf.h"
 
+static void print_beng_group_completion(beng_group_completion_t *bgc, const char *tag);
+static void print_beng_frame_completion(beng_frame_completion_t *bfc, const char *tag);
+static void print_channel_completion(channel_completion_t *cc, const char *tag);
+
+#ifndef STANDALONE_TEST
 hashpipe_databuf_t *vdif_in_databuf_create(int instance_id, int databuf_id)
 {
+  //~ fprintf(stderr,"%s:%d: Creating databuffer %d,%d...\n",__FILE__,__LINE__,instance_id,databuf_id);
   size_t header_size = sizeof(hashpipe_databuf_t);
-  return hashpipe_databuf_create(instance_id, databuf_id, header_size, sizeof(vdif_in_packet_block_t), VDIF_IN_BUFFER_SIZE);
+  hashpipe_databuf_t *d = hashpipe_databuf_create(instance_id, databuf_id, header_size, sizeof(beng_group_completion_t), BENG_GROUPS_IN_BUFFER);
+  //~ fprintf(stderr,"%s:%d: %p\n",__FILE__,__LINE__,d);
+  return d;
 }
+#endif // STANDALONE_TEST
 
 int64_t get_packet_b_count(vdif_in_header_t *vdif_pkt_hdr) {
 	int64_t b = 0;
@@ -15,3 +26,161 @@ int64_t get_packet_b_count(vdif_in_header_t *vdif_pkt_hdr) {
 	b |= (int64_t)(vdif_pkt_hdr->beng.b_lower)&(int64_t)0x00000000000000FF;
 	return b;
 }
+
+void init_beng_group(beng_group_completion_t *bgc, beng_group_vdif_buffer_t *bgv_buf_cpu, beng_group_vdif_buffer_t *bgv_buf_gpu, int64_t b_start) {
+	int ii = 0;
+	bgc->bgv_buf_cpu = bgv_buf_cpu;
+	bgc->bgv_buf_gpu = bgv_buf_gpu;
+	for (ii=0; ii<BENG_FRAMES_PER_GROUP; ii++) {
+		beng_frame_completion_t *bfc = &bgc->bfc[ii];
+		// set all zeros
+		memset(bfc,0,sizeof(beng_frame_completion_t));
+		// then set B-counter value
+		bfc->b = b_start+ii;
+	}
+	#ifdef STANDALONE_TEST
+	//~ print_beng_group_completion(bgc,"init_beng_group: ");
+	#endif
+}
+
+int get_beng_group_index_offset(vdif_in_databuf_t *bgc_buf, int index_ref, vdif_in_packet_t *vdif_pkt) {
+	int offset = -1;
+	int count = BENG_GROUPS_IN_BUFFER;
+	int64_t b = get_packet_b_count(&vdif_pkt->header);
+	int64_t ll = bgc_buf->bgc[index_ref].bfc[0].b;
+	int64_t lu = bgc_buf->bgc[index_ref].bfc[BENG_FRAMES_PER_GROUP-1].b;
+	if (b < ll) {
+		return offset;
+	}
+	while (count-->0) {
+		offset++;
+		if (b >= ll && b <= lu) {
+			return offset;
+		}
+		// due to overlap the increment is one less than frames/block
+		ll += BENG_FRAMES_PER_GROUP-1;
+		lu += BENG_FRAMES_PER_GROUP-1;
+	}
+	return offset;
+}
+
+int insert_vdif_in_beng_group_buffer(vdif_in_databuf_t *bgc_buf, int index_ref, int offset, vdif_in_packet_t *vdif_pkt) {
+	int insert_count = 0;
+	int ii = 0;
+	int64_t b = get_packet_b_count(&vdif_pkt->header);
+	for (ii=offset; ii<BENG_GROUPS_IN_BUFFER; ii++) {
+		int g_idx = (ii+index_ref) % BENG_GROUPS_IN_BUFFER;
+		beng_group_completion_t *this_bgc = &bgc_buf->bgc[g_idx];
+		int64_t ll = this_bgc->bfc[0].b;
+		int64_t lu = this_bgc->bfc[BENG_FRAMES_PER_GROUP-1].b;
+		if (b >= ll && b <= lu) {// B-frame counter in range
+			int b_idx = b - this_bgc->bfc[0].b;
+			int c_idx = vdif_pkt->header.beng.c;
+			int f_idx = vdif_pkt->header.beng.f;
+			if (this_bgc->bfc[b_idx].beng_frame_vdif_packet_count < VDIF_PER_BENG_FRAME && // cannot exceed maximum VDIF per B-frame
+				this_bgc->beng_group_vdif_packet_count < (BENG_FRAMES_PER_GROUP*VDIF_PER_BENG_FRAME)) { // cannot exceed maximum VDIF per group of B-frames
+				uint8_t *f_flags = (uint8_t *)&this_bgc->bfc[b_idx].cc[c_idx];
+				// update the B-frame completion ...
+				this_bgc->bfc[b_idx].beng_frame_vdif_packet_count++;
+				*f_flags |= (0x01 << f_idx);
+				// ... copy the VDIF packet to memory ...
+				memcpy((void *)(this_bgc->bgv_buf_cpu)+this_bgc->beng_group_vdif_packet_count*sizeof(vdif_in_packet_t),vdif_pkt,sizeof(vdif_in_packet_t));
+				// and increment packet counter
+				this_bgc->beng_group_vdif_packet_count++;
+				// increment insertion count
+				insert_count++;
+			}
+		}
+	}
+	//~ printf("insert_count=%d\n",insert_count);
+	return insert_count;
+}
+
+int check_beng_group_complete(vdif_in_databuf_t *bgc_buf,int index) {
+	if (index < 0 || index >= BENG_GROUPS_IN_BUFFER) {
+		return -1;
+	}
+	beng_group_completion_t *this_bgc = &bgc_buf->bgc[index];
+	if (this_bgc->beng_group_vdif_packet_count == (BENG_FRAMES_PER_GROUP*VDIF_PER_BENG_FRAME)) {
+		return 1;
+	}
+	return 0;
+}
+
+int transfer_beng_group_to_gpu(vdif_in_databuf_t *bgc_buf, int index) {
+	return 1;
+}
+
+int check_transfer_complete(int index) {
+	return 1;
+}
+
+
+// Print human-readable representation of B-engine group completion
+static void print_beng_group_completion(beng_group_completion_t *bgc, const char *tag) {
+	printf("%s{B-engine group: beng_group_vdif_packet_count=%d, bgv_buf_cpu=%p, bgv_buf_gpu=%p\n",
+			tag,bgc->beng_group_vdif_packet_count,bgc->bgv_buf_cpu,
+			bgc->bgv_buf_gpu);
+	if (bgc->beng_group_vdif_packet_count < VDIF_PER_BENG_FRAME*BENG_FRAMES_PER_GROUP) {
+		int new_tag_len = strlen(tag) + 2;
+		char new_tag[new_tag_len];
+		snprintf(new_tag,new_tag_len,"%s  ",tag);
+		int ii = 0;
+		for (ii=0; ii<BENG_FRAMES_PER_GROUP; ii++) {
+			print_beng_frame_completion(bgc->bfc + ii, new_tag);
+		}
+	}
+	printf("%s}\n",tag);
+}
+
+// Print human-readable representation of B-engine frame completion
+static void print_beng_frame_completion(beng_frame_completion_t *bfc, const char *tag) {
+	printf("%s[b=%ld; beng_frame_vdif_packet_count=%d",tag,bfc->b,bfc->beng_frame_vdif_packet_count);
+	if (bfc->beng_frame_vdif_packet_count < VDIF_PER_BENG_FRAME) {
+		printf("\n%s  Incomplete channels:",tag);
+		int ii=0;
+		for (ii=0; ii<CHAN_PER_BENG; ii++) {
+			channel_completion_t *this_cc = bfc->cc + ii;
+			int *this_cc_proxy = (int *)this_cc;
+			if (*this_cc_proxy != 0xFF) {
+				printf("\n%s    C-%03d: ",tag,ii);
+				print_channel_completion(bfc->cc+ii,"");
+			}
+		}
+		printf("\n%s",tag);
+	}
+	printf("]\n");
+}
+
+// Print human-readable representation of channel completion
+static void print_channel_completion(channel_completion_t *cc, const char *tag) {
+	printf("%s",tag);
+	int ii=0;
+	for (ii=0; ii<8; ii++) {
+		int *cc_proxy = (int *)cc;
+		printf("F-%d=%d ",ii,*cc_proxy>>ii & 0x01);
+	}
+}
+
+//~ #ifdef STANDALONE_TEST
+//~ #include <stdlib.h>
+//~ int main(int argc, const char **argv) {
+	//~ beng_group_completion_t bgc;
+	//~ beng_group_vdif_buffer_t *bgv_buf_cpu;
+	//~ beng_group_vdif_buffer_t *bgv_buf_gpu;
+	//~ int64_t b_start = 371626;
+	//~ 
+	//~ // initialize VDIF buffers
+	//~ bgv_buf_cpu = (beng_group_vdif_buffer_t *)malloc(sizeof(beng_group_vdif_buffer_t));
+	//~ bgv_buf_gpu = (beng_group_vdif_buffer_t *)malloc(sizeof(beng_group_vdif_buffer_t));
+	//~ 
+	//~ // initialize completion
+	//~ init_beng_group(&bgc, bgv_buf_cpu, bgv_buf_gpu, b_start);
+	//~ 
+	//~ // clean-up
+	//~ free(bgv_buf_cpu);
+	//~ free(bgv_buf_gpu);
+	//~ 
+	//~ return 0;
+//~ }
+//~ #endif // STANDALONE_TEST

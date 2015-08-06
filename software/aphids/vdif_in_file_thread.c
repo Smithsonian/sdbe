@@ -113,8 +113,9 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	}
 
 	// read one vdif packet block and write it to the index
-	while (bytes_read < sizeof(vdif_in_packet_block_t)) {
-	  bytes_read += read(fd, &db_out->blocks[index] + bytes_read, sizeof(vdif_in_packet_block_t) - bytes_read);
+	while (bytes_read < sizeof(beng_group_completion_t)) {
+	  //~ bytes_read += read(fd, &db_out->blocks[index] + bytes_read, sizeof(vdif_in_packet_block_t) - bytes_read);
+	  bytes_read++;
 
 	  if (bytes_read == 0) {
 
@@ -126,21 +127,26 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
 	    // and change states
 	    state = STATE_IDLE;
+	    
+	    // break out of loop
+	    break;
 	  }
 
 	}
+	
+	if (bytes_read == sizeof(beng_group_completion_t)) {
+		// reset bytes_read
+		bytes_read = 0;
 
-	// reset bytes_read
-	bytes_read = 0;
+		// let hashpipe know we're done with the buffer (for now)
+		hashpipe_databuf_set_filled((hashpipe_databuf_t *)db_out, index);
 
-	// let hashpipe know we're done with the buffer (for now)
-	hashpipe_databuf_set_filled((hashpipe_databuf_t *)db_out, index);
+		// update the index modulo the maximum buffer depth
+		index = (index + 1) % db_out->header.n_block;
 
-	// update the index modulo the maximum buffer depth
-	index = (index + 1) % db_out->header.n_block;
-
-	// update aphids statistics
-	aphids_update(&aphids_ctx);
+		// update aphids statistics
+		aphids_update(&aphids_ctx);
+	}
 
 	break;
       } // case STATE_READ

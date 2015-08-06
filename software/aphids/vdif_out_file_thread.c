@@ -74,6 +74,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	  fd = open(out_file, O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
 	  if (fd < 0) {
 	    hashpipe_error(__FUNCTION__, "error opening VDIF file");
+	    fprintf(stderr,"%s:%d: Hashpipe error\n",__FILE__,__LINE__);
 	    state = STATE_ERROR;
 	    break;
 	  }
@@ -104,12 +105,14 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
 	    // raise an error and exit thread
 	    hashpipe_error(__FUNCTION__, "error waiting for filled databuf");
+	    fprintf(stderr,"%s:%d: Hashpipe error\n",__FILE__,__LINE__);
 	    state = STATE_ERROR;
 	    break;
 
 	  }
 
 	}
+	printf("%s:%d: input block %d filled\n",__FILE__,__LINE__,index);
 
 	// write one vdif packet block from the buffer at this index
 	while (bytes_written < sizeof(vdif_out_packet_block_t)) {

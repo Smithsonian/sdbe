@@ -12,7 +12,7 @@ extern "C" {
 
 #include "vdif_in_databuf.h"
 #include "vdif_out_databuf.h"
-#include "vdif_upload_to_gpu_databuf.h"
+//~ #include "vdif_upload_to_gpu_databuf.h"
 #include "vdif_inout_gpu_thread.h"
 }
 
