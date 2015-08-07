@@ -1,9 +1,11 @@
+#include <stdlib.h>
 #include <string.h>
 
 #include "hashpipe.h"
 #include "hashpipe_databuf.h"
 
 #include "vdif_in_databuf.h"
+#include "vdif_in_databuf_cuda.h"
 
 static void print_beng_group_completion(beng_group_completion_t *bgc, const char *tag);
 static void print_beng_frame_completion(beng_frame_completion_t *bfc, const char *tag);
@@ -107,11 +109,26 @@ int check_beng_group_complete(vdif_in_databuf_t *bgc_buf,int index) {
 	return 0;
 }
 
+int get_bgv_cpu_memory(beng_group_vdif_buffer_t **bgv_buf_cpu, int index) {
+	return get_bgv_cpu_memory_cuda(bgv_buf_cpu, index);
+	//~ *bgv_buf_cpu = (beng_group_vdif_buffer_t *)malloc(sizeof(beng_group_vdif_buffer_t));
+	//~ return 1;
+}
+
+int get_bgv_gpu_memory(beng_group_vdif_buffer_t **bgv_buf_gpu, int index) {
+	return get_bgv_gpu_memory_cuda(bgv_buf_gpu, index);
+	//~ *bgv_buf_gpu = (beng_group_vdif_buffer_t *)malloc(sizeof(beng_group_vdif_buffer_t));
+	//~ return 1;
+}
+
 int transfer_beng_group_to_gpu(vdif_in_databuf_t *bgc_buf, int index) {
+	print_beng_group_completion(&bgc_buf->bgc[index], "");
+	return transfer_beng_group_to_gpu_cuda(bgc_buf, index);
 	return 1;
 }
 
-int check_transfer_complete(int index) {
+int check_transfer_complete(vdif_in_databuf_t *bgc_buf, int index) {
+	return check_transfer_complete_cuda(bgc_buf, index);
 	return 1;
 }
 

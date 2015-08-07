@@ -22,12 +22,7 @@
 // compilation options, for testing and debugging only
 #define PLATFORM_CPU 0
 #define PLATFORM_GPU 1
-#define PLATFORM PLATFORM_CPU
-#if PLATFORM == PLATFORM_GPU
-	#define NUM_GPU 4
-	#include <cuda_runtime.h>
-#endif
-
+#define PLATFORM PLATFORM_GPU
 
 #define STATE_ERROR       -1
 #define STATE_IDLE         0
@@ -36,6 +31,9 @@
 
 #define RX_HOST "localhost" //"192.168.10.10" // hamster IP on same 10GbE network as Mark6-4015
 #define RX_PORT ((uint16_t)12345) // port to use for incoming VDIF packets
+
+// local copy of data to pipe through
+vdif_in_databuf_t local_db_out;
 
 // VDIF packet stores associated with each group of B-engine frames
 beng_group_vdif_buffer_t *bgv_buf_cpu[BENG_GROUPS_IN_BUFFER];
@@ -50,28 +48,12 @@ hashpipe_thread_args_t *args
 	//////////////////////////////////////////// B-engine bookkeeping //
 	for (ii=0; ii<BENG_GROUPS_IN_BUFFER; ii++) {
 		// allocate memory on CPU
-		bgv_buf_cpu[ii] = (beng_group_vdif_buffer_t *)malloc(sizeof(beng_group_vdif_buffer_t));
+		//~ bgv_buf_cpu[ii] = (beng_group_vdif_buffer_t *)malloc(sizeof(beng_group_vdif_buffer_t));
+		get_bgv_cpu_memory(&bgv_buf_cpu[ii], ii); // check returned result
 	#if PLATFORM == PLATFORM_CPU
-		// allocate memory on GPU
-		bgv_buf_gpu[ii] = (beng_group_vdif_buffer_t *)malloc(sizeof(beng_group_vdif_buffer_t));
+		get_bgv_cpu_memory(&bgv_buf_gpu[ii], ii);
 	#elif PLATFORM == PLATFORM_GPU
-		// select GPU
-		device_id = ii % NUM_GPU;
-		err_gpu = cudaSetDevice(device_id);
-		if (err_gpu != cudaSuccess) {
-			hashpipe_error(__FUNCTION__, "error selecting GPU device");
-			printf("%s:%d: Error-state due to cudaSetDevice\n",__FILE__,__LINE__);
-			state = STATE_ERROR;
-			break; // for (ii=0; ...) ...
-		}
-		// allocate memory on GPU
-		err_gpu = cudaMalloc((void **)&bgv_buf_gpu[ii], sizeof(beng_group_vdif_buffer_t));
-		if (err_gpu != cudaSuccess) {
-			hashpipe_error(__FUNCTION__, "error allocating memory on GPU device");
-			printf("%s:%d: Error-state due to cudaMalloc\n",__FILE__,__LINE__);
-			state = STATE_ERROR;
-			break; // for (ii=0; ...) ...
-		}
+		get_bgv_gpu_memory(&bgv_buf_gpu[ii], ii); // check returned result
 	#endif // PLATFORM == PLATFORM_CPU
 	}
 	// B-engine bookkeeping ////////////////////////////////////////////
@@ -117,7 +99,6 @@ static void *run_method(
 	
 	// B-engine bookkeeping
 	int64_t b_first = -1;
-	vdif_in_databuf_t local_db_out;
 	#define MAX_INDEX_LOOK_AHEAD 1
 	int index_offset = 0;
 	int start_copy = 0;
@@ -354,7 +335,7 @@ static void *run_method(
 //   start copy of buffer ready
 //   set copy-in-progress flag (in vector)
 //   increment fill index
-				if (start_copy) {
+				if (start_copy && !copy_in_progress_flags[index_db_out]) {
 					//~ fprintf(stderr,"%s:%d: start copying\n",__FILE__,__LINE__);
 #ifndef STANDALONE_TEST
 					//~ printf("start_copy");
@@ -396,7 +377,7 @@ static void *run_method(
 					// check only those for which copy has started
 					if (copy_in_progress_flags[ii]) {
 						// if the copy is done
-						if (check_transfer_complete(ii)) {
+						if (check_transfer_complete(&local_db_out, ii)) {
 							//mark copy complete
 							copy_in_progress_flags[ii] = 0;
 							// copy metadata

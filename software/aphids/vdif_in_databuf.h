@@ -1,6 +1,8 @@
 #ifndef VDIF_IN_DATABUF_H
 #define VDIF_IN_DATABUF_H
 
+#include <stdint.h>
+
 #ifndef STANDALONE_TEST
 #include "hashpipe.h"
 #include "hashpipe_databuf.h"
@@ -122,12 +124,13 @@ typedef struct beng_group_completion {
 	int32_t beng_group_vdif_packet_count; // Number of VDIF packets found for this group of B-engine counters
 	beng_group_vdif_buffer_t *bgv_buf_cpu; // Pointer to CPU buffer filled with VDIF packets
 	beng_group_vdif_buffer_t *bgv_buf_gpu; // Pointer to GPU buffer filled with VDIF packets
+	void *memcpy_stream;
 	beng_frame_completion_t bfc[BENG_FRAMES_PER_GROUP];
 } beng_group_completion_t;
 
 // The buffer holding a given number of data units passed between 
 // hashpipe threads.
-#define BENG_GROUPS_IN_BUFFER 4
+#define BENG_GROUPS_IN_BUFFER 2
 typedef struct vdif_in_databuf {
 #ifndef STANDALONE_TEST
   hashpipe_databuf_t header;
@@ -187,7 +190,8 @@ void init_beng_group(beng_group_completion_t *bgc, beng_group_vdif_buffer_t *bgv
 // Return:
 // -------
 //   The offset relative to the reference index where the given VDIF 
-//   packet will be stored
+//   packet will be stored, or -1 if no valid offset found (as is the 
+//   case if the packet belongs to a past B-engine group)
 // Notes:
 // ------
 //   Reference index will point to the currently-being-filled hashpipe
@@ -207,10 +211,41 @@ int get_beng_group_index_offset(vdif_in_databuf_t *bgc_buf, int index_ref, vdif_
 //   vdif_pkt  -- The VDIF packet to be assigned to a group
 // Return:
 // -------
-//   
+//   Number of B-engine groups where the packet was inserted.
 int insert_vdif_in_beng_group_buffer(vdif_in_databuf_t *bgc_buf, int index_ref, int offset, vdif_in_packet_t *vdif_pkt);
+
+// Check if all frames that belong to B-engine group have been inserted
+// Arguments:
+// ----------
+//   bgc_buf -- Pointer to (hashpipe) buffer containing all data units
+//   index   -- Index of data unit to check for completion
+// Return:
+// -------
+//   1 if complete, 0 if incomplete, and -1 on error
 int check_beng_group_complete(vdif_in_databuf_t *bgc_buf, int index);
+
+int get_bgv_cpu_memory(beng_group_vdif_buffer_t **bgv_buf_cpu, int index);
+
+int get_bgv_gpu_memory(beng_group_vdif_buffer_t **bgv_buf_gpu, int index);
+
+// Start copy the VDIF data from local (CPU) buffer to GPU buffer
+// Arguments:
+// ----------
+//   bgc_buf -- Pointer to (hashpipe) buffer containing all data units
+//   index   -- Index of data unit for which data should be copied
+// Return:
+// -------
+//   1 if successful, -1 on error
 int transfer_beng_group_to_gpu(vdif_in_databuf_t *bgc_buf, int index);
-int check_transfer_complete(int index);
+
+// Check if VDIF data copy from CPU to GPU is complete
+// Arguments:
+// ----------
+//   bgc_buf -- Pointer to (hashpipe) buffer containing all data units
+//   index   -- Index of data unit to check for complete copy
+// Return:
+// -------
+//   1 if complete, 0 if still busy, -1 on error
+int check_transfer_complete(vdif_in_databuf_t *bgc_buf, int index);
 
 #endif // VDIF_IN_DATABUF_H
