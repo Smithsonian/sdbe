@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#include <cuda_runtime.h>
+
 #ifndef STANDALONE_TEST
 #include "hashpipe.h"
 #include "hashpipe_databuf.h"
@@ -124,13 +126,14 @@ typedef struct beng_group_completion {
 	int32_t beng_group_vdif_packet_count; // Number of VDIF packets found for this group of B-engine counters
 	beng_group_vdif_buffer_t *bgv_buf_cpu; // Pointer to CPU buffer filled with VDIF packets
 	beng_group_vdif_buffer_t *bgv_buf_gpu; // Pointer to GPU buffer filled with VDIF packets
+	cudaIpcMemHandle_t ipc_mem_handle; // used for address translation in separate process
 	void *memcpy_stream;
 	beng_frame_completion_t bfc[BENG_FRAMES_PER_GROUP];
 } beng_group_completion_t;
 
 // The buffer holding a given number of data units passed between 
 // hashpipe threads.
-#define BENG_GROUPS_IN_BUFFER 2
+#define BENG_GROUPS_IN_BUFFER 4
 typedef struct vdif_in_databuf {
 #ifndef STANDALONE_TEST
   hashpipe_databuf_t header;
@@ -224,6 +227,25 @@ int insert_vdif_in_beng_group_buffer(vdif_in_databuf_t *bgc_buf, int index_ref, 
 //   1 if complete, 0 if incomplete, and -1 on error
 int check_beng_group_complete(vdif_in_databuf_t *bgc_buf, int index);
 
+// Allocate host memory for storing VDIF packets belonging to a B-engine
+// group.
+// Arguments:
+// ----------
+//   bgv_buf_cpu -- Address of pointer which will be given the location
+//     of the allocated host memory.
+//   index       -- Index into hashpipe buffer associated with this
+//     B-engine group VDIF buffer.
+// Return:
+// -------
+//   1 on success, does not return on failure
+// Notes:
+// ------
+//   The index is used to determine the GPU device used for all CUDA
+//   calls, although it may not matter for allocating host memory.
+//   
+//   The host memory is allocated using cudaMallocHost so that data copy
+//   can be done in a separate stream (while possible processing further
+//   down the APHIDS #| can continue undisturbed).
 int get_bgv_cpu_memory(beng_group_vdif_buffer_t **bgv_buf_cpu, int index);
 
 int get_bgv_gpu_memory(beng_group_vdif_buffer_t **bgv_buf_gpu, int index);

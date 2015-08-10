@@ -31,8 +31,11 @@ int64_t get_packet_b_count(vdif_in_header_t *vdif_pkt_hdr) {
 
 void init_beng_group(beng_group_completion_t *bgc, beng_group_vdif_buffer_t *bgv_buf_cpu, beng_group_vdif_buffer_t *bgv_buf_gpu, int64_t b_start) {
 	int ii = 0;
-	bgc->bgv_buf_cpu = bgv_buf_cpu;
-	bgc->bgv_buf_gpu = bgv_buf_gpu;
+	if (bgc->bgv_buf_cpu != bgv_buf_cpu || bgc->bgv_buf_gpu != bgv_buf_gpu) {
+		bgc->bgv_buf_cpu = bgv_buf_cpu;
+		bgc->bgv_buf_gpu = bgv_buf_gpu;
+		set_ipc_mem_handle(&bgc->ipc_mem_handle,bgc->bgv_buf_gpu);
+	}
 	for (ii=0; ii<BENG_FRAMES_PER_GROUP; ii++) {
 		beng_frame_completion_t *bfc = &bgc->bfc[ii];
 		// set all zeros
@@ -124,12 +127,12 @@ int get_bgv_gpu_memory(beng_group_vdif_buffer_t **bgv_buf_gpu, int index) {
 int transfer_beng_group_to_gpu(vdif_in_databuf_t *bgc_buf, int index) {
 	print_beng_group_completion(&bgc_buf->bgc[index], "");
 	return transfer_beng_group_to_gpu_cuda(bgc_buf, index);
-	return 1;
+	//~ return 1;
 }
 
 int check_transfer_complete(vdif_in_databuf_t *bgc_buf, int index) {
 	return check_transfer_complete_cuda(bgc_buf, index);
-	return 1;
+	//~ return 1;
 }
 
 
