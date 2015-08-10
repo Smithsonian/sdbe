@@ -68,12 +68,14 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
 	  if (rv == HASHPIPE_TIMEOUT) { // index is not ready
 	    aphids_log(&aphids_ctx, APHIDS_LOG_ERROR, "hashpipe output databuf timeout");
+	    //~ fprintf(stderr,"%s:%d:timeout\n",__FILE__,__LINE__);
 	    continue;
 
 	  } else { // any other return value is an error
 
 	    // raise an error and exit thread
 	    hashpipe_error(__FUNCTION__, "error waiting for filled databuf");
+	    //~ fprintf(stderr,"%s:%d: Hashpipe error\n",__FILE__,__LINE__);
 	    state = STATE_ERROR;
 	    break;
 

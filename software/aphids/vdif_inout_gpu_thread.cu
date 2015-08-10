@@ -12,7 +12,7 @@ extern "C" {
 
 #include "vdif_in_databuf.h"
 #include "vdif_out_databuf.h"
-#include "vdif_upload_to_gpu_databuf.h"
+//~ #include "vdif_upload_to_gpu_databuf.h"
 #include "vdif_inout_gpu_thread.h"
 }
 
@@ -95,23 +95,23 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
 #endif // GPU_DEBUG
 
   // allocate device memory
-  cudaMalloc((void **)&(resampler->gpu_A_0), BENG_FRAMES_PER_BLOCK*BENG_SNAPSHOTS*BENG_CHANNELS_*sizeof(cufftComplex));	// 671088640B
-  cudaMalloc((void **)&(resampler->gpu_A_1), BENG_FRAMES_PER_BLOCK*BENG_SNAPSHOTS*BENG_CHANNELS_*sizeof(cufftComplex));	// 671088640B
-  cudaMalloc((void **)&(resampler->gpu_B_0), (BENG_FRAMES_PER_BLOCK-1)*BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS*sizeof(cufftComplex));	// 654950400B
-  cudaMalloc((void **)&(resampler->gpu_B_1), (BENG_FRAMES_PER_BLOCK-1)*BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS*sizeof(cufftComplex));	// 654950400B
+  cudaMalloc((void **)&(resampler->gpu_A_0), BENG_FRAMES_PER_GROUP*BENG_SNAPSHOTS*BENG_CHANNELS_*sizeof(cufftComplex));	// 671088640B
+  cudaMalloc((void **)&(resampler->gpu_A_1), BENG_FRAMES_PER_GROUP*BENG_SNAPSHOTS*BENG_CHANNELS_*sizeof(cufftComplex));	// 671088640B
+  cudaMalloc((void **)&(resampler->gpu_B_0), (BENG_FRAMES_PER_GROUP-1)*BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS*sizeof(cufftComplex));	// 654950400B
+  cudaMalloc((void **)&(resampler->gpu_B_1), (BENG_FRAMES_PER_GROUP-1)*BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS*sizeof(cufftComplex));	// 654950400B
 
  /*
  * http://docs.nvidia.com/cuda/cufft/index.html#cufft-setup
  * iFFT transforming complex SWARM spectra into real time series.
  * Input data is padded according to UNPACKED_BENG_CHANNELS >= BENG_CHANNELS.
  * Single batch size is BENG_SNAPHOTS and so to cover the entire databuf
- * this must repeated BENG_FRAMES_PER_BLOCK-1 times (saves 14.8% memory)
+ * this must repeated BENG_FRAMES_PER_GROUP-1 times (saves 14.8% memory)
  */
   resampler->fft_size[0] = 2*BENG_CHANNELS_;
   inembed[0]  = UNPACKED_BENG_CHANNELS; 
   onembed[0]  = 2*BENG_CHANNELS_;
   resampler->batch[0]    = BENG_SNAPSHOTS;
-  resampler->repeat[0]   = BENG_FRAMES_PER_BLOCK - 1;
+  resampler->repeat[0]   = BENG_FRAMES_PER_GROUP - 1;
   cufft_status = cufftPlanMany(&(resampler->cufft_plan[0]), 1, &(resampler->fft_size[0]),
 		inembed,1,inembed[0],
 		onembed,1,onembed[0],
@@ -132,14 +132,14 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
  * FFT transforming time series into complex spectrum.
  * Input data has dimension RESAMPLING_CHUNK_SIZE with
  * Set the batch size to be RESAMPLING_BATCH with
- * (BENG_FRAMES_PER_BLOCK-1)*2*BENG_CHANNELS_*BENG_SNAPSHOTS/RESAMPLING_CHUNK_SIZE / RESAMPLING_BATCH
+ * (BENG_FRAMES_PER_GROUP-1)*2*BENG_CHANNELS_*BENG_SNAPSHOTS/RESAMPLING_CHUNK_SIZE / RESAMPLING_BATCH
  *  required iterations.
  */
   resampler->fft_size[1] = RESAMPLING_CHUNK_SIZE;
   inembed[0]  = RESAMPLING_CHUNK_SIZE; 
   onembed[0]  = RESAMPLING_CHUNK_SIZE/2+1;
   resampler->batch[1]  = RESAMPLING_BATCH;
-  resampler->repeat[1] = (BENG_FRAMES_PER_BLOCK-1)*2*BENG_CHANNELS_*BENG_SNAPSHOTS/RESAMPLING_CHUNK_SIZE/RESAMPLING_BATCH;
+  resampler->repeat[1] = (BENG_FRAMES_PER_GROUP-1)*2*BENG_CHANNELS_*BENG_SNAPSHOTS/RESAMPLING_CHUNK_SIZE/RESAMPLING_BATCH;
   if( cufftPlanMany(&(resampler->cufft_plan[1]), 1, &(resampler->fft_size[1]),
 		inembed,1,inembed[0],
 		onembed,1,onembed[0],
@@ -439,7 +439,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
   int rv = 0;
   int index_in = 0;
   int index_out = 0;
-  vdif_in_packet_block_t this_vdif_packet_block;
+  beng_group_completion_t this_bgc;
   vdif_in_databuf_t *db_in = (vdif_in_databuf_t *)args->ibuf;
   vdif_out_databuf_t *db_out = (vdif_out_databuf_t *)args->obuf;
   aphids_context_t aphids_ctx;
@@ -456,8 +456,8 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
 
   /* Initialize GPU  */
-  fprintf(stdout, "sizeof(vdif_in_packet_block_t): %d\n", sizeof(vdif_in_packet_block_t));
-  fprintf(stdout, "sizeof(vdif_out_packet_block_t): %d\n", sizeof(vdif_out_packet_block_t));
+  //~ fprintf(stdout, "sizeof(vdif_in_packet_block_t): %d\n", sizeof(vdif_in_packet_block_t));
+  //~ fprintf(stdout, "sizeof(vdif_out_packet_block_t): %d\n", sizeof(vdif_out_packet_block_t));
 
   // initalize resampler
   resampler = (aphids_resampler_t *) malloc(NUM_GPU*sizeof(aphids_resampler_t));
@@ -499,7 +499,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
       {
 
-	// read from the input buffer first
+	// check if next block filled in input buffer
 	while ((rv = hashpipe_databuf_wait_filled((hashpipe_databuf_t *)db_in, index_in)) != HASHPIPE_OK) {
 
 	  if (rv == HASHPIPE_TIMEOUT) { // index_in is not ready
@@ -514,24 +514,20 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	  } else { // any other return value is an error
 
 	    // raise an error and exit thread
-	    hashpipe_error(__FUNCTION__, "error waiting for filled databuf");
+	    hashpipe_error(__FUNCTION__, "error waiting for filled databuf in %s:%s(%d)",__FILE__,__FUNCTION__,__LINE__);
 	    state = STATE_ERROR;
 	    break;
 
 	  }
 
 	}
+	
+	fprintf(stdout,"%s:%s(%d): input buffer filled\n",__FILE__,__FUNCTION__,__LINE__);
 
-	// grab the data at this index_in
-	this_vdif_packet_block = (vdif_in_packet_block_t)db_in->blocks[index_in];
-
-	// let hashpipe know we're done with the buffer (for now)
-	hashpipe_databuf_set_free((hashpipe_databuf_t *)db_in, index_in);
-
-	// update the index_in modulo the maximum buffer depth
-	index_in = (index_in + 1) % db_in->header.n_block;
-
-	// now, write to the output buffer
+	// check if next block free in output buffer; this could possibly
+	// be moved down to just before/after last link in GPU process chain,
+	// but for now since memory in GPU is being reused by multiple 
+	// links, wait for output to be free before doing anything
 	while ((rv = hashpipe_databuf_wait_free((hashpipe_databuf_t *)db_out, index_out)) != HASHPIPE_OK) {
 
 	  if (rv == HASHPIPE_TIMEOUT) { // index_out is not ready
@@ -548,54 +544,88 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	  }
 
 	}
+	
+	fprintf(stdout,"%s:%s(%d): output buffer free\n",__FILE__,__FUNCTION__,__LINE__);
+	
+	// grab the block at index_in from input buffer
+	this_bgc = (beng_group_completion_t)db_in->bgc[index_in];
+	
+	// Set GPU, ID is embedded in input buffer block. The vdif-in-thread
+	// will have copied the data to a particular GPU, so here need to 
+	// select the same one when processing the next dataset.
+	i = this_bgc.gpu_id;
+	cudaSetDevice(i);
+	
+	// Get pointer to shared memory on GPU where data was stored.
+	cudaIpcOpenMemHandle((void **)&this_bgc.bgv_buf_gpu, this_bgc.ipc_mem_handle, cudaIpcMemLazyEnablePeerAccess);
+	
+	// If any correction needed for missing data, probably need to do
+	// it here; e.g. the received data tells exactly which parts of the
+	// spectrum belonging to which B-engine counter values are missing,
+	// if any, so an easy remedy could be to have a set of random B-eng-
+	// over-VDIF data payloads ready, and then ship the required number
+	// packets with the correct header information inserted to GPU 
+	// memory to get a complete group of B-engine frames. The GPU memory
+	// buffer is exactly the required size for BENG_FRAMES_PER_GROUP 
+	// number of B-engine frames' worth of VDIF packets.
+	
+	// de-packetize vdif
+	// call to vdif_to_beng?
+	
+	// When first section of GPU chain done, close the shared memory ...
+	cudaIpcCloseMemHandle((void *)this_bgc.bgv_buf_gpu);
+	// ... set the input buffer block free ...
+	hashpipe_databuf_set_free((hashpipe_databuf_t *)db_in, index_in);
+	// ... and increment input buffer index.
+	index_in = (index_in + 1) % db_in->header.n_block;
 
-	/* GPU processing code ---> */
-	for (i=0; i<NUM_GPU; i++) {
+	fprintf(stdout,"%s:%s(%d): input buffer free\n",__FILE__,__FUNCTION__,__LINE__);
+	
+	// In principle we can start processing on next input block on a 
+	// separate GPU, for now serialize GPU work, but use different ones
+	// in turn. To work all GPUs in parallel, need the following?:
+	//   * keep set of processing state indicators, one for each GPU
+	//   * on each pass, depending on GPU, check if task n is complete, 
+	//     and if so, start task n+1 and update state indicator
+	//   * needs moving wait-filled/free around and dependent on the
+	//     processing state for each GPU
 
-	  // de-packetize vdif
+	// reorder BENG data
+	//~ already set device: cudaSetDevice(i);
+	dim3 threads(16,16,1);
+	dim3 blocks((BENG_CHANNELS_*BENG_SNAPSHOTS/(16*16)),1,1);
+	reorderTzp_smem<<<blocks,threads>>>(resampler[i].gpu_A_0, resampler[i].gpu_B_0, BENG_BUFFER_IN_COUNTS);
 
-	  // reorder BENG data
-	  cudaSetDevice(i);
-	  dim3 threads(16,16,1);
-	  dim3 blocks((BENG_CHANNELS_*BENG_SNAPSHOTS/(16*16)),1,1);
-	  reorderTzp_smem<<<blocks,threads>>>(resampler[i].gpu_A_0, resampler[i].gpu_B_0, BENG_BUFFER_IN_COUNTS);
+	// transform SWARM spectra to time series
+	state = SwarmC2R(&(resampler[i]), &aphids_ctx);
 
-	  // transform SWARM spectra to time series
-	  state = SwarmC2R(&(resampler[i]), &aphids_ctx);
+	// transform SWARM time series to R2DBE compatible spectra
+	state = SwarmR2C(&(resampler[i]), &aphids_ctx);
 
-	  // transform SWARM time series to R2DBE compatible spectra
-	  state = SwarmR2C(&(resampler[i]), &aphids_ctx);
+	// transform R2DBE spectra to trimmed and resampled time series
+	state = Hr2dbeC2R(&(resampler[i]), &aphids_ctx);
 
-	  // transform R2DBE spectra to trimmed and resampled time series
-	  state = Hr2dbeC2R(&(resampler[i]), &aphids_ctx);
+	// calculate threshold for quantization?
 
-	  // calculate threshold for quantization?
+	// quantize to 2-bits
+	//~ already set device: cudaSetDevice(i);
+	threads.x = 16; threads.y = 32; threads.z = 1;
+	blocks.x = 512; blocks.y = 1; blocks.z = 1;
+	quantize2bit<<<blocks,threads>>>((float *) resampler[i].gpu_A_0, (unsigned int*) resampler[i].gpu_B_0, 
+	(2*BENG_CHANNELS_*BENG_SNAPSHOTS*EXPANSION_FACTOR),
+	QUANTIZE_THRESHOLD);
 
-	  // quantize to 2-bits
-	  cudaSetDevice(i);
-	  threads.x = 16; threads.y = 32; threads.z = 1;
-	  blocks.x = 512; blocks.y = 1; blocks.z = 1;
-	  quantize2bit<<<blocks,threads>>>((float *) resampler[i].gpu_A_0, (unsigned int*) resampler[i].gpu_B_0, 
-		(2*BENG_CHANNELS_*BENG_SNAPSHOTS*EXPANSION_FACTOR),
-		QUANTIZE_THRESHOLD);
-
-	  // load data to host memory
-	  
-        }
-
-	// since the output buffer is a different size,
-	// we have to manually fill it with the input data
-	for (i = 0; i < VDIF_IN_PKTS_PER_BLOCK; i++) {
-	  memcpy(&db_out->blocks[index_out].packets[i], &this_vdif_packet_block.packets[i], sizeof(vdif_in_packet_t));
-	}
-
-	/* <--- GPU processing code */
-
-	// let hashpipe know we're done with the buffer (for now)
+	// Output to next thread to mirror the input?:
+	//   * create handle for shared memory on GPU
+	//~ cudaIpcGetMemHandle(&db_out->ipc_mem_handle, (void *)resampler[i].gpu_B_0);
+	//   * update metadata that describes the amount of data available
+	
+	// let hashpipe know we're done with the buffer (for now) ...
 	hashpipe_databuf_set_filled((hashpipe_databuf_t *)db_out, index_out);
-
-	// update the index_out modulo the maximum buffer depth
+	// .. and update the index modulo the maximum buffer depth
 	index_out = (index_out + 1) % db_out->header.n_block;
+	
+	fprintf(stdout,"%s:%s(%d): output buffer filled\n",__FILE__,__FUNCTION__,__LINE__);
 
 	// update aphids statistics
 	aphids_update(&aphids_ctx);
