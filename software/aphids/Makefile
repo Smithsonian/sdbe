@@ -9,7 +9,7 @@ NFLAGS = -ccbin gcc --compiler-options="$(CFLAGS)" --device-c
 
 LIBS = -lcufft -lhiredis -lcuda -lcudart
 
-DATABUFS = vdif_in_databuf.o vdif_in_databuf_cuda.o vdif_out_databuf.o
+DATABUFS = vdif_in_databuf.o vdif_in_databuf_cuda.o vdif_out_databuf.o vdif_out_databuf_cuda.o
 APHIDS = aphids_db.o aphids_loop.o aphids_log.o
 THREADS = vdif_in_null_thread.o vdif_inout_null_thread.o vdif_out_null_thread.o
 THREADS += vdif_in_file_thread.o vdif_out_file_thread.o
@@ -46,6 +46,10 @@ vdif_out_net_thread.o: vdif_out_net_thread.c
 
 # need CUDA compilation for vdif_in_databuf_cuda
 vdif_in_databuf_cuda.o: vdif_in_databuf_cuda.cu
+	$(NVCC) -c -o $@ $< $(NFLAGS) --x c $(DBG_ARGS)
+
+# need CUDA compilation for vdif_out_databuf_cuda
+vdif_out_databuf_cuda.o: vdif_out_databuf_cuda.cu
 	$(NVCC) -c -o $@ $< $(NFLAGS) --x c $(DBG_ARGS)
 
 # gpu thread

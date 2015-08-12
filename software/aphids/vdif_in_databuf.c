@@ -7,7 +7,7 @@
 #include "vdif_in_databuf.h"
 #include "vdif_in_databuf_cuda.h"
 
-static void print_beng_group_completion(beng_group_completion_t *bgc, const char *tag);
+
 static void print_beng_frame_completion(beng_frame_completion_t *bfc, const char *tag);
 static void print_channel_completion(channel_completion_t *cc, const char *tag);
 
@@ -36,6 +36,7 @@ void init_beng_group(beng_group_completion_t *bgc, beng_group_vdif_buffer_t *bgv
 		bgc->bgv_buf_gpu = bgv_buf_gpu;
 		set_ipc_mem_handle(&bgc->ipc_mem_handle,bgc->bgv_buf_gpu);
 	}
+	bgc->beng_group_vdif_packet_count = 0;
 	for (ii=0; ii<BENG_FRAMES_PER_GROUP; ii++) {
 		beng_frame_completion_t *bfc = &bgc->bfc[ii];
 		// set all zeros
@@ -125,31 +126,32 @@ int get_bgv_gpu_memory(beng_group_vdif_buffer_t **bgv_buf_gpu, int index) {
 }
 
 int transfer_beng_group_to_gpu(vdif_in_databuf_t *bgc_buf, int index) {
+	int rv;
 	print_beng_group_completion(&bgc_buf->bgc[index], "");
 	return transfer_beng_group_to_gpu_cuda(bgc_buf, index);
 	//~ return 1;
 }
 
-int check_transfer_complete(vdif_in_databuf_t *bgc_buf, int index) {
-	return check_transfer_complete_cuda(bgc_buf, index);
+int check_transfer_beng_group_to_gpu_complete(vdif_in_databuf_t *bgc_buf, int index) {
+	return check_transfer_beng_group_to_gpu_complete_cuda(bgc_buf, index);
 	//~ return 1;
 }
 
 
 // Print human-readable representation of B-engine group completion
-static void print_beng_group_completion(beng_group_completion_t *bgc, const char *tag) {
+void print_beng_group_completion(beng_group_completion_t *bgc, const char *tag) {
 	printf("%s{B-engine group: beng_group_vdif_packet_count=%d, bgv_buf_cpu=%p, bgv_buf_gpu=%p\n",
 			tag,bgc->beng_group_vdif_packet_count,bgc->bgv_buf_cpu,
 			bgc->bgv_buf_gpu);
-	if (bgc->beng_group_vdif_packet_count < VDIF_PER_BENG_FRAME*BENG_FRAMES_PER_GROUP) {
-		int new_tag_len = strlen(tag) + 2;
-		char new_tag[new_tag_len];
-		snprintf(new_tag,new_tag_len,"%s  ",tag);
-		int ii = 0;
-		for (ii=0; ii<BENG_FRAMES_PER_GROUP; ii++) {
-			print_beng_frame_completion(bgc->bfc + ii, new_tag);
-		}
-	}
+	//~ if (bgc->beng_group_vdif_packet_count < VDIF_PER_BENG_FRAME*BENG_FRAMES_PER_GROUP) {
+		//~ int new_tag_len = strlen(tag) + 2;
+		//~ char new_tag[new_tag_len];
+		//~ snprintf(new_tag,new_tag_len,"%s  ",tag);
+		//~ int ii = 0;
+		//~ for (ii=0; ii<BENG_FRAMES_PER_GROUP; ii++) {
+			//~ print_beng_frame_completion(bgc->bfc + ii, new_tag);
+		//~ }
+	//~ }
 	printf("%s}\n",tag);
 }
 

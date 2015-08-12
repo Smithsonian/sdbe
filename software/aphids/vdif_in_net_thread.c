@@ -96,11 +96,14 @@ static void *run_method(
 	void *received_vdif_packets = NULL;
 	ssize_t n_received_vdif_packets = 0;
 	ssize_t index_received_vdif_packets = 0;
+	ssize_t N_ALL_VDIF_PACKETS = 0, N_SKIPPED_VDIF_PACKETS = 0, N_USED_VDIF_PACKETS = 0;
 	
 	// B-engine bookkeeping
 	int64_t b_first = -1;
-	#define MAX_INDEX_LOOK_AHEAD 1
+	#define MAX_INDEX_LOOK_AHEAD 2
 	int index_offset = 0;
+	
+	// data transfer bookkeeping
 	int start_copy = 0;
 	char copy_in_progress_flags[BENG_GROUPS_IN_BUFFER] = { 0 };
 	
@@ -227,7 +230,7 @@ static void *run_method(
 					//   n_received_vdif_packets is the actual number of frames received
 					//   size is the size of frames received
 					rv = rx_frames(sockfd_data, &received_vdif_packets, &n_received_vdif_packets, &size);
-					//~ fprintf(stderr,"%s:%d: received %d packets\n",__FILE__,__LINE__,n_received_vdif_packets);
+					fprintf(stdout,"%s:%s(%d): received %d packets\n",__FILE__,__FUNCTION__,__LINE__,(int)n_received_vdif_packets);
 					if (rv < 0) {
 						if (rv == ERR_NET_TIMEOUT) {
 #ifndef STANDALONE_TEST
@@ -244,6 +247,7 @@ static void *run_method(
 						state = STATE_ERROR;
 						break; // switch(state)
 					} else if (rv == 0) {
+						fprintf(stdout,"%s:%s(%d): VDIF done, received %ld packets in total (%ld skipped, %ld used)\n",__FILE__,__FUNCTION__,__LINE__,(long int)N_ALL_VDIF_PACKETS,(long int)N_SKIPPED_VDIF_PACKETS,(long int)N_USED_VDIF_PACKETS);
 						// this means end-of-transmission, reset state 
 						b_first = -1;
 						// should probably go to STATE_IDLE, but for now
@@ -274,6 +278,7 @@ static void *run_method(
 					// reset index into received packets
 					index_received_vdif_packets = 0;
 					//~ fprintf(stderr,"%s:%d: done receiving\n",__FILE__,__LINE__);
+					N_ALL_VDIF_PACKETS += n_received_vdif_packets;
 				}
 				
 // TODO: Fill VDIF buffers:
@@ -292,17 +297,21 @@ static void *run_method(
 				/* index_received_vdif_packets < n_received_vdif_packets means there is data in received_vdif_packets, so
 				 * we can continue locally to transfer data to shared 
 				 * buffer */
+				fprintf(stdout,"%s:%s(%d): index=%d <?< n_received=%d\n",__FILE__,__FUNCTION__,__LINE__,(int)index_received_vdif_packets,(int)n_received_vdif_packets);
 				while (index_received_vdif_packets < n_received_vdif_packets) {
 					// get index offset
 					index_offset = get_beng_group_index_offset(&local_db_out, index_db_out, (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets);
 					if (index_offset < 0) {
+						N_SKIPPED_VDIF_PACKETS++;
 						// throw away these frames, they are from before
 						// the range we're interested in
 						index_received_vdif_packets++;
 						continue;
 					}
+					N_USED_VDIF_PACKETS++;
 					if (index_offset > MAX_INDEX_LOOK_AHEAD) {
 						// set transfer on non-filled unit
+						fprintf(stdout,"%s:%s(%d): about to copy non-filled unit (offset is %d)\n",__FILE__,__FUNCTION__,__LINE__,index_offset);
 						start_copy = 1;
 					} else {
 						// insert VDIF packet: this copies VDIF to the 
@@ -335,8 +344,8 @@ static void *run_method(
 //   start copy of buffer ready
 //   set copy-in-progress flag (in vector)
 //   increment fill index
-				if (start_copy && !copy_in_progress_flags[index_db_out]) {
-					//~ fprintf(stderr,"%s:%d: start copying\n",__FILE__,__LINE__);
+				if (start_copy) {// && !copy_in_progress_flags[index_db_out]) {
+					fprintf(stdout,"%s:%s(%d): start copying\n",__FILE__,__FUNCTION__,__LINE__);
 #ifndef STANDALONE_TEST
 					//~ printf("start_copy");
 					// wait for buffer index to be ready, there may be
@@ -354,16 +363,45 @@ static void *run_method(
 							break; // while (hashpipe_databuf_wait_free(...) ... )
 						}
 					}
+					
+					fprintf(stdout,"%s:%s(%d): output buffer %d free\n",__FILE__,__FUNCTION__,__LINE__,index_db_out);
+					
 					//~ printf("%s:%d: output block %d free\n",__FILE__,__LINE__,index_db_out);
 #endif // STANDALONE_TEST
 					// now we know we're free to copy data; this starts
 					// the transfer but returns asynchronously
 					transfer_beng_group_to_gpu(&local_db_out, index_db_out);
 					copy_in_progress_flags[index_db_out] = 1;
+					ii=index_db_out; {
+						// check only those for which copy has started
+						if (copy_in_progress_flags[ii]) {
+							// if the copy is done
+							while (check_transfer_beng_group_to_gpu_complete(&local_db_out, ii) == 0) {
+								usleep(100);
+							}
+							//mark copy complete
+							copy_in_progress_flags[ii] = 0;
+							// copy metadata
+							memcpy(&(db_out->bgc[ii]), &(local_db_out.bgc[ii]), sizeof(beng_group_completion_t));
+							// let hashpipe know we're done with the buffer (for now)
+#ifndef STANDALONE_TEST
+							hashpipe_databuf_set_filled((hashpipe_databuf_t *)db_out, ii);
+							
+							fprintf(stdout,"%s:%s(%d): output buffer %d filled\n",__FILE__,__FUNCTION__,__LINE__,ii);
+							
+							// update aphids statistics
+							aphids_update(&aphids_ctx);
+#endif // STANDALONE_TEST
+							init_beng_group(local_db_out.bgc+ii, bgv_buf_cpu[ii], bgv_buf_gpu[ii], local_db_out.bgc[(ii + BENG_GROUPS_IN_BUFFER - 1) % BENG_GROUPS_IN_BUFFER].bfc[BENG_FRAMES_PER_GROUP-1].b);
+							//~ print_beng_group_completion(local_db_out.bgc+ii, "");
+						}
+					} // for
 					// update the index modulo the maximum buffer depth
 					index_db_out = (index_db_out + 1) % BENG_GROUPS_IN_BUFFER;
 					// reset the start_copy flag
 					start_copy = 0;
+					
+					
 				}
 				
 // TODO: Check when copy is done
@@ -373,25 +411,29 @@ static void *run_method(
 //       mark output buffer filled (hashpipe at index)
 //       clean-up and init local data / completion buffers
 //       reset copy-in-progress flag (in vector)
-				for (ii=0; ii<BENG_GROUPS_IN_BUFFER; ii++) {
-					// check only those for which copy has started
-					if (copy_in_progress_flags[ii]) {
-						// if the copy is done
-						if (check_transfer_complete(&local_db_out, ii)) {
-							//mark copy complete
-							copy_in_progress_flags[ii] = 0;
-							// copy metadata
-							memcpy(&(db_out->bgc[ii]), &(local_db_out.bgc[ii]), sizeof(beng_group_completion_t));
-							// let hashpipe know we're done with the buffer (for now)
-#ifndef STANDALONE_TEST
-							hashpipe_databuf_set_filled((hashpipe_databuf_t *)db_out, ii);
-							// update aphids statistics
-							aphids_update(&aphids_ctx);
-#endif // STANDALONE_TEST
-							init_beng_group(local_db_out.bgc+ii, bgv_buf_cpu[ii], bgv_buf_gpu[ii], local_db_out.bgc[(ii + BENG_GROUPS_IN_BUFFER - 1) % BENG_GROUPS_IN_BUFFER].bfc[BENG_FRAMES_PER_GROUP-1].b);
-						}
-					}
-				} // for
+				//~ for (ii=0; ii<BENG_GROUPS_IN_BUFFER; ii++) {
+					//~ // check only those for which copy has started
+					//~ if (copy_in_progress_flags[ii]) {
+						//~ // if the copy is done
+						//~ if (check_transfer_beng_group_to_gpu_complete(&local_db_out, ii)) {
+							//~ //mark copy complete
+							//~ copy_in_progress_flags[ii] = 0;
+							//~ // copy metadata
+							//~ memcpy(&(db_out->bgc[ii]), &(local_db_out.bgc[ii]), sizeof(beng_group_completion_t));
+							//~ // let hashpipe know we're done with the buffer (for now)
+//~ #ifndef STANDALONE_TEST
+							//~ hashpipe_databuf_set_filled((hashpipe_databuf_t *)db_out, ii);
+							//~ 
+							//~ fprintf(stdout,"%s:%s(%d): output buffer %d filled\n",__FILE__,__FUNCTION__,__LINE__,ii);
+							//~ 
+							//~ // update aphids statistics
+							//~ aphids_update(&aphids_ctx);
+//~ #endif // STANDALONE_TEST
+							//~ init_beng_group(local_db_out.bgc+ii, bgv_buf_cpu[ii], bgv_buf_gpu[ii], local_db_out.bgc[(ii + BENG_GROUPS_IN_BUFFER - 1) % BENG_GROUPS_IN_BUFFER].bfc[BENG_FRAMES_PER_GROUP-1].b);
+						//~ }
+					//~ }
+				//~ } // for
+				
 				break; // switch(state)
 			} // case STATE_PROCESS:
 

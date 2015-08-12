@@ -22,7 +22,7 @@ if __name__ == "__main__":
                         help="set the type of input thread (default='null')")
     parser.add_argument("--inout-type", metavar="INOUT_TYPE", type=str, default="null", choices=["null", "gpu"],
                         help="set the type of input/output thread (default='null')")
-    parser.add_argument("--out-type", metavar="OUT_TYPE", type=str, default="null", choices=["null", "file"],
+    parser.add_argument("--out-type", metavar="OUT_TYPE", type=str, default="null", choices=["null", "file", "net"],
                         help="set the type of output thread (default='null')")
     args = parser.parse_args()
 

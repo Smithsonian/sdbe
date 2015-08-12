@@ -19,22 +19,22 @@
 // Definition of VDIF header from m6support-0.14i (Mark6 software)
 #define VDIF_IN_PKT_HEADER_SIZE 32 // size in bytes
 typedef struct vdif_in_header {
-	struct word0 {
+	struct word0_in {
 		uint32_t secs_inre:30;
 		uint32_t legacy:1;
 		uint32_t invalid:1;
 	} w0;
-	struct word1 {
+	struct word1_in {
 		uint32_t df_num_insec:24;
 		uint32_t ref_epoch:6;
 		uint32_t UA:2;
 	} w1;
-	struct word2 {
+	struct word2_in {
 		uint32_t df_len:24;
 		uint32_t num_channels:5;
 		uint32_t ver:3;
 	} w2;
-	struct word3 {
+	struct word3_in {
 		uint32_t stationID:16;
 		uint32_t threadID:10;
 		uint32_t bps:5;
@@ -269,6 +269,8 @@ int transfer_beng_group_to_gpu(vdif_in_databuf_t *bgc_buf, int index);
 // Return:
 // -------
 //   1 if complete, 0 if still busy, -1 on error
-int check_transfer_complete(vdif_in_databuf_t *bgc_buf, int index);
+int check_transfer_beng_group_to_gpu_complete(vdif_in_databuf_t *bgc_buf, int index);
+
+void print_beng_group_completion(beng_group_completion_t *bgc, const char *tag);
 
 #endif // VDIF_IN_DATABUF_H
