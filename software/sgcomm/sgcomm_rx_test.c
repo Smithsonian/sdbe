@@ -20,7 +20,7 @@
 
 #define MAIN_WAIT_PERIOD_US 500000
 #define SHARED_BUFFER_SIZE_TX (264*9468*32)
-#define SHARED_BUFFER_SIZE_RX (264*9468*32)
+#define SHARED_BUFFER_SIZE_RX (1032*2422*32)
 
 /* Master thread */
 sgcomm_thread st_main = {

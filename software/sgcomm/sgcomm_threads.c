@@ -656,12 +656,19 @@ static void * _threaded_receiver(void *arg) {
 	/* Set this thread entering infinite loop section */
 	if (get_thread_state(st, &ctrl) == 0 && !(ctrl >= CS_STOP)) {
 		/* Block until connection */
-		sockfd_receive = accept_connection(sockfd_listen);
+		do {
+			sockfd_receive = accept_connection(sockfd_listen);
+			sleep(1);
+			if (get_thread_state(st, &ctrl) == 0 && (ctrl >= CS_STOP))
+				break;
+		} while (sockfd_receive == ERR_NET_TIMEOUT);
 		if (sockfd_receive < 0)
-			set_thread_state(st, CS_ERROR,"%s:%s(%d):Cannot accept connection",__FILE__,__FUNCTION__,__LINE__);
-		/* And now ready to run */
-		set_thread_state(st, CS_RUN,"%s:%s(%d):Ready to receive data",__FILE__,__FUNCTION__,__LINE__);
-		log_message(RL_DEBUG,"%s:%s(%d):Thread set to enter loop",__FILE__,__FUNCTION__,__LINE__);
+			set_thread_state(st, CS_ERROR,"%s:%s(%d):Cannot accept connection (%d error)",__FILE__,__FUNCTION__,__LINE__,sockfd_receive);
+		else {
+			/* And now ready to run */
+			set_thread_state(st, CS_RUN,"%s:%s(%d):Ready to receive data",__FILE__,__FUNCTION__,__LINE__);
+			log_message(RL_DEBUG,"%s:%s(%d):Thread set to enter loop",__FILE__,__FUNCTION__,__LINE__);
+		}
 	}
 	
 	while (get_thread_state(st, &ctrl) == 0 && !(ctrl >= CS_STOP)) {
@@ -700,8 +707,12 @@ static void * _threaded_receiver(void *arg) {
 				if (tmp_buf == NULL) {
 					// TODO: rx_frames returns the number of expected
 					// frames, an could possibly be used for something?
-					if (rx_frames(sockfd_receive,&tmp_buf,&nmem,&frame_size) < 0)
-						set_thread_state(st, CS_RUN,"%s:%s(%d):Error on receiving data",__FILE__,__FUNCTION__,__LINE__);
+					int rv;
+					do {
+						rv = rx_frames(sockfd_receive,&tmp_buf,&nmem,&frame_size);
+					} while(rv == ERR_NET_TIMEOUT);
+					if (rv < 0)
+						set_thread_state(st, CS_RUN,"%s:%s(%d):Error on receiving data (%x error)",__FILE__,__FUNCTION__,__LINE__,rv);
 				}
 				
 				/* Allocate local buffer and set frame size for shared

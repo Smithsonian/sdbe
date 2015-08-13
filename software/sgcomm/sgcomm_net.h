@@ -3,7 +3,7 @@
 
 #include <netinet/in.h>
 
-#define TIMEOUT_SEC 1
+#define TIMEOUT_SEC 5
 #define TIMEOUT_USEC 0
 #define TIMEOUT_COUNT 3
 

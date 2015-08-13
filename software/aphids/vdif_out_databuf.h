@@ -134,6 +134,8 @@ int transfer_vdif_group_to_cpu(vdif_out_databuf_t *qs_buf, int index);
 
 int check_transfer_vdif_group_to_cpu_complete(vdif_out_databuf_t *qs_buf, int index);
 
+void init_vdif_out(vdif_out_packet_group_t **vpg_buf_cpu, int index);
+
 void print_quantized_storage(quantized_storage_t *qs, const char *tag);
 
 #endif // VDIF_OUT_DATABUF_H
