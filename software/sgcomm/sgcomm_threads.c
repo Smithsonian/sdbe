@@ -714,7 +714,7 @@ static void * _threaded_receiver(void *arg) {
 						rv = rx_frames(sockfd_receive,&tmp_buf,&nmem,&frame_size);
 					} while(rv == ERR_NET_TIMEOUT);
 					if (rv < 0)
-						set_thread_state(st, CS_RUN,"%s:%s(%d):Error on receiving data (%x error)",__FILE__,__FUNCTION__,__LINE__,rv);
+						set_thread_state(st, CS_RUN,"%s:%s(%d):Error on receiving data (%d error)",__FILE__,__FUNCTION__,__LINE__,rv);
 				}
 				
 				/* Allocate local buffer and set frame size for shared
@@ -783,6 +783,7 @@ static void * _threaded_receiver(void *arg) {
 		//~ log_message(RL_DEBUGVVV,"%s:%s(%d):                                             Try to get data lock...",__FILE__,__FUNCTION__,__LINE__);
 		if (get_thread_state(st, &ctrl) == 0 && !(ctrl >= CS_ERROR) && obtain_data_lock(dest) == 0) {
 			if (frames_received > 0 && dest->n_frames == 0) {
+				log_message(RL_DEBUGVVV,"%s:%s(%d):About to copy %u frames",__FILE__,__FUNCTION__,__LINE__,frames_received);
 				memcpy(dest->buf, local_buf, frames_received*frame_size);
 				dest->n_frames = frames_received;
 				

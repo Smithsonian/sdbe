@@ -66,13 +66,13 @@ int make_socket_connect(const char *host, uint16_t port) {
 		//~**~log_message(RL_ERROR,"%s:%s(%d):Unable to open socket",__FILE__,__FUNCTION__,__LINE__);
 		return ERR_NET_CANNOT_OPEN_SOCKET;
 	}
-	/* Set a timeout on the data socket */
-	struct timeval timeout;
-	timeout.tv_sec = TIMEOUT_SEC;
-	timeout.tv_usec = TIMEOUT_USEC;
-	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,(void *)&timeout,sizeof(timeout)) < 0) {
-		//~**~log_message(RL_WARNING,"%s:%s(%d):Unable to set timeout on receiving socket",__FILE__,__FUNCTION__,__LINE__);
-	}
+//~NOTIMEOUT~	/* Set a timeout on the data socket */
+//~NOTIMEOUT~	struct timeval timeout;
+//~NOTIMEOUT~	timeout.tv_sec = TIMEOUT_SEC;
+//~NOTIMEOUT~	timeout.tv_usec = TIMEOUT_USEC;
+//~NOTIMEOUT~	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,(void *)&timeout,sizeof(timeout)) < 0) {
+//~NOTIMEOUT~		//~**~log_message(RL_WARNING,"%s:%s(%d):Unable to set timeout on receiving socket",__FILE__,__FUNCTION__,__LINE__);
+//~NOTIMEOUT~	}
 	if (init_sockaddr(&serv_addr, host, port) != 0) {
 		//~**~log_message(RL_ERROR,"%s:%s(%d):Unable to resolve hostname",__FILE__,__FUNCTION__,__LINE__);
 		close(sockfd);
@@ -96,13 +96,13 @@ int make_socket_bind_listen(const char *host, uint16_t port) {
 		//~**~log_message(RL_ERROR,"%s:%s(%d):Unable to open socket",__FILE__,__FUNCTION__,__LINE__);
 		return ERR_NET_CANNOT_OPEN_SOCKET;
 	}
-	/* Set a timeout on the listen socket */
-	struct timeval timeout;
-	timeout.tv_sec = TIMEOUT_SEC;
-	timeout.tv_usec = TIMEOUT_USEC;
-	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,(void *)&timeout,sizeof(timeout)) < 0) {
-		//~**~log_message(RL_WARNING,"%s:%s(%d):Unable to set timeout on receiving socket",__FILE__,__FUNCTION__,__LINE__);
-	}
+//~NOTIMEOUT~	/* Set a timeout on the listen socket */
+//~NOTIMEOUT~	struct timeval timeout;
+//~NOTIMEOUT~	timeout.tv_sec = TIMEOUT_SEC;
+//~NOTIMEOUT~	timeout.tv_usec = TIMEOUT_USEC;
+//~NOTIMEOUT~	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,(void *)&timeout,sizeof(timeout)) < 0) {
+//~NOTIMEOUT~		//~**~log_message(RL_WARNING,"%s:%s(%d):Unable to set timeout on receiving socket",__FILE__,__FUNCTION__,__LINE__);
+//~NOTIMEOUT~	}
 	init_sockaddr(&serv_addr, host, port);
 	if (bind(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
 		//~**~log_message(RL_ERROR,"%s:%s(%d):Unable to bind socket",__FILE__,__FUNCTION__,__LINE__);
@@ -142,13 +142,13 @@ int accept_connection(int sockfd) {
 		}
 	} while (1);
 	
-	/* Set a timeout on the data socket */
-	struct timeval timeout;
-	timeout.tv_sec = TIMEOUT_SEC;
-	timeout.tv_usec = TIMEOUT_USEC;
-	if (setsockopt(newsockfd, SOL_SOCKET, SO_RCVTIMEO,(void *)&timeout,sizeof(timeout)) < 0) {
-		//~**~log_message(RL_WARNING,"%s:%s(%d):Unable to set timeout on receiving socket",__FILE__,__FUNCTION__,__LINE__);
-	}
+//~NOTIMEOUT~	/* Set a timeout on the data socket */
+//~NOTIMEOUT~	struct timeval timeout;
+//~NOTIMEOUT~	timeout.tv_sec = TIMEOUT_SEC;
+//~NOTIMEOUT~	timeout.tv_usec = TIMEOUT_USEC;
+//~NOTIMEOUT~	if (setsockopt(newsockfd, SOL_SOCKET, SO_RCVTIMEO,(void *)&timeout,sizeof(timeout)) < 0) {
+//~NOTIMEOUT~		//~**~log_message(RL_WARNING,"%s:%s(%d):Unable to set timeout on receiving socket",__FILE__,__FUNCTION__,__LINE__);
+//~NOTIMEOUT~	}
 	return newsockfd;
 }
 
@@ -164,13 +164,15 @@ int rx_frame(int sockfd, void *buf, ssize_t buflen) {
 		if (n < 0) {
 			if (errno == EAGAIN) {
 				if (timeouts-- <= 0) {
-					//~**~log_message(RL_WARNING,"%s:%s(%d):Receiving frame timed out, quiting with code %d (%lu bytes received and discarded).",__FILE__,__FUNCTION__,__LINE__,ERR_NET_TIMEOUT,bytes_received);
+					fprintf(stdout,"%s:%s(%d):WARNING Receiving frame timed out, quiting with code %d (%lu bytes received and discarded)\n",__FILE__,__FUNCTION__,__LINE__,ERR_NET_TIMEOUT,bytes_received);
 					return ERR_NET_TIMEOUT;
 				} else {
-					//~**~log_message(RL_WARNING,"%s:%s(%d):Timeout on receiving frame, %d retries left.",__FILE__,__FUNCTION__,__LINE__,timeouts);
+					fprintf(stdout,"%s:%s(%d):WARNING Timeout on receiving frame, %d retries left\n",__FILE__,__FUNCTION__,__LINE__,timeouts);
 				}
 			} else {
 				//~**~log_message(RL_ERROR,"%s:%s(%d):Unable to read from socket, return code %d",__FILE__,__FUNCTION__,__LINE__,ERR_NET_CANNOT_READ_SOCKET);
+				fprintf(stderr,"%s:%s(%d):Unexpected error on receiving frame (%d error)\n",__FILE__,__FUNCTION__,__LINE__,errno);
+				perror("rx_frame");
 				return ERR_NET_CANNOT_READ_SOCKET;
 			}
 		} else if (n == 0) {
@@ -199,10 +201,12 @@ int tx_frame(int sockfd, void *buf, ssize_t buflen) {
 					//~**~log_message(RL_WARNING,"%s:%s(%d):Sending frame timed out, quiting with code %d (%lu bytes sent).",__FILE__,__FUNCTION__,__LINE__,ERR_NET_TIMEOUT,bytes_transmitted);
 					return ERR_NET_TIMEOUT;
 				} else {
-					//~**~log_message(RL_WARNING,"%s:%s(%d):Timeout on sending frame, %d retries left.",__FILE__,__FUNCTION__,__LINE__,timeouts);
+					fprintf(stdout,"%s:%s(%d):WARNING Timeout on sending frame, %d retries left.",__FILE__,__FUNCTION__,__LINE__,timeouts);
 				}
 			} else {
 				//~**~log_message(RL_ERROR,"%s:%s(%d):Unable to write to socket, return code %d",__FILE__,__FUNCTION__,__LINE__,ERR_NET_CANNOT_WRITE_SOCKET);
+				fprintf(stderr,"%s:%s(%d):Unexpected error on sending frame (%d error)\n",__FILE__,__FUNCTION__,__LINE__,errno);
+				perror("tx_frame");
 				return ERR_NET_CANNOT_WRITE_SOCKET;
 			}
 		} else if (n == 0) {
@@ -228,7 +232,7 @@ int rx_frames(int sockfd, void **buf, ssize_t *nmem, ssize_t *size) {
 	//~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Waiting for handshake",__FILE__,__FUNCTION__,__LINE__);
 	err_code = rx_frame(sockfd, (void *)&rx, sizeof(handshake));
 	if (err_code < 0) {
-		//~**~log_message(RL_ERROR,"%s:%s(%d):Communication failure on receiving handshake",__FILE__,__FUNCTION__,__LINE__);
+		//~**~fprintf(stderr,"%s:%s(%d):Communication failure on receiving handshake",__FILE__,__FUNCTION__,__LINE__);
 		return err_code;
 	}
 	/* Complete handshake */
@@ -238,8 +242,8 @@ int rx_frames(int sockfd, void **buf, ssize_t *nmem, ssize_t *size) {
 	tx.n_frames = 0; // ... but set number of frames to zero
 	err_code = tx_frame(sockfd, (void *)&tx, sizeof(handshake));
 	if (err_code < 0) {
-		//~**~log_message(RL_ERROR,"%s:%s(%d):Communication failure on completing handshake",__FILE__,__FUNCTION__,__LINE__);
-		return err_code;
+		fprintf(stderr,"%s:%s(%d):Communication failure on completing handshake\n",__FILE__,__FUNCTION__,__LINE__);
+		return ERR_NET_COMMS_PROTOCOL_FAILURE;
 	}
 	/* Receive data */
 	if (rx.n_frames > 0) {
@@ -249,8 +253,9 @@ int rx_frames(int sockfd, void **buf, ssize_t *nmem, ssize_t *size) {
 		for (frames_received=0; frames_received<rx.n_frames; frames_received++) {
 			err_code = rx_frame(sockfd, *buf+frames_received*rx.frame_size, rx.frame_size);
 			if (err_code < 0) {
-				//~**~log_message(RL_ERROR,"%s:%s(%d):Communication failure during data receiving",__FILE__,__FUNCTION__,__LINE__);
-				break;
+				fprintf(stderr,"%s:%s(%d):Communication failure during data receiving\n",__FILE__,__FUNCTION__,__LINE__);
+				return ERR_NET_COMMS_PROTOCOL_FAILURE;
+				//~ break;
 			}
 		}
 	}
@@ -263,7 +268,7 @@ int rx_frames(int sockfd, void **buf, ssize_t *nmem, ssize_t *size) {
 	tx.n_frames = frames_received; // ... but set number of frames equal to total received
 	err_code = tx_frame(sockfd, (void *)&tx, sizeof(handshake));
 	if (err_code < 0) {
-		//~**~log_message(RL_ERROR,"%s:%s(%d):Communication failure on sending last response",__FILE__,__FUNCTION__,__LINE__);
+		fprintf(stderr,"%s:%s(%d):Communication failure on sending last response\n",__FILE__,__FUNCTION__,__LINE__);
 		return err_code;
 	}
 	//~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Successful communication, received %lu frames",__FILE__,__FUNCTION__,__LINE__,*nmem);
@@ -292,8 +297,8 @@ int tx_frames(int sockfd, void *buf, ssize_t nmem, ssize_t size) {
 	//~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Waiting on first response",__FILE__,__FUNCTION__,__LINE__);
 	err_code = rx_frame(sockfd,(void *)&rx,sizeof(handshake));
 	if (err_code < 0) {
-		//~**~log_message(RL_ERROR,"%s:%s(%d):Communication failure waiting on first response",__FILE__,__FUNCTION__,__LINE__);
-		return err_code;
+		fprintf(stderr,"%s:%s(%d):Communication failure waiting on first response (%d error)\n",__FILE__,__FUNCTION__,__LINE__,errno);
+		return ERR_NET_COMMS_PROTOCOL_FAILURE;
 	}
 	/* Transmit data */
 	if (rx.frame_size == tx.frame_size && rx.n_frames == 0) {
@@ -301,13 +306,14 @@ int tx_frames(int sockfd, void *buf, ssize_t nmem, ssize_t size) {
 		for (frames_transmitted=0; frames_transmitted<nmem; frames_transmitted++) {
 			err_code = tx_frame(sockfd,buf+frames_transmitted*size, size);
 			if (err_code < 0) {
-				//~**~log_message(RL_ERROR,"%s:%s(%d):Communication failure during data transfer",__FILE__,__FUNCTION__,__LINE__);
-				break;
+				fprintf(stderr,"%s:%s(%d):Communication failure during data send\n",__FILE__,__FUNCTION__,__LINE__);
+				return ERR_NET_COMMS_PROTOCOL_FAILURE;
+				//~ break;
 			}
 		}
 	} else {
-		//~**~log_message(RL_ERROR,"%s:%s(%d):Invalid ACK received: frame_size = %u (expected %u), n_frames = %u (expected %u)",__FILE__,__FUNCTION__,__LINE__,rx.frame_size,size,rx.n_frames,0);
-		return ERR_NET_INVALID_ACK;
+		fprintf(stderr,"%s:%s(%d):Invalid ACK received: frame_size = %u (expected %u), n_frames = %u (expected %u)\n",__FILE__,__FUNCTION__,__LINE__,rx.frame_size,size,rx.n_frames,0);
+		return ERR_NET_COMMS_PROTOCOL_FAILURE;
 	}
 	/* Wait for handshake to end communcation */
 	//~**~log_message(RL_DEBUGVVV,"%s:%s(%d):Waiting on last response",__FILE__,__FUNCTION__,__LINE__);
@@ -315,8 +321,8 @@ int tx_frames(int sockfd, void *buf, ssize_t nmem, ssize_t size) {
 	rx.n_frames = 0;
 	err_code = rx_frame(sockfd,(void *)&rx, sizeof(handshake));
 	if (err_code < 0) {
-		//~**~log_message(RL_ERROR,"%s:%s(%d):Communication failure on last response",__FILE__,__FUNCTION__,__LINE__);
-		return err_code;
+		fprintf(stderr,"%s:%s(%d):Communication failure on last response\n",__FILE__,__FUNCTION__,__LINE__);
+		return ERR_NET_COMMS_PROTOCOL_FAILURE;
 	}
 	if (rx.frame_size == tx.frame_size) {
 		if (rx.n_frames < nmem) {
@@ -324,7 +330,7 @@ int tx_frames(int sockfd, void *buf, ssize_t nmem, ssize_t size) {
 		}
 		return rx.n_frames;
 	} else {
-		//~**~log_message(RL_ERROR,"%s:%s(%d):Invalid ACK received: frame_size = %u (expected %u), n_frames = %u (expected > 0)",__FILE__,__FUNCTION__,__LINE__,rx.frame_size,size,rx.n_frames);
-		return ERR_NET_INVALID_ACK;
+		fprintf(stderr,"%s:%s(%d):Invalid ACK received: frame_size = %u (expected %u), n_frames = %u (expected > 0)\n",__FILE__,__FUNCTION__,__LINE__,rx.frame_size,size,rx.n_frames);
+		return ERR_NET_COMMS_PROTOCOL_FAILURE;
 	}
 }

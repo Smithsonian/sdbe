@@ -168,23 +168,22 @@ static void *run_method(hashpipe_thread_args_t * args) {
 				
 				// TODO: send data over network to sgrx
 				tx_tries = MAX_TX_TRIES;
-				do {
+				//~ do {
 					// TODO: check number of frames received at other end
 					// against the total number of frames to be sent.
 					frames_sent = tx_frames(sockfd, (void *)(vpg_buf_cpu[index_db_in]), VDIF_OUT_PKTS_PER_BLOCK*VDIF_CHAN, sizeof(vdif_out_packet_t));
 					fprintf(stdout,"%s:%s(%d): tx_frames returned %d\n",__FILE__,__FUNCTION__,__LINE__,frames_sent);
-					if (frames_sent > 0) {
-						break;
+					if (frames_sent < 0) {
+						frames_sent = 0;
+						aphids_set(&aphids_ctx,"status:net","error-on-send");
+						hashpipe_error(__FUNCTION__,"error sending data");
+						state = STATE_ERROR;
+						break; // switch(state)
 					}
-					hashpipe_warn(__FUNCTION__,"Sending frames failed, %d tries left",tx_tries);
-				} while (tx_tries-- > 0);
-				if (tx_tries == 0) {
-					frames_sent = 0;
-					aphids_set(&aphids_ctx,"status:net","error-on-send");
-					hashpipe_error(__FUNCTION__,"error sending data");
-					state = STATE_ERROR;
-					break; // switch(state)
-				}
+				//~ } while (tx_tries-- > 0);
+				//~ if (tx_tries == 0) {
+					//~ 
+				//~ }
 				
 				// update the index modulo the maximum buffer depth
 				index_db_in = (index_db_in + 1) % db_in->header.n_block;

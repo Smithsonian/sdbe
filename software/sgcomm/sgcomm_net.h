@@ -3,9 +3,9 @@
 
 #include <netinet/in.h>
 
-#define TIMEOUT_SEC 5
-#define TIMEOUT_USEC 0
-#define TIMEOUT_COUNT 3
+#define TIMEOUT_SEC 0
+#define TIMEOUT_USEC 1000
+#define TIMEOUT_COUNT 60000
 
 typedef struct handshake_struct {
 	ssize_t frame_size;
@@ -22,7 +22,8 @@ enum {
 	ERR_NET_CANNOT_READ_SOCKET = -8,
 	ERR_NET_TIMEOUT = -9,
 	ERR_NET_CANNOT_WRITE_SOCKET = -10,
-	ERR_NET_INVALID_ACK = -11
+	ERR_NET_INVALID_ACK = -11,
+	ERR_NET_COMMS_PROTOCOL_FAILURE = -12
 };
 
 /* Initialize socket and connect to given host:port.
