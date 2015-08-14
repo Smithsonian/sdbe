@@ -64,15 +64,6 @@ int main(int argc, char **argv) {
 	// set up according to input arguments
 	parse_arguments(argc,argv);
 	
-	if (argc > 1)
-		pattern_write = argv[1];
-	if (argc > 2)
-		fmtstr = argv[2];
-	if (argc > 3)
-		host = argv[3];
-	if (argc > 4)
-		port = atoi(argv[4]);
-	
 	log_message(RL_NOTICE,"%s:Using output file '%s' matching pattern '%s'",__FUNCTION__,pattern_write,fmtstr);
 	log_message(RL_NOTICE,"%s:Receiving on %s:%u",__FUNCTION__,host,port);
 	

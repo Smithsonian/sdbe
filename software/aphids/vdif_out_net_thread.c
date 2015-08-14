@@ -17,8 +17,10 @@
 #define STATE_IDLE      0
 #define STATE_PROCESS   1
 
-#define TX_HOST "localhost" //"192.168.10.10" // hamster IP on same 10GbE network as Mark6-4015
-#define TX_PORT ((uint16_t)61234) // port to use for incoming VDIF packets
+#define TX_HOST0 "localhost" //"192.168.10.63" // Mark6 IP for receiving one set of packets
+#define TX_PORT0 ((uint16_t)61234) // port to use for incoming VDIF packets
+#define TX_HOST1 "localhost" //"192.168.10.65" // Mark6 IP for receiving other set of packets
+#define TX_PORT1 ((uint16_t)61235) // port to use for incoming VDIF packets
 
 static void *run_method(hashpipe_thread_args_t * args) {
 	
@@ -39,10 +41,12 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	char tmp_msg[TMP_MSG_LEN];
 	
 	// for sgcomm_net.h interface
-	int sockfd = 0;
-	int frames_sent = 0;
-	#define MAX_TX_TRIES 5
-	int tx_tries = 0;
+	int sockfd[VDIF_CHAN] = { 0 };
+	int frames_sent[VDIF_CHAN] = { 0 };
+	const char *tx_host[VDIF_CHAN] = { TX_HOST0, TX_HOST1 };
+	const uint16_t tx_port[VDIF_CHAN] = { TX_PORT0, TX_PORT1 };
+	//~ #define MAX_TX_TRIES 5
+	//~ int tx_tries = 0;
 	
 	// I'm all about that VDIF
 	#define VDIF_FRAMES_PER_SECOND 125000
@@ -88,12 +92,17 @@ static void *run_method(hashpipe_thread_args_t * args) {
 				
 				// TODO: setup network connection
 				aphids_set(&aphids_ctx,"status:net","connecting");
-				sockfd = make_socket_connect(TX_HOST,TX_PORT);
-				fprintf(stdout,"%s:%s(%d): socket opened with descriptor %d\n",__FILE__,__FUNCTION__,__LINE__,sockfd);
-				if (sockfd < 0) {
-					aphids_set(&aphids_ctx,"status:net","error-on-connect");
-					hashpipe_error(__FUNCTION__,"error connecting");
-					state = STATE_ERROR;
+				for (ii=0; ii<VDIF_CHAN; ii++) {
+					sockfd[ii] = make_socket_connect(tx_host[ii],tx_port[ii]);
+					fprintf(stdout,"%s:%s(%d): socket (%s:%d) opened with descriptor %d\n",__FILE__,__FUNCTION__,__LINE__,tx_host[ii],tx_port[ii],sockfd[ii]);
+					if (sockfd[ii] < 0) {
+						aphids_set(&aphids_ctx,"status:net","error-on-connect");
+						hashpipe_error(__FUNCTION__,"error connecting");
+						state = STATE_ERROR;
+						break; // for ii over VDIF_CHAN
+					}
+				}
+				if (state == STATE_ERROR) {
 					break; // switch(state)
 				}
 				aphids_set(&aphids_ctx,"status:net","connected");
@@ -167,19 +176,24 @@ static void *run_method(hashpipe_thread_args_t * args) {
 				fprintf(stdout,"VDIF time is %u.%u\n",secs_inre,df_num_insec);
 				
 				// TODO: send data over network to sgrx
-				tx_tries = MAX_TX_TRIES;
+				//~ tx_tries = MAX_TX_TRIES;
 				//~ do {
 					// TODO: check number of frames received at other end
 					// against the total number of frames to be sent.
-					frames_sent = tx_frames(sockfd, (void *)(vpg_buf_cpu[index_db_in]), VDIF_OUT_PKTS_PER_BLOCK*VDIF_CHAN, sizeof(vdif_out_packet_t));
-					fprintf(stdout,"%s:%s(%d): tx_frames returned %d\n",__FILE__,__FUNCTION__,__LINE__,frames_sent);
-					if (frames_sent < 0) {
-						frames_sent = 0;
+				for (ii=0; ii<VDIF_CHAN; ii++) {
+					frames_sent[ii] = tx_frames(sockfd[ii], (void *)&(vpg_buf_cpu[index_db_in]->chan[ii]), VDIF_OUT_PKTS_PER_BLOCK, sizeof(vdif_out_packet_t));
+					fprintf(stdout,"%s:%s(%d): tx_frames on sockfd[%d] returned %d\n",__FILE__,__FUNCTION__,__LINE__,ii,frames_sent[ii]);
+					if (frames_sent[ii] < 0) {
+						frames_sent[ii] = 0;
 						aphids_set(&aphids_ctx,"status:net","error-on-send");
 						hashpipe_error(__FUNCTION__,"error sending data");
 						state = STATE_ERROR;
-						break; // switch(state)
+						break; // for ii over VDIF_CHAN
 					}
+				}
+				if (state == STATE_ERROR) {
+					break; // switch(state)
+				}
 				//~ } while (tx_tries-- > 0);
 				//~ if (tx_tries == 0) {
 					//~ 
@@ -196,14 +210,18 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	} // end while(run_threads())
 	
 	aphids_set(&aphids_ctx,"status:net","ending transmission");
-	if (tx_frames(sockfd, (void *)(vpg_buf_cpu[index_db_in]), 0, sizeof(vdif_out_packet_t)) != 0) {
-		hashpipe_error(__FUNCTION__,"%s:%s(%d):Could not send end-of-transmission",__FILE__,__FUNCTION__,__LINE__);
+	for (ii=0; ii<VDIF_CHAN; ii++) {
+		if (tx_frames(sockfd[ii], (void *)&(vpg_buf_cpu[index_db_in]->chan[ii]), 0, sizeof(vdif_out_packet_t)) != 0) {
+			hashpipe_error(__FUNCTION__,"%s:%s(%d):Could not send end-of-transmission to sockfd[%d]",__FILE__,__FUNCTION__,__LINE__,ii);
+		}
 	}
 	
 	aphids_set(&aphids_ctx,"status:net","end-of-transmission sent");
 	// close connection to server
-	if (sockfd >= 0) {
-		close(sockfd);
+	for (ii=0; ii<VDIF_CHAN; ii++) {
+		if (sockfd >= 0) {
+			close(sockfd[ii]);
+		}
 	}
 	
 	aphids_set(&aphids_ctx,"status:net","connection closed");

@@ -50,7 +50,7 @@ int init_sockaddr(struct sockaddr_in *name,const char *hostname,uint16_t port) {
 	name->sin_port = htons (port);
 	hostinfo = gethostbyname (hostname);
 	if (hostinfo == NULL) {
-		//~**~log_message(RL_ERROR,"%s:%s(%d)Unknown host %s.\n", hostname);
+		fprintf(stderr,"%s:%s(%d)Unknown host %s.\n", hostname);
 		return ERR_NET_UNKNOWN_HOST;
 	}
 	name->sin_addr = *(struct in_addr *) hostinfo->h_addr;
@@ -63,7 +63,8 @@ int make_socket_connect(const char *host, uint16_t port) {
 	
 	sockfd = socket(AF_INET, SOCK_STREAM, 0);
 	if (sockfd < 0) {
-		//~**~log_message(RL_ERROR,"%s:%s(%d):Unable to open socket",__FILE__,__FUNCTION__,__LINE__);
+		fprintf(stderr,"%s:%s(%d):Unable to open socket",__FILE__,__FUNCTION__,__LINE__);
+		perror("socket()");
 		return ERR_NET_CANNOT_OPEN_SOCKET;
 	}
 //~NOTIMEOUT~	/* Set a timeout on the data socket */
@@ -74,13 +75,13 @@ int make_socket_connect(const char *host, uint16_t port) {
 //~NOTIMEOUT~		//~**~log_message(RL_WARNING,"%s:%s(%d):Unable to set timeout on receiving socket",__FILE__,__FUNCTION__,__LINE__);
 //~NOTIMEOUT~	}
 	if (init_sockaddr(&serv_addr, host, port) != 0) {
-		//~**~log_message(RL_ERROR,"%s:%s(%d):Unable to resolve hostname",__FILE__,__FUNCTION__,__LINE__);
+		fprintf(stderr,"%s:%s(%d):Unable to resolve hostname",__FILE__,__FUNCTION__,__LINE__);
 		close(sockfd);
 		return ERR_NET_UNKNOWN_HOST;
 	}
 	if (connect(sockfd,(struct sockaddr *)&serv_addr,sizeof(serv_addr)) < 0) {
-		//~**~log_message(RL_ERROR,"%s:%s(%d):Unable to connect socket",__FILE__,__FUNCTION__,__LINE__);
-		perror("");
+		fprintf(stderr,"%s:%s(%d):Unable to connect socket",__FILE__,__FUNCTION__,__LINE__);
+		perror("connect");
 		close(sockfd);
 		return ERR_NET_CANNOT_CONNECT_SOCKET;
 	}
@@ -93,7 +94,8 @@ int make_socket_bind_listen(const char *host, uint16_t port) {
 	
 	sockfd = socket(AF_INET, SOCK_STREAM, 0);
 	if (sockfd < 0) {
-		//~**~log_message(RL_ERROR,"%s:%s(%d):Unable to open socket",__FILE__,__FUNCTION__,__LINE__);
+		fprintf(stderr,"%s:%s(%d):Unable to open socket",__FILE__,__FUNCTION__,__LINE__);
+		perror("socket");
 		return ERR_NET_CANNOT_OPEN_SOCKET;
 	}
 //~NOTIMEOUT~	/* Set a timeout on the listen socket */
@@ -105,12 +107,14 @@ int make_socket_bind_listen(const char *host, uint16_t port) {
 //~NOTIMEOUT~	}
 	init_sockaddr(&serv_addr, host, port);
 	if (bind(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
-		//~**~log_message(RL_ERROR,"%s:%s(%d):Unable to bind socket",__FILE__,__FUNCTION__,__LINE__);
+		fprintf(stderr,"%s:%s(%d):Unable to bind socket",__FILE__,__FUNCTION__,__LINE__);
+		perror("bind");
 		close(sockfd);
 		return ERR_NET_CANNOT_BIND_SOCKET;
 	}
 	if (listen(sockfd,1) < 0) {
-		//~**~log_message(RL_ERROR,"%s:%s(%d):Unable to listen on socket",__FILE__,__FUNCTION__,__LINE__);
+		fprintf(stderr,"%s:%s(%d):Unable to listen on socket",__FILE__,__FUNCTION__,__LINE__);
+		perror("listen");
 		close(sockfd);
 		return ERR_NET_CANNOT_LISTEN_ON_SOCKET;
 	}
