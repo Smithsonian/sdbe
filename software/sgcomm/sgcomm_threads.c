@@ -746,7 +746,7 @@ static void * _threaded_receiver(void *arg) {
 				}
 				
 				frames_to_copy = frames_received + nmem < max_frames_in_buffer ? nmem : max_frames_in_buffer-frames_received;
-				memcpy((void *)local_buf + frames_received*frame_size,tmp_buf+tmp_buf_offset,frames_to_copy*frame_size);
+				memcpy((void *)local_buf + frames_received*frame_size,tmp_buf+tmp_buf_offset*frame_size,frames_to_copy*frame_size);
 				frames_received += frames_to_copy;
 				if (frames_to_copy == nmem) {
 					free(tmp_buf);
