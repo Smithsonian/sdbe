@@ -769,7 +769,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
 	// Output to next thread to mirror the input?:
 	//   * create handle for shared memory on GPU
-	cudaIpcGetMemHandle(&db_out->blocks[index_out].ipc_mem_handle, (void *)resampler[i].gpu_B_0);
+	cudaIpcGetMemHandle(&db_out->blocks[index_out].ipc_mem_handle, (void *)resampler[i].gpu_out_buf);
 	//   * update metadata that describes the amount of data available
 	db_out->blocks[index_out].bit_depth = 2;
 	db_out->blocks[index_out].N_32bit_words_per_chan = (2*BENG_CHANNELS_*BENG_SNAPSHOTS*EXPANSION_FACTOR) / (32 / db_out->blocks[index_out].bit_depth);
