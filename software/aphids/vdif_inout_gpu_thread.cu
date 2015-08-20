@@ -722,9 +722,9 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	// ... set the input buffer block free ...
 	hashpipe_databuf_set_free((hashpipe_databuf_t *)db_in, index_in);
 	// ... and increment input buffer index.
+	fprintf(stdout,"%s:%s(%d): input buffer %d free\n",__FILE__,__FUNCTION__,__LINE__,index_in);
 	index_in = (index_in + 1) % db_in->header.n_block;
 
-	fprintf(stdout,"%s:%s(%d): output buffer %d free\n",__FILE__,__FUNCTION__,__LINE__,index_out);
 	
 	// In principle we can start processing on next input block on a 
 	// separate GPU, for now serialize GPU work, but use different ones
@@ -779,9 +779,9 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	// let hashpipe know we're done with the buffer (for now) ...
 	hashpipe_databuf_set_filled((hashpipe_databuf_t *)db_out, index_out);
 	// .. and update the index modulo the maximum buffer depth
+	fprintf(stdout,"%s:%s(%d): output buffer %d filled\n",__FILE__,__FUNCTION__,__LINE__,index_out);
 	index_out = (index_out + 1) % db_out->header.n_block;
 	
-	fprintf(stdout,"%s:%s(%d): output buffer %d filled\n",__FILE__,__FUNCTION__,__LINE__,index_out);
 
 	// update aphids statistics
 	aphids_update(&aphids_ctx);
