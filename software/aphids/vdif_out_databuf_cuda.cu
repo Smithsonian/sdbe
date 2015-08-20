@@ -32,8 +32,6 @@ static void *create_copy_stream();
 //   If successful, copy_stream_ptr will be set to NULL
 static int destroy_copy_stream(void *copy_stream_ptr);
 
-static int get_vdg_gpu_memory_cuda(vdif_out_data_group_t **vdg_buf_gpu, cudaIpcMemHandle_t ipc_mem_handle);
-
 static void handle_cuda_error(cudaError_t err) {
 	cudaGetLastError();
 	if (err == cudaSuccess) {
@@ -55,20 +53,12 @@ int get_vdg_cpu_memory_cuda(vdif_out_data_group_t **vdg_buf_cpu, int index) {
 	return 1;
 }
 
-static int get_vdg_gpu_memory_cuda(vdif_out_data_group_t **vdg_buf_gpu, cudaIpcMemHandle_t ipc_mem_handle) {
-	snprintf(err_prefix,ERR_PREFIX_LEN,ERR_PREFIX_FMT,__FILE__,__LINE__,__FUNCTION__);
-	handle_cuda_error(cudaIpcOpenMemHandle((void **)vdg_buf_gpu, ipc_mem_handle, cudaIpcMemLazyEnablePeerAccess));
-	return 1;
-}
-
 int transfer_vdif_group_to_cpu_cuda(vdif_out_databuf_t *qs_buf, int index) {
 	int device_id;
 	// select device - same device for stream creation and async copy
 	device_id = qs_buf->blocks[index].gpu_id;
 	snprintf(err_prefix,ERR_PREFIX_LEN,ERR_PREFIX_FMT,__FILE__,__LINE__,__FUNCTION__);
 	handle_cuda_error(cudaSetDevice(device_id));
-	// get reference to shared memory on GPU
-	get_vdg_gpu_memory_cuda(&qs_buf->blocks[index].vdg_buf_gpu, qs_buf->blocks[index].ipc_mem_handle,device_id);
 	// create separate CUDA stream for this copy
 	cudaStream_t *cst;
 	cst = create_copy_stream();
@@ -90,8 +80,6 @@ int check_transfer_vdif_group_to_cpu_complete_cuda(vdif_out_databuf_t *qs_buf, i
 	//~ result = cudaStreamQuery(*(cudaStream_t *)qs_buf->blocks[index].memcpy_stream);
 	snprintf(err_prefix,ERR_PREFIX_LEN,ERR_PREFIX_FMT,__FILE__,__LINE__,__FUNCTION__);
 	handle_cuda_error(cudaStreamSynchronize(*(cudaStream_t *)qs_buf->blocks[index].memcpy_stream));
-	// if we're here, close the shared memory reference ...
-	cudaIpcCloseMemHandle((void *)qs_buf->blocks[index].vdg_buf_gpu);
 	// ... and then copy complete; destroy stream and return 1
 	destroy_copy_stream(qs_buf->blocks[index].memcpy_stream);
 	return 1;

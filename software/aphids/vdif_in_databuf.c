@@ -34,7 +34,6 @@ void init_beng_group(beng_group_completion_t *bgc, beng_group_vdif_buffer_t *bgv
 	if (bgc->bgv_buf_cpu != bgv_buf_cpu || bgc->bgv_buf_gpu != bgv_buf_gpu) {
 		bgc->bgv_buf_cpu = bgv_buf_cpu;
 		bgc->bgv_buf_gpu = bgv_buf_gpu;
-		set_ipc_mem_handle(&bgc->ipc_mem_handle,bgc->bgv_buf_gpu);
 	}
 	bgc->beng_group_vdif_packet_count = 0;
 	for (ii=0; ii<BENG_FRAMES_PER_GROUP; ii++) {

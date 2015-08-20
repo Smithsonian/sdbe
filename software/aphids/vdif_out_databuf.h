@@ -111,7 +111,6 @@ typedef struct quantized_storage {
 	vdif_out_data_group_t *vdg_buf_gpu;
 	int bit_depth; // bit depth, not always 2bit?
 	int N_32bit_words_per_chan; // size of quantized storage measured in 32bit wide units
-	cudaIpcMemHandle_t ipc_mem_handle; // used for address translation in separate process
 	int gpu_id;
 	void *memcpy_stream;
 } quantized_storage_t;

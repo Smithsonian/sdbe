@@ -126,7 +126,6 @@ typedef struct beng_group_completion {
 	int32_t beng_group_vdif_packet_count; // Number of VDIF packets found for this group of B-engine counters
 	beng_group_vdif_buffer_t *bgv_buf_cpu; // Pointer to CPU buffer filled with VDIF packets
 	beng_group_vdif_buffer_t *bgv_buf_gpu; // Pointer to GPU buffer filled with VDIF packets
-	cudaIpcMemHandle_t ipc_mem_handle; // used for address translation in separate process
 	int gpu_id;
 	void *memcpy_stream;
 	beng_frame_completion_t bfc[BENG_FRAMES_PER_GROUP];

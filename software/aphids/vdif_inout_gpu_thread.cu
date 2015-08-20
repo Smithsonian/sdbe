@@ -696,9 +696,6 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	cudaSetDevice(i);
 	resampler[i].deviceId = this_bgc.gpu_id;
 	
-	// Get pointer to shared memory on GPU where data was stored.
-	cudaIpcOpenMemHandle((void **)&this_bgc.bgv_buf_gpu, this_bgc.ipc_mem_handle, cudaIpcMemLazyEnablePeerAccess);
-	
 	// If any correction needed for missing data, probably need to do
 	// it here; e.g. the received data tells exactly which parts of the
 	// spectrum belonging to which B-engine counter values are missing,
@@ -717,8 +714,6 @@ static void *run_method(hashpipe_thread_args_t * args) {
 					resampler[i].gpu_A_0, resampler[i].gpu_A_1,
 					BENG_BUFFER_IN_COUNTS*VDIF_PER_BENG_FRAME);
 	
-	// When first section of GPU chain done, close the shared memory ...
-	cudaIpcCloseMemHandle((void *)this_bgc.bgv_buf_gpu);
 	// ... set the input buffer block free ...
 	hashpipe_databuf_set_free((hashpipe_databuf_t *)db_in, index_in);
 	// ... and increment input buffer index.
@@ -769,12 +764,11 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	cudaMemcpy((void *)resampler[i].gpu_out_buf + sizeof(vdif_out_data_block_t),(void *)resampler[i].gpu_B_1,sizeof(vdif_out_data_block_t),cudaMemcpyDeviceToDevice);
 
 	// Output to next thread to mirror the input?:
-	//   * create handle for shared memory on GPU
-	cudaIpcGetMemHandle(&db_out->blocks[index_out].ipc_mem_handle, (void *)resampler[i].gpu_out_buf);
 	//   * update metadata that describes the amount of data available
 	db_out->blocks[index_out].bit_depth = 2;
 	db_out->blocks[index_out].N_32bit_words_per_chan = (2*BENG_CHANNELS_*BENG_SNAPSHOTS*EXPANSION_FACTOR) / (32 / db_out->blocks[index_out].bit_depth);
 	db_out->blocks[index_out].gpu_id = resampler[i].deviceId; //index_out % NUM_GPU;
+	db_out->blocks[index_out].vdg_buf_gpu = resampler[i].gpu_out_buf;
 	
 	// let hashpipe know we're done with the buffer (for now) ...
 	hashpipe_databuf_set_filled((hashpipe_databuf_t *)db_out, index_out);

@@ -41,10 +41,6 @@ static void handle_cuda_error(cudaError_t err) {
 	abort();
 }
 
-void set_ipc_mem_handle(cudaIpcMemHandle_t *ipc_mem_handle, beng_group_vdif_buffer_t *ptr_gpu) {
-	cudaIpcGetMemHandle(ipc_mem_handle,ptr_gpu);
-}
-
 int get_bgv_cpu_memory_cuda(beng_group_vdif_buffer_t **bgv_buf_cpu, int index) {
 	// NOTE: Device selection may not be necessary
 	int device_id;

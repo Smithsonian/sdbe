@@ -3,8 +3,6 @@
 
 #include "vdif_in_databuf.h"
 
-void set_ipc_mem_handle(cudaIpcMemHandle_t *ipc_mem_handle, beng_group_vdif_buffer_t *ptr_gpu);
-
 int get_bgv_cpu_memory_cuda(beng_group_vdif_buffer_t **bgv_buf_cpu, int index);
 
 int get_bgv_gpu_memory_cuda(beng_group_vdif_buffer_t **bgv_buf_gpu, int index);
