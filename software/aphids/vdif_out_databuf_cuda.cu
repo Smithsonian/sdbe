@@ -57,8 +57,7 @@ int get_vdg_cpu_memory_cuda(vdif_out_data_group_t **vdg_buf_cpu, int index) {
 
 static int get_vdg_gpu_memory_cuda(vdif_out_data_group_t **vdg_buf_gpu, cudaIpcMemHandle_t ipc_mem_handle) {
 	snprintf(err_prefix,ERR_PREFIX_LEN,ERR_PREFIX_FMT,__FILE__,__LINE__,__FUNCTION__);
-	//~ handle_cuda_error(cudaIpcOpenMemHandle((void **)vdg_buf_gpu, ipc_mem_handle, cudaIpcMemLazyEnablePeerAccess));
-	handle_cuda_error(cudaMalloc((void **)vdg_buf_gpu, sizeof(vdif_out_data_group_t)));
+	handle_cuda_error(cudaIpcOpenMemHandle((void **)vdg_buf_gpu, ipc_mem_handle, cudaIpcMemLazyEnablePeerAccess));
 	return 1;
 }
 
