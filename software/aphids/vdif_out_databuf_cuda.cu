@@ -67,6 +67,8 @@ int transfer_vdif_group_to_cpu_cuda(vdif_out_databuf_t *qs_buf, int index) {
 	device_id = qs_buf->blocks[index].gpu_id;
 	snprintf(err_prefix,ERR_PREFIX_LEN,ERR_PREFIX_FMT,__FILE__,__LINE__,__FUNCTION__);
 	handle_cuda_error(cudaSetDevice(device_id));
+	// get reference to shared memory on GPU
+	get_vdg_gpu_memory_cuda(&qs_buf->blocks[index].vdg_buf_gpu, qs_buf->blocks[index].ipc_mem_handle,device_id);
 	// create separate CUDA stream for this copy
 	cudaStream_t *cst;
 	cst = create_copy_stream();
