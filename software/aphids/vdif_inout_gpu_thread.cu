@@ -694,6 +694,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	// select the same one when processing the next dataset.
 	i = this_bgc.gpu_id;
 	cudaSetDevice(i);
+	resampler[i].deviceId = this_bgc.gpu_id;
 	
 	// Get pointer to shared memory on GPU where data was stored.
 	cudaIpcOpenMemHandle((void **)&this_bgc.bgv_buf_gpu, this_bgc.ipc_mem_handle, cudaIpcMemLazyEnablePeerAccess);
@@ -773,7 +774,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	//   * update metadata that describes the amount of data available
 	db_out->blocks[index_out].bit_depth = 2;
 	db_out->blocks[index_out].N_32bit_words_per_chan = (2*BENG_CHANNELS_*BENG_SNAPSHOTS*EXPANSION_FACTOR) / (32 / db_out->blocks[index_out].bit_depth);
-	db_out->blocks[index_out].gpu_id = index_out % NUM_GPU;
+	db_out->blocks[index_out].gpu_id = resampler[i].deviceId; //index_out % NUM_GPU;
 	
 	// let hashpipe know we're done with the buffer (for now) ...
 	hashpipe_databuf_set_filled((hashpipe_databuf_t *)db_out, index_out);
