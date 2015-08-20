@@ -29,8 +29,13 @@
 #define STATE_PROCESS      1
 #define STATE_DONE        99
 
-#define RX_HOST "localhost" //"192.168.10.10" // hamster IP on same 10GbE network as Mark6-4015
+#ifdef NET_HAMSTER // sets network parameters for Mark6-4015 >> hamster
+#define RX_HOST "192.168.10.10" // hamster IP on same 10GbE network as Mark6-4015
 #define RX_PORT ((uint16_t)12345) // port to use for incoming VDIF packets
+#else // sets network parameters for local test
+#define RX_HOST "localhost"
+#define RX_PORT ((uint16_t)12345)
+#endif
 
 // local copy of data to pipe through
 vdif_in_databuf_t local_db_out;

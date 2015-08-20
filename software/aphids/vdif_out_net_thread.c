@@ -17,10 +17,17 @@
 #define STATE_IDLE      0
 #define STATE_PROCESS   1
 
-#define TX_HOST0 "localhost" //"192.168.10.63" // Mark6 IP for receiving one set of packets
-#define TX_PORT0 ((uint16_t)61234) // port to use for incoming VDIF packets
-#define TX_HOST1 "localhost" //"192.168.10.65" // Mark6 IP for receiving other set of packets
-#define TX_PORT1 ((uint16_t)61235) // port to use for incoming VDIF packets
+#ifdef NET_HAMSTER // sets network parameters for hamster >> Mark6-4016
+#define TX_HOST0 "192.168.10.63" // Mark6-4016 IP for receiving chan0 data
+#define TX_PORT0 ((uint16_t)54323) // port for receiving chan0 data
+#define TX_HOST1 "192.168.10.65" // Mark6-4016 IP for receiving chan1 data
+#define TX_PORT1 ((uint16_t)54325) // port for receiving chan1 data
+#else // sets network parameters for local test
+#define TX_HOST0 "localhost"
+#define TX_PORT0 ((uint16_t)61234)
+#define TX_HOST1 "localhost"
+#define TX_PORT1 ((uint16_t)61235)
+#endif
 
 static void *run_method(hashpipe_thread_args_t * args) {
 	
