@@ -6,7 +6,11 @@
 #include "vdif_in_databuf.h"
 #include "vdif_in_databuf_cuda.h"
 
+#ifdef GPU_MULTI
+#define NUM_GPU 4
+#else
 #define NUM_GPU 1
+#endif
 
 // Allocate memory for, create, and return pointer to CUDA stream
 // Arguments:

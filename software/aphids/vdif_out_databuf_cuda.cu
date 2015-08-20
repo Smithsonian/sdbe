@@ -5,7 +5,11 @@
 
 #include "vdif_out_databuf_cuda.h"
 
+#ifdef GPU_MULTI
+#define NUM_GPU 4
+#else
 #define NUM_GPU 1
+#endif
 
 #define ERR_PREFIX_LEN 256
 #define ERR_PREFIX_FMT "%s(%d): In function '%s':"
