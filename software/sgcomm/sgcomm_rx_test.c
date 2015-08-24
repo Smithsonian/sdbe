@@ -1,3 +1,6 @@
+#include <error.h>
+#include <execinfo.h>
+#include <fcntl.h>
 #include <getopt.h>
 #include <pthread.h>
 #include <signal.h>
@@ -6,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <netinet/in.h>
@@ -13,6 +17,7 @@
 
 #include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h> 
 
@@ -23,6 +28,12 @@
 #define MAIN_WAIT_PERIOD_US 500000
 #define SHARED_BUFFER_SIZE_TX (264*9468*32)
 #define SHARED_BUFFER_SIZE_RX (1032*2422*32)
+
+#define BT_BUFFER_SIZE 0x100
+#define BT_FILENAME "crashreport.bt"
+#define MAX_LEN_STR_TIMESTAMP 0x100
+#define MAX_LEN_STR_HDR 0x400
+#define STR_FMT_TIMESTAMP_LONG "%Y-%m-%d %H:%M:%S"
 
 /* Master thread */
 sgcomm_thread st_main = {
@@ -45,6 +56,7 @@ int n_mod = 4;
 int mod_list[4] = { 1, 2, 3, 4};
 int n_disk = 8;
 int disk_list_write[8] = { 1, 0, 2, 3, 4, 5, 6, 7 };
+char *log_filename = NULL;
 // parse from command line
 void parse_arguments(int argc, char **argv);
 void print_usage(const char *cmd);
@@ -54,6 +66,13 @@ int csv_to_int(char *str, int **list);
 /* Misc */
 void print_rusage(const char *tag,struct rusage *ru);
 
+// Signal handlers
+void handle_sigfpe(int sig);
+void handle_sigsegv(int sig);
+// backtrace utility
+static void print_backtrace_to_file(const char *filename, const char *hdr);
+// get nice time string
+static void get_timestamp_long(char *time_str);
 
 int main(int argc, char **argv) {
 	/* Slave threads */
@@ -63,6 +82,14 @@ int main(int argc, char **argv) {
 	
 	// set up according to input arguments
 	parse_arguments(argc,argv);
+
+	/* Start logging */
+	if (log_filename == NULL) {
+		open_logging(RL_DEBUGVVV,RLT_STDOUT,NULL);
+	} else {
+		open_logging(RL_DEBUGVVV,RLT_FILE,log_filename);
+	}
+
 	
 	log_message(RL_NOTICE,"%s:Using output file '%s' matching pattern '%s'",__FUNCTION__,pattern_write,fmtstr);
 	log_message(RL_NOTICE,"%s:Receiving on %s:%u",__FUNCTION__,host,port);
@@ -189,6 +216,7 @@ void parse_arguments(int argc, char **argv) {
 			{"disk-list"            , required_argument, 0, 'd'},
 			{"output-format-string" , required_argument, 0, 'f'},
 			{"help"                 , no_argument,       0, 'h'},
+			{"logfile"              , required_argument, 0, 'l'},
 			{"module-list"          , required_argument, 0, 'm'},
 			{"output"               , required_argument, 0, 'o'},
 			{"port"                 , required_argument, 0, 'p'},
@@ -197,7 +225,7 @@ void parse_arguments(int argc, char **argv) {
 		/* getopt_long stores the option index here. */
 		int option_index = 0;
 		
-		c = getopt_long(argc, argv, "a:d:f:hm:o:p:",
+		c = getopt_long(argc, argv, "a:d:f:hl:m:o:p:",
 							long_options, &option_index);
 	
 		/* Detect the end of the options. */
@@ -224,6 +252,9 @@ void parse_arguments(int argc, char **argv) {
 			case 'h':
 				print_usage(argv[0]);
 				exit(EXIT_SUCCESS);
+				break;
+			case 'l':
+				log_filename = optarg;
 				break;
 			case 'm':
 				n_mod = csv_to_int(optarg, &tmp_list);
@@ -258,7 +289,8 @@ void print_usage(const char *cmd) {
 		"-d, --disk-list=LIST                comma-separated list of disks to write to\n"
 		"-f, --output-format-string=FMTSTR   format string to convert mod-/disk-list and\n"
 		"                                    output filename to full path\n"
-		"-f, --help                          display this message\n"
+		"-h, --help                          display this message\n"
+		"-l, --log=LOGFILE                   log to given filename\n"
 		"-m, --module-list=LIST              comma-separated list of modules to write to\n"
 		"-o, --output                        output filename\n"
 		"-p, --port                          network port on which to receive packets\n"
@@ -308,7 +340,9 @@ void print_arguments(void) {
 		"\tport=%d\n"
 		"\tmod_list=%s\n"
 		"\tdisk_list=%s\n"
-		,fmtstr,pattern_write,host,(int)port,mod_list_str,disk_list_str);
+		"\tlog_filename=%s\n"
+		,fmtstr,pattern_write,host,(int)port,mod_list_str,disk_list_str,
+		log_filename==NULL ? "NULL" : log_filename);
 }
 
 int csv_to_int(char *str, int **list) {
@@ -345,9 +379,76 @@ void handle_sigint(int signum) {
 	set_thread_state(&st_main, CS_STOP, NULL);
 }
 
+void handle_sigfpe(int sig) {
+	fprintf(stderr,"SIGFPE received\n");
+
+	char tsstr[MAX_LEN_STR_TIMESTAMP];
+	char hdr[MAX_LEN_STR_HDR];
+	get_timestamp_long(tsstr);
+	snprintf(hdr, MAX_LEN_STR_HDR, "SIGFPE received at %s:\n", tsstr);
+	print_backtrace_to_file(BT_FILENAME, hdr);
+
+	exit(EXIT_FAILURE);
+}
+
+void handle_sigsegv(int sig) {
+	fprintf(stderr,"SIGSEGV received\n");
+
+	char tsstr[MAX_LEN_STR_TIMESTAMP];
+	char hdr[MAX_LEN_STR_HDR];
+	get_timestamp_long(tsstr);
+	snprintf(hdr, MAX_LEN_STR_HDR, "SIGSEGV received at %s:\n", tsstr);
+	print_backtrace_to_file(BT_FILENAME, hdr);
+
+	exit(EXIT_FAILURE);
+}
+
+static void print_backtrace_to_file(const char *filename, const char *hdr) {
+	int fd;
+	void *buffer[BT_BUFFER_SIZE];
+	int n_sym;
+	fd = open(filename,O_WRONLY|O_APPEND|O_CREAT,S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
+	if (fd == -1) {
+		perror("open");
+		return;
+	}
+	// write header
+	write(fd, hdr, strlen(hdr));
+	n_sym = backtrace(buffer,BT_BUFFER_SIZE);
+	backtrace_symbols_fd(buffer, n_sym, fd);
+	if (close(fd) == -1) {
+		fprintf(stderr,"WARNING, backtrace logging file '%s' may not be closed properly\n",filename);
+		perror("close");
+	}
+}
+static void get_timestamp_long(char *time_str) {
+	time_t t;
+	struct tm timestamp;
+	
+	time(&t);
+	localtime_r(&t,&timestamp);
+	strftime(time_str,MAX_LEN_STR_TIMESTAMP,STR_FMT_TIMESTAMP_LONG,&timestamp);
+}
+
+struct sigaction sa_sigfpe = {
+	.sa_handler = handle_sigfpe,
+	.sa_mask = 0,
+	.sa_flags = 0
+};
+
+struct sigaction sa_sigsegv = {
+	.sa_handler = handle_sigsegv,
+	.sa_mask = 0,
+	.sa_flags = 0
+};
+
 static __attribute__((constructor)) void initialize() {
-	/* Start logging */
-	open_logging(RL_DEBUGVVV,RLT_STDOUT,NULL);
+//	/* Start logging */
+//	if (log_filename == NULL) {
+//		open_logging(RL_DEBUGVVV,RLT_STDOUT,NULL);
+//	} else {
+//		open_logging(RL_DEBUGVVV,RLT_FILE,log_filename);
+//	}
 	//~ open_logging(RL_DEBUG,RLT_STDOUT,NULL);
 	//~ open_logging(RL_INFO,RLT_STDOUT,NULL);
 	//~ open_logging(RL_NOTICE,RLT_STDOUT,NULL);
@@ -355,6 +456,8 @@ static __attribute__((constructor)) void initialize() {
 	/* Set signal handlers */
 	if (signal(SIGINT, handle_sigint) == SIG_IGN)
 		signal(SIGINT, SIG_IGN);
+	sigaction(SIGFPE, &sa_sigfpe, NULL);
+	sigaction(SIGSEGV, &sa_sigsegv, NULL);
 	
 	/* Register exit method */
 	atexit(&handle_exit);
