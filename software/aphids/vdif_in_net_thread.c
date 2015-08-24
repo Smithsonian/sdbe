@@ -313,12 +313,12 @@ static void *run_method(
 						index_received_vdif_packets++;
 						continue;
 					}
-					N_USED_VDIF_PACKETS++;
 					if (index_offset > MAX_INDEX_LOOK_AHEAD) {
 						// set transfer on non-filled unit
 						fprintf(stdout,"%s:%s(%d): about to copy non-filled unit (offset is %d)\n",__FILE__,__FUNCTION__,__LINE__,index_offset);
 						start_copy = 1;
 					} else {
+						N_USED_VDIF_PACKETS++;
 						// insert VDIF packet: this copies VDIF to the 
 						// local buffer, updates the frame counters and
 						// flags, and returns the number of insertions
