@@ -1,8 +1,15 @@
+ifdef NET_HAMSTER
+NET_HAMSTER_ = -D NET_HAMSTER
+endif
+ifdef GPU_MULTI
+GPU_MULTI_ = -D GPU_MULTI
+endif
 DBG_ARGS = -D DEBUG
 
 CC = gcc
+CPREP = $(NET_HAMSTER_) $(GPU_MULTI_)
 INC = -I/usr/local/cuda-7.0/targets/x86_64-linux/include/
-CFLAGS = -fPIC -Wall -std=gnu99 $(INC)
+CFLAGS = -fPIC -Wall -std=gnu99 $(INC) $(CPREP)
 
 NVCC = nvcc
 NFLAGS = -ccbin gcc --compiler-options="$(CFLAGS)" --device-c 
