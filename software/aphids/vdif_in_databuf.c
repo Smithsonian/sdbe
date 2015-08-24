@@ -55,7 +55,7 @@ int get_beng_group_index_offset(vdif_in_databuf_t *bgc_buf, int index_ref, vdif_
 	int64_t b = get_packet_b_count(&vdif_pkt->header);
 	int64_t ll = bgc_buf->bgc[index_ref].bfc[0].b;
 	int64_t lu = bgc_buf->bgc[index_ref].bfc[BENG_FRAMES_PER_GROUP-1].b;
-	if (b < ll) {
+	if (b < ll || vdif_pkt->header.w0.invalid) {
 		return offset;
 	}
 	while (count-->0) {
