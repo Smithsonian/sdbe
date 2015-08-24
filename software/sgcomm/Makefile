@@ -1,6 +1,6 @@
 CC=gcc
 OPTIM=-O3
-CFLAGS=-std=gnu99 -fPIC $(OPTIM)
+CFLAGS=-std=gnu99 -fPIC $(OPTIM) -g
 LIBS=-lrt -lpthread -lscatgat
 LFLAGS=$(LIBS)
 DEPS=sgcomm_report.o sgcomm_net.o sgcomm_threads.o

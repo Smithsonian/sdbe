@@ -18,7 +18,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
   int rv = 0;
   int index = 0;
-  vdif_in_packet_block_t null_vdif_packet_block = {};
+  beng_group_completion_t null_beng_group_completion = {};
   vdif_in_databuf_t *db_out = (vdif_in_databuf_t *)args->obuf;
   aphids_context_t aphids_ctx;
   int state = STATE_INIT;
@@ -82,7 +82,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	}
 
 	// update the data at this index
-	db_out->blocks[index] = null_vdif_packet_block;
+	db_out->bgc[index] = null_beng_group_completion;
 
 	// let hashpipe know we're done with the buffer (for now)
 	hashpipe_databuf_set_filled((hashpipe_databuf_t *)db_out, index);

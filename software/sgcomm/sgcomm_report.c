@@ -161,6 +161,7 @@ static void _log_file(report_level rl, const char *fmt, va_list ap) {
 	//~ fprintf(_log_fd,"[%s]",_tsmsg);
 	vsnprintf(_msg, MAX_MSG_LEN, fmt, ap);
 	fprintf(_log_fd,"[%s][%s]:%s\n",_tsmsg,_get_level_tag(rl),_msg);
+	fflush(_log_fd);
 }
 
 const char * _get_level_tag(report_level rl) {

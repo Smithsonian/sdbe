@@ -18,7 +18,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
   int rv = 0;
   int index = 0;
-  vdif_out_packet_block_t this_vdif_packet_block;
+  quantized_storage_t this_quantized_storage;
   vdif_out_databuf_t *db_in = (vdif_out_databuf_t *)args->ibuf;
   aphids_context_t aphids_ctx;
   int state = STATE_INIT;
@@ -68,12 +68,14 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
 	  if (rv == HASHPIPE_TIMEOUT) { // index is not ready
 	    aphids_log(&aphids_ctx, APHIDS_LOG_ERROR, "hashpipe output databuf timeout");
+	    //~ fprintf(stderr,"%s:%d:timeout\n",__FILE__,__LINE__);
 	    continue;
 
 	  } else { // any other return value is an error
 
 	    // raise an error and exit thread
 	    hashpipe_error(__FUNCTION__, "error waiting for filled databuf");
+	    //~ fprintf(stderr,"%s:%d: Hashpipe error\n",__FILE__,__LINE__);
 	    state = STATE_ERROR;
 	    break;
 
@@ -82,7 +84,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	}
 
 	// grab the data at this index
-	this_vdif_packet_block = (vdif_out_packet_block_t)db_in->blocks[index];
+	this_quantized_storage = (quantized_storage_t)db_in->blocks[index];
 
 	// let hashpipe know we're done with the buffer (for now)
 	hashpipe_databuf_set_free((hashpipe_databuf_t *)db_in, index);
