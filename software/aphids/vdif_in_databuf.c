@@ -10,6 +10,7 @@
 
 static void print_beng_frame_completion(beng_frame_completion_t *bfc, const char *tag);
 static void print_channel_completion(channel_completion_t *cc, const char *tag);
+static void print_beng_over_vdif_header(vdif_in_header_t *vdif_pkt_hdr, const char *tag);
 
 #ifndef STANDALONE_TEST
 hashpipe_databuf_t *vdif_in_databuf_create(int instance_id, int databuf_id)
@@ -66,6 +67,8 @@ int get_beng_group_index_offset(vdif_in_databuf_t *bgc_buf, int index_ref, vdif_
 		ll += BENG_FRAMES_PER_GROUP-1;
 		lu += BENG_FRAMES_PER_GROUP-1;
 	}
+	fprintf(stdout,"%s:%s(%d): b=%lu is outside search range [%lu,%lu]\n",__FILE__,__FUNCTION__,__LINE__,b,ll,lu);
+	print_beng_over_vdif_header(&vdif_pkt->header, "BENG OFFSET TOO LARGE:");
 	return offset;
 }
 
@@ -181,6 +184,22 @@ static void print_channel_completion(channel_completion_t *cc, const char *tag) 
 		int *cc_proxy = (int *)cc;
 		printf("F-%d=%d ",ii,*cc_proxy>>ii & 0x01);
 	}
+}
+
+static void print_beng_over_vdif_header(vdif_in_header_t *vdif_pkt_hdr, const char *tag) {
+	fprintf(stdout,
+			"%sw0.{secs_inre=%d, legacy=%d, invalid=%d}\n"
+			"%sw1.{df_num_insec=%d, ref_epoch=%d, UA=%d}\n"
+			"%sw2.{df_len=%d, num_channels=%d, ver=%d}\n"
+			"%sw3.{stationID=%d, threadID=%d, bps=%d, dt=%d}\n"
+			"%sbeng.{b_upper=%d, c=%d, z=%d, f=%d, b_lower=%d}\n"
+			"%sedh_psn=%lu\n",
+			tag,vdif_pkt_hdr->w0.secs_inre,vdif_pkt_hdr->w0.legacy,vdif_pkt_hdr->w0.invalid,
+			tag,vdif_pkt_hdr->w1.df_num_insec,vdif_pkt_hdr->w1.ref_epoch,vdif_pkt_hdr->w1.UA,
+			tag,vdif_pkt_hdr->w2.df_len,vdif_pkt_hdr->w2.num_channels,vdif_pkt_hdr->w2.ver,
+			tag,vdif_pkt_hdr->w3.stationID,vdif_pkt_hdr->w3.threadID,vdif_pkt_hdr->w3.bps,vdif_pkt_hdr->w3.dt,
+			tag,vdif_pkt_hdr->beng.b_upper,vdif_pkt_hdr->beng.c,vdif_pkt_hdr->beng.z,vdif_pkt_hdr->beng.f,vdif_pkt_hdr->beng.b_lower,
+			tag,vdif_pkt_hdr->edh_psn);
 }
 
 //~ #ifdef STANDALONE_TEST
