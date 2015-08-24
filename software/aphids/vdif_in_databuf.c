@@ -139,9 +139,9 @@ int check_transfer_beng_group_to_gpu_complete(vdif_in_databuf_t *bgc_buf, int in
 
 // Print human-readable representation of B-engine group completion
 void print_beng_group_completion(beng_group_completion_t *bgc, const char *tag) {
-	printf("%s{B-engine group: beng_group_vdif_packet_count=%d, bgv_buf_cpu=%p, bgv_buf_gpu=%p\n",
+	printf("%s{B-engine group: beng_group_vdif_packet_count=%d, bgv_buf_cpu=%p, bgv_buf_gpu=%p, .bfc[0..39].b = %ld .. %ld\n",
 			tag,bgc->beng_group_vdif_packet_count,bgc->bgv_buf_cpu,
-			bgc->bgv_buf_gpu);
+			bgc->bgv_buf_gpu, bgc->bfc[0].b, bgc->bfc[BENG_FRAMES_PER_GROUP-1].b);
 	//~ if (bgc->beng_group_vdif_packet_count < VDIF_PER_BENG_FRAME*BENG_FRAMES_PER_GROUP) {
 		//~ int new_tag_len = strlen(tag) + 2;
 		//~ char new_tag[new_tag_len];
