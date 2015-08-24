@@ -746,7 +746,11 @@ static void * _threaded_receiver(void *arg) {
 				}
 				
 				frames_to_copy = frames_received + nmem < max_frames_in_buffer ? nmem : max_frames_in_buffer-frames_received;
+				
 				memcpy((void *)local_buf + frames_received*frame_size,tmp_buf+tmp_buf_offset*frame_size,frames_to_copy*frame_size);
+				//~ // The line below does not seem right, replaced with above
+				//~ memcpy((void *)local_buf + frames_received*frame_size,tmp_buf+tmp_buf_offset,frames_to_copy*frame_size);
+				
 				frames_received += frames_to_copy;
 				if (frames_to_copy == nmem) {
 					free(tmp_buf);
@@ -763,6 +767,10 @@ static void * _threaded_receiver(void *arg) {
 		 * ************************************************************/
 			
 			log_message(RL_DEBUGVVV,"%s:%s(%d):Received %u frames",__FILE__,__FUNCTION__,__LINE__,frames_received);
+			// The below logging line appears to throw a segfault when frames_to_copy == nmem
+			//~ if (nmem > 0) {
+			//~ 	log_message(RL_DEBUGVVV,"%s:%s(%d):Thread ID is %d",__FILE__,__FUNCTION__,__LINE__,((VDIFHeader *)tmp_buf)->w4.threadID);
+			//~ }
 			
 		} else
 			usleep(WAIT_PERIOD_US);
@@ -784,6 +792,7 @@ static void * _threaded_receiver(void *arg) {
 		if (get_thread_state(st, &ctrl) == 0 && !(ctrl >= CS_ERROR) && obtain_data_lock(dest) == 0) {
 			if (frames_received > 0 && dest->n_frames == 0) {
 				log_message(RL_DEBUGVVV,"%s:%s(%d):About to copy %u frames",__FILE__,__FUNCTION__,__LINE__,frames_received);
+				log_message(RL_DEBUGVVV,"%s:%s(%d):Thread ID is %d",__FILE__,__FUNCTION__,__LINE__,((VDIFHeader *)local_buf)->w4.threadID);
 				memcpy(dest->buf, local_buf, frames_received*frame_size);
 				dest->n_frames = frames_received;
 				
@@ -903,6 +912,7 @@ static void * _threaded_writer(void *arg) {
 						(src->n_frames) : (max_frames_in_buffer-n_frames_copied);
 					
 					log_message(RL_DEBUGVVV,"%s:%s(%d):Copying %u/%u frames (buffer space left %u)",__FILE__,__FUNCTION__,__LINE__,n_frames_this_copy,(src->n_frames),(max_frames_in_buffer-n_frames_copied));
+					log_message(RL_DEBUGVVV,"%s:%s(%d):Thread ID is %d",__FILE__,__FUNCTION__,__LINE__,((VDIFHeader *)src->buf)->w4.threadID);
 					
 					/* Copy data from shared buffer and reset frame 
 					 * count. */
@@ -915,6 +925,7 @@ static void * _threaded_writer(void *arg) {
 					if (src->n_frames > n_frames_this_copy) {
 						log_message(RL_DEBUGVVV,"%s:%s(%d):Moved %u frames of data in shared buffer",__FILE__,__FUNCTION__,__LINE__,(src->n_frames-n_frames_this_copy));
 						memmove(src->buf,src->buf+n_frames_this_copy*src->frame_size,(src->n_frames-n_frames_this_copy)*src->frame_size*sizeof(uint32_t));
+						log_message(RL_DEBUGVVV,"%s:%s(%d):Thread ID is %d",__FILE__,__FUNCTION__,__LINE__,((VDIFHeader *)src->buf)->w4.threadID);
 					}
 					src->n_frames -= n_frames_this_copy;
 					
@@ -946,7 +957,12 @@ static void * _threaded_writer(void *arg) {
 			/* If the local buffer is full, write to disk */
 			log_message(RL_DEBUG,"%s:%s(%d):Local buffer full, writing to disk",__FILE__,__FUNCTION__,__LINE__);
 			// TODO: Scatter-gather write
-			write_vdif_frames(sgpln, local_buf, n_frames_copied);
+			log_message(RL_DEBUGVVV,"%s:%s(%d):Thread ID is %d",__FILE__,__FUNCTION__,__LINE__,((VDIFHeader *)local_buf)->w4.threadID);
+			if (0) {
+				log_message(RL_WARNING,"%s:%s(%d): Writing to disk DISABLED",__FILE__,__FUNCTION__,__LINE__); 
+			} else {
+				write_vdif_frames(sgpln, local_buf, n_frames_copied);
+			}
 			log_message(RL_DEBUG,"%s:%s(%d):Writing to disk done, next",__FILE__,__FUNCTION__,__LINE__);
 			n_frames_copied = 0;
 		} else {
