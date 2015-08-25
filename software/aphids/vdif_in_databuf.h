@@ -10,6 +10,11 @@
 #include "hashpipe_databuf.h"
 #endif // STANDALONE_TEST
 
+typedef enum {
+	vidErrorPacketInvalid = -1,
+	vidErrorPacketBeforeStartTime = -2
+} vdif_in_databuf_error_t;
+
 ////////////////////////////////////////////////////////////////////////
 // This set of structures are used for memory storage of B-engine-over- 
 // VDIF. The input thread will receive VDIF packets, pack them into a   

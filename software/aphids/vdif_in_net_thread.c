@@ -101,7 +101,7 @@ static void *run_method(
 	void *received_vdif_packets = NULL;
 	ssize_t n_received_vdif_packets = 0;
 	ssize_t index_received_vdif_packets = 0;
-	ssize_t N_ALL_VDIF_PACKETS = 0, N_SKIPPED_VDIF_PACKETS = 0, N_USED_VDIF_PACKETS = 0;
+	ssize_t N_ALL_VDIF_PACKETS = 0, N_SKIPPED_VDIF_PACKETS = 0, N_USED_VDIF_PACKETS = 0, N_INVALID_VDIF_PACKETS;
 	
 	// B-engine bookkeeping
 	int64_t b_first = -1;
@@ -252,7 +252,7 @@ static void *run_method(
 						state = STATE_ERROR;
 						break; // switch(state)
 					} else if (rv == 0) {
-						fprintf(stdout,"%s:%s(%d): VDIF done, received %ld packets in total (%ld skipped, %ld used)\n",__FILE__,__FUNCTION__,__LINE__,(long int)N_ALL_VDIF_PACKETS,(long int)N_SKIPPED_VDIF_PACKETS,(long int)N_USED_VDIF_PACKETS);
+						fprintf(stdout,"%s:%s(%d): VDIF done, received %ld packets in total (%ld skipped, %ld invalid, %ld used)\n",__FILE__,__FUNCTION__,__LINE__,(long int)N_ALL_VDIF_PACKETS,(long int)N_SKIPPED_VDIF_PACKETS,(long int)N_INVALID_VDIF_PACKETS,(long int)N_USED_VDIF_PACKETS);
 						// this means end-of-transmission, reset state 
 						b_first = -1;
 						// should probably go to STATE_IDLE, but for now
@@ -307,7 +307,12 @@ static void *run_method(
 					// get index offset
 					index_offset = get_beng_group_index_offset(&local_db_out, index_db_out, (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets);
 					if (index_offset < 0) {
-						N_SKIPPED_VDIF_PACKETS++;
+						if (index_offset == vidErrorPacketInvalid) {
+							N_INVALID_VDIF_PACKETS++;
+						}
+						if (index_offset == vidErrorPacketBeforeStartTime) {
+							N_SKIPPED_VDIF_PACKETS++;
+						}
 						// throw away these frames, they are from before
 						// the range we're interested in
 						index_received_vdif_packets++;
