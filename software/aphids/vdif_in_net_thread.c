@@ -101,7 +101,7 @@ static void *run_method(
 	void *received_vdif_packets = NULL;
 	ssize_t n_received_vdif_packets = 0;
 	ssize_t index_received_vdif_packets = 0;
-	ssize_t N_ALL_VDIF_PACKETS = 0, N_SKIPPED_VDIF_PACKETS = 0, N_USED_VDIF_PACKETS = 0, N_INVALID_VDIF_PACKETS;
+	ssize_t N_ALL_VDIF_PACKETS = 0, N_SKIPPED_VDIF_PACKETS = 0, N_USED_VDIF_PACKETS = 0, N_INVALID_VDIF_PACKETS = 0;
 	
 	// B-engine bookkeeping
 	int64_t b_first = -1;
