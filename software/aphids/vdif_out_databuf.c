@@ -51,7 +51,7 @@ void init_vdif_out(vdif_out_packet_group_t **vpg_buf_cpu, int index) {
 			hdr->w2.num_channels = 0; // 2**num_channels(0) = 1 channel
 			hdr->w2.ver = 0; // TODO: check correct value
 			// w3
-			hdr->w3.stationID = (((uint16_t)'S')&0x00FF<<8) | (((uint16_t)'m')&0x00FF); // TODO: check correct order
+			hdr->w3.stationID = ((((uint16_t)'S')&0x00FF)<<8) | (((uint16_t)'m')&0x00FF); // TODO: check correct order
 			hdr->w3.threadID = jj;
 			hdr->w3.bps = 2; // needs updating
 			hdr->w3.dt = 0; // real data
