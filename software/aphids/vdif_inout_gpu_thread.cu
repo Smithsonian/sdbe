@@ -16,6 +16,8 @@ extern "C" {
 #include "vdif_inout_gpu_thread.h"
 }
 
+#include <thrust/device_vector.h>
+#include <thrust/transform_reduce.h>
 #include <cuda_runtime.h>
 #include <vector_types.h>
 #include <cufft.h>
@@ -23,7 +25,8 @@ extern "C" {
 //#define GPU_DEBUG		// slows down performance
 #define GPU_COMPUTE
 //#define GPU_MULTI
-#define QUANTIZE_THRESHOLD 1.f
+#define QUANTIZE_THRESHOLD_COMPUTE // toggle threshold calculation
+//#define QUANTIZE_THRESHOLD 1.f
 
 #ifdef GPU_MULTI
 #define NUM_GPU 4
@@ -55,6 +58,84 @@ static void HandleError( cudaError_t err,const char *file,int line ) {
 #define HANDLE_ERROR( err ) (HandleError( err, __FILE__, __LINE__ ))
 
 /**
+ * structure used to accumulate the moments and other 
+ * statistical properties encountered so far.
+ * @author: Joseph Rhoads
+ * reference: https://github.com/thrust/thrust/blob/master/examples/summary_statistics.cu
+ * */
+template <typename T>
+struct summary_stats_data
+{
+    T n;
+    T mean;
+    T M2;
+
+    // initialize to the identity element
+    void initialize()
+    {
+      n = mean = M2 = 0;
+    }
+
+    T variance()   { return M2 / (n - 1); }
+    T variance_n() { return M2 / n; }
+};
+
+/**
+ * stats_unary_op is a functor that takes in a value x and
+ * returns a variace_data whose mean value is initialized to x.
+ * @author: Joseph Rhoads
+ * reference: https://github.com/thrust/thrust/blob/master/examples/summary_statistics.cu
+ * */
+template <typename T>
+struct summary_stats_unary_op
+{
+    __host__ __device__
+    summary_stats_data<T> operator()(const T& x) const
+    {
+         summary_stats_data<T> result;
+         result.n    = 1;
+         result.mean = x;
+         result.M2   = 0;
+
+         return result;
+    }
+};
+
+/**
+ * summary_stats_binary_op is a functor that accepts two summary_stats_data 
+ * structs and returns a new summary_stats_data which are an
+ * approximation to the summary_stats for 
+ * all values that have been agregated so far
+ * @author: Joseph Rhoads
+ * reference: https://github.com/thrust/thrust/blob/master/examples/summary_statistics.cu
+ * */
+template <typename T>
+struct summary_stats_binary_op 
+    : public thrust::binary_function<const summary_stats_data<T>&, 
+                                     const summary_stats_data<T>&,
+                                           summary_stats_data<T> >
+{
+    __host__ __device__
+    summary_stats_data<T> operator()(const summary_stats_data<T>& x, const summary_stats_data <T>& y) const
+    {
+        summary_stats_data<T> result;
+
+        // precompute some common subexpressions
+        T n  = x.n + y.n;
+        T delta  = y.mean - x.mean;
+        T delta2 = delta  * delta;
+
+        //Basic number of samples (n)
+        result.n   = n;
+
+        result.mean = x.mean + delta * y.n / n;
+        result.M2  = x.M2 + y.M2;
+        result.M2 += delta2 * x.n * y.n / n;
+        return result;
+    }
+};
+
+/**
  * Structure for APHIDS resampling 
  * @author Katherine Rosenfeld
  * */
@@ -62,6 +143,8 @@ static void HandleError( cudaError_t err,const char *file,int line ) {
 typedef struct aphids_resampler {
     int deviceId;
     int skip_chan;
+    float quantizeThreshold_0, quantizeThreshold_1;
+    summary_stats_data<float> ssd;
     cufftComplex *gpu_A_0, *gpu_A_1;
     cufftComplex *gpu_B_0, *gpu_B_1;
     vdif_out_data_group_t *gpu_out_buf;
@@ -82,7 +165,12 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
   int inembed[3], onembed[3];
   cufftResult cufft_status = CUFFT_SUCCESS;
 
+  // device ID
   resampler->deviceId = _deviceId;
+
+  // quantization thresholds:
+  resampler->quantizeThreshold_0 = 0;
+  resampler->quantizeThreshold_1 = 0;
 
   // switch to device
   cudaSetDevice(resampler->deviceId);
@@ -466,7 +554,7 @@ int SwarmR2C(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
   cufftResult cufft_status;
 
 #ifdef GPU_COMPUTE
-//  cudaSetDevice(resampler->deviceId);
+  //cudaSetDevice(resampler->deviceId);
 #ifdef GPU_DEBUG
   float elapsedTime;
   cudaEventRecord(resampler->tic,resampler->stream);
@@ -508,7 +596,7 @@ int Hr2dbeC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
   int i;
   cufftResult cufft_status;
 #ifdef GPU_COMPUTE
-//  cudaSetDevice(resampler->deviceId);
+  //cudaSetDevice(resampler->deviceId);
 #ifdef GPU_DEBUG
   float elapsedTime;
   cudaEventRecord(resampler->tic,resampler->stream);
@@ -603,6 +691,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
   for (i=0; i< NUM_GPU; i++){
     aphids_resampler_init(&(resampler[i]), i);
   }
+
 
   while (run_threads()) { // hashpipe wants us to keep running
 
@@ -750,7 +839,35 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	// transform R2DBE spectra to trimmed and resampled time series
 	state = Hr2dbeC2R(&(resampler[i]), &aphids_ctx);
 
-	// calculate threshold for quantization?
+	// calculate threshold for quantization
+#ifdef QUANTIZE_THRESHOLD_COMPUTE
+	if (resampler[i].quantizeThreshold_0 == 0){
+
+          // wrap as device pointer
+          thrust::device_ptr<float> dev_ptr;
+
+          // setup arguments
+          summary_stats_unary_op<float>  unary_op;
+          summary_stats_binary_op<float> binary_op;
+          summary_stats_data<float>      init,result;
+
+	  // calculate variance for phased sums independently
+  	  init.initialize();
+
+	  dev_ptr = thrust::device_pointer_cast((float *) resampler[i].gpu_A_0);
+          result = thrust::transform_reduce(dev_ptr, 
+						dev_ptr + 2*BENG_CHANNELS_*BENG_SNAPSHOTS,
+						unary_op, init, binary_op);
+	  resampler[i].quantizeThreshold_0 = sqrt(result.variance());
+
+	  dev_ptr = thrust::device_pointer_cast((float *) resampler[i].gpu_A_1);
+  	  init.initialize();
+          result = thrust::transform_reduce(dev_ptr, 
+						dev_ptr + 2*BENG_CHANNELS_*BENG_SNAPSHOTS,
+						unary_op, init, binary_op);
+	  resampler[i].quantizeThreshold_1 = sqrt(result.variance());
+        }
+#endif
 
 	// quantize to 2-bits
 	//~ already set device: cudaSetDevice(i);
@@ -758,10 +875,10 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	blocks.x = 512; blocks.y = 1; blocks.z = 1;
 	quantize2bit<<<blocks,threads>>>((float *) resampler[i].gpu_A_0, (unsigned int*) resampler[i].gpu_B_0, 
 	(2*BENG_CHANNELS_*BENG_SNAPSHOTS*EXPANSION_FACTOR),
-	QUANTIZE_THRESHOLD);
+	resampler[i].quantizeThreshold_0);
 	quantize2bit<<<blocks,threads>>>((float *) resampler[i].gpu_A_1, (unsigned int*) resampler[i].gpu_B_1, 
 	(2*BENG_CHANNELS_*BENG_SNAPSHOTS*EXPANSION_FACTOR),
-	QUANTIZE_THRESHOLD);
+	resampler[i].quantizeThreshold_1);
 	
 	// copy data to output buffer
 	cudaMemcpy((void *)resampler[i].gpu_out_buf,(void *)resampler[i].gpu_B_0,sizeof(vdif_out_data_block_t),cudaMemcpyDeviceToDevice);
