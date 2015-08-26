@@ -146,6 +146,8 @@ static void *run_method(hashpipe_thread_args_t * args) {
 					}
 				}
 				
+				aphids_log(&aphids_ctx, APHIDS_LOG_INFO, "hashpipe databuf filled");
+				
 				fprintf(stdout,"%s:%s(%d): input buffer %d filled\n",__FILE__,__FUNCTION__,__LINE__,index_db_in);
 				
 				// grab the data at this index ...

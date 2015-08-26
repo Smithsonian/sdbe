@@ -380,6 +380,7 @@ static void *run_method(
 							break; // while (hashpipe_databuf_wait_free(...) ... )
 						}
 					}
+					aphids_log(&aphids_ctx, APHIDS_LOG_INFO, "hashpipe databuf free");
 					
 					fprintf(stdout,"%s:%s(%d): output buffer %d free\n",__FILE__,__FUNCTION__,__LINE__,index_db_out);
 					

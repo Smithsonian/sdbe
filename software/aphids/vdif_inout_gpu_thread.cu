@@ -661,6 +661,8 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
 	}
 	
+	aphids_log(&aphids_ctx, APHIDS_LOG_INFO, "hashpipe databuf filled");
+	
 	fprintf(stdout,"%s:%s(%d): input buffer %d filled\n",__FILE__,__FUNCTION__,__LINE__,index_in);
 
 	// check if next block free in output buffer; this could possibly
@@ -683,6 +685,8 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	  }
 
 	}
+	
+	aphids_log(&aphids_ctx, APHIDS_LOG_INFO, "hashpipe databuf free");
 	
 	fprintf(stdout,"%s:%s(%d): output buffer %d free\n",__FILE__,__FUNCTION__,__LINE__,index_out);
 	
