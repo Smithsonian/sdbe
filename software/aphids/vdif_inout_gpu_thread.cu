@@ -38,6 +38,10 @@ extern "C" {
 #define STATE_INIT      0
 #define STATE_PROC      1
 
+#define GPU_BUFFER_SIZE_A (BENG_FRAMES_PER_GROUP*BENG_SNAPSHOTS*BENG_CHANNELS_*sizeof(cufftComplex)) // 671088640B
+#define GPU_BUFFER_SIZE_B ((BENG_FRAMES_PER_GROUP-1)*BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS*sizeof(cufftComplex)) // 654950400B
+#define GPU_BUFFER_SIZE_OUT (sizeof(vdif_out_data_group_t)) // 67108864B
+
 #ifdef GPU_DEBUG
 void reportDeviceMemInfo(void){
   size_t avail,total;
@@ -189,12 +193,14 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
 #endif // GPU_DEBUG
 
   // allocate device memory
-  cudaMalloc((void **)&(resampler->gpu_A_0), BENG_FRAMES_PER_GROUP*BENG_SNAPSHOTS*BENG_CHANNELS_*sizeof(cufftComplex));	// 671088640B
-  cudaMalloc((void **)&(resampler->gpu_A_1), BENG_FRAMES_PER_GROUP*BENG_SNAPSHOTS*BENG_CHANNELS_*sizeof(cufftComplex));	// 671088640B
-  cudaMalloc((void **)&(resampler->gpu_B_0), (BENG_FRAMES_PER_GROUP-1)*BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS*sizeof(cufftComplex));	// 654950400B
-  cudaMalloc((void **)&(resampler->gpu_B_1), (BENG_FRAMES_PER_GROUP-1)*BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS*sizeof(cufftComplex));	// 654950400B
-  cudaMalloc((void **)&(resampler->gpu_out_buf), sizeof(vdif_out_data_group_t)); // 67108864B
-
+  cudaMalloc((void **)&(resampler->gpu_A_0), GPU_BUFFER_SIZE_A);	// 671088640B
+  cudaMalloc((void **)&(resampler->gpu_A_1), GPU_BUFFER_SIZE_A);	// 671088640B
+  cudaMalloc((void **)&(resampler->gpu_B_0), GPU_BUFFER_SIZE_B);	// 654950400B
+  cudaMalloc((void **)&(resampler->gpu_B_1), GPU_BUFFER_SIZE_B);	// 654950400B
+  cudaMalloc((void **)&(resampler->gpu_out_buf), GPU_BUFFER_SIZE_OUT); // 67108864B
+  cudaError_t last_err = cudaGetLastError();
+  fprintf(stdout,"%s:%s(%d): last_err = %d [%s]\n",__FILE__,__FUNCTION__,__LINE__,(int)last_err,cudaGetErrorString(last_err));
+  
  /*
  * http://docs.nvidia.com/cuda/cufft/index.html#cufft-setup
  * iFFT transforming complex SWARM spectra into real time series.
@@ -667,6 +673,20 @@ int aphids_resampler_destroy(aphids_resampler_t *resampler) {
 
 static void *run_method(hashpipe_thread_args_t * args) {
 
+	#ifdef DEBUG_DATADUMP
+	int _debug_datadump_done = DEBUG_DATADUMP;
+	FILE *_debug_datadump_fd;
+	_debug_datadump_fd = fopen("datadump-vdif_inout_gpu_thread.dat","w");
+	void *_debug_datadump_buf_a_0;
+	void *_debug_datadump_buf_a_1;
+	void *_debug_datadump_buf_b_0;
+	void *_debug_datadump_buf_b_1;
+	_debug_datadump_buf_a_0 = malloc(GPU_BUFFER_SIZE_A);
+	_debug_datadump_buf_a_1 = malloc(GPU_BUFFER_SIZE_A);
+	_debug_datadump_buf_b_0 = malloc(GPU_BUFFER_SIZE_B);
+	_debug_datadump_buf_b_1 = malloc(GPU_BUFFER_SIZE_B);
+	#endif
+
   int i = 0;
   int rv = 0;
   int index_in = 0;
@@ -829,6 +849,17 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	//   * needs moving wait-filled/free around and dependent on the
 	//     processing state for each GPU
 
+	#ifdef DEBUG_DATADUMP
+	if (_debug_datadump_done > 0 && _debug_datadump_buf_a_0 != NULL && _debug_datadump_buf_a_1 != NULL) {
+		cudaMemcpy(_debug_datadump_buf_a_0,resampler[i].gpu_A_0,GPU_BUFFER_SIZE_A,cudaMemcpyDeviceToHost);
+		cudaMemcpy(_debug_datadump_buf_a_1,resampler[i].gpu_A_1,GPU_BUFFER_SIZE_A,cudaMemcpyDeviceToHost);
+		if (_debug_datadump_fd != NULL) {
+			fwrite(_debug_datadump_buf_a_0, GPU_BUFFER_SIZE_A, 1, _debug_datadump_fd);
+			fwrite(_debug_datadump_buf_a_1, GPU_BUFFER_SIZE_A, 1, _debug_datadump_fd);
+		}
+	}
+	#endif
+
 	// reorder BENG data
 	//~ already set device: cudaSetDevice(i);
         threads.x = 16; threads.y = 16; threads.z = 1;
@@ -836,14 +867,58 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	reorderTzp_smem<<<blocks,threads>>>(resampler[i].gpu_A_0, resampler[i].gpu_B_0, BENG_BUFFER_IN_COUNTS);
 	reorderTzp_smem<<<blocks,threads>>>(resampler[i].gpu_A_1, resampler[i].gpu_B_1, BENG_BUFFER_IN_COUNTS);
 
+	#ifdef DEBUG_DATADUMP
+	if (_debug_datadump_done > 0 && _debug_datadump_buf_b_0 != NULL && _debug_datadump_buf_b_1 != NULL) {
+		cudaMemcpy(_debug_datadump_buf_b_0,resampler[i].gpu_B_0,GPU_BUFFER_SIZE_B,cudaMemcpyDeviceToHost);
+		cudaMemcpy(_debug_datadump_buf_b_1,resampler[i].gpu_B_1,GPU_BUFFER_SIZE_B,cudaMemcpyDeviceToHost);
+		if (_debug_datadump_fd != NULL) {
+			fwrite(_debug_datadump_buf_b_0, GPU_BUFFER_SIZE_B, 1, _debug_datadump_fd);
+			fwrite(_debug_datadump_buf_b_1, GPU_BUFFER_SIZE_B, 1, _debug_datadump_fd);
+		}
+	}
+	#endif
+
 	// transform SWARM spectra to time series
 	state = SwarmC2R(&(resampler[i]), &aphids_ctx);
+
+	#ifdef DEBUG_DATADUMP
+	if (_debug_datadump_done > 0 && _debug_datadump_buf_a_0 != NULL && _debug_datadump_buf_a_1 != NULL) {
+		cudaMemcpy(_debug_datadump_buf_a_0,resampler[i].gpu_A_0,GPU_BUFFER_SIZE_A,cudaMemcpyDeviceToHost);
+		cudaMemcpy(_debug_datadump_buf_a_1,resampler[i].gpu_A_1,GPU_BUFFER_SIZE_A,cudaMemcpyDeviceToHost);
+		if (_debug_datadump_fd != NULL) {
+			fwrite(_debug_datadump_buf_a_0, GPU_BUFFER_SIZE_A, 1, _debug_datadump_fd);
+			fwrite(_debug_datadump_buf_a_1, GPU_BUFFER_SIZE_A, 1, _debug_datadump_fd);
+		}
+	}
+	#endif
 
 	// transform SWARM time series to R2DBE compatible spectra
 	state = SwarmR2C(&(resampler[i]), &aphids_ctx);
 
+	#ifdef DEBUG_DATADUMP
+	if (_debug_datadump_done > 0 && _debug_datadump_buf_b_0 != NULL && _debug_datadump_buf_b_1 != NULL) {
+		cudaMemcpy(_debug_datadump_buf_b_0,resampler[i].gpu_B_0,GPU_BUFFER_SIZE_B,cudaMemcpyDeviceToHost);
+		cudaMemcpy(_debug_datadump_buf_b_1,resampler[i].gpu_B_1,GPU_BUFFER_SIZE_B,cudaMemcpyDeviceToHost);
+		if (_debug_datadump_fd != NULL) {
+			fwrite(_debug_datadump_buf_b_0, GPU_BUFFER_SIZE_B, 1, _debug_datadump_fd);
+			fwrite(_debug_datadump_buf_b_1, GPU_BUFFER_SIZE_B, 1, _debug_datadump_fd);
+		}
+	}
+	#endif
+
 	// transform R2DBE spectra to trimmed and resampled time series
 	state = Hr2dbeC2R(&(resampler[i]), &aphids_ctx);
+
+	#ifdef DEBUG_DATADUMP
+	if (_debug_datadump_done > 0 && _debug_datadump_buf_a_0 != NULL && _debug_datadump_buf_a_1 != NULL) {
+		cudaMemcpy(_debug_datadump_buf_a_0,resampler[i].gpu_A_0,GPU_BUFFER_SIZE_A,cudaMemcpyDeviceToHost);
+		cudaMemcpy(_debug_datadump_buf_a_1,resampler[i].gpu_A_1,GPU_BUFFER_SIZE_A,cudaMemcpyDeviceToHost);
+		if (_debug_datadump_fd != NULL) {
+			fwrite(_debug_datadump_buf_a_0, GPU_BUFFER_SIZE_A, 1, _debug_datadump_fd);
+			fwrite(_debug_datadump_buf_a_1, GPU_BUFFER_SIZE_A, 1, _debug_datadump_fd);
+		}
+	}
+	#endif
 
 	// calculate threshold for quantization
 #ifdef QUANTIZE_THRESHOLD_COMPUTE
@@ -899,6 +974,18 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	(2*BENG_CHANNELS_*BENG_SNAPSHOTS*EXPANSION_FACTOR),
 	resampler[i].quantizeThreshold_1,resampler[i].quantizeOffset_1);
 	
+	#ifdef DEBUG_DATADUMP
+	if (_debug_datadump_done > 0 && _debug_datadump_buf_b_0 != NULL && _debug_datadump_buf_b_1 != NULL) {
+		cudaMemcpy(_debug_datadump_buf_b_0,resampler[i].gpu_B_0,GPU_BUFFER_SIZE_B,cudaMemcpyDeviceToHost);
+		cudaMemcpy(_debug_datadump_buf_b_1,resampler[i].gpu_B_1,GPU_BUFFER_SIZE_B,cudaMemcpyDeviceToHost);
+		if (_debug_datadump_fd != NULL) {
+			fwrite(_debug_datadump_buf_b_0, GPU_BUFFER_SIZE_B, 1, _debug_datadump_fd);
+			fwrite(_debug_datadump_buf_b_1, GPU_BUFFER_SIZE_B, 1, _debug_datadump_fd);
+		}
+	}
+	_debug_datadump_done--;
+	#endif
+
 	// copy data to output buffer
 	cudaMemcpy((void *)resampler[i].gpu_out_buf,(void *)resampler[i].gpu_B_0,sizeof(vdif_out_data_block_t),cudaMemcpyDeviceToDevice);
 	cudaMemcpy((void *)resampler[i].gpu_out_buf + sizeof(vdif_out_data_block_t),(void *)resampler[i].gpu_B_1,sizeof(vdif_out_data_block_t),cudaMemcpyDeviceToDevice);
@@ -936,6 +1023,24 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
   // destroy aphids context and exit
   aphids_destroy(&aphids_ctx);
+  
+	#ifdef DEBUG_DATADUMP
+	if (_debug_datadump_buf_a_0 != NULL) {
+		free(_debug_datadump_buf_a_0);
+	}
+	if (_debug_datadump_buf_a_1 != NULL) {
+		free(_debug_datadump_buf_a_1);
+	}
+	if (_debug_datadump_buf_b_0 != NULL) {
+		free(_debug_datadump_buf_b_0);
+	}
+	if (_debug_datadump_buf_b_1 != NULL) {
+		free(_debug_datadump_buf_b_1);
+	}
+	if (_debug_datadump_fd != NULL) {
+		fclose(_debug_datadump_fd);
+	}
+	#endif
 
   return NULL;
 }

@@ -75,6 +75,12 @@ static void *run_method(
 #endif
 ) {
 	
+	#ifdef DEBUG_DATADUMP
+	int _debug_datadump_done = DEBUG_DATADUMP;
+	FILE *_debug_datadump_fd;
+	_debug_datadump_fd = fopen("datadump-vdif_in_net_thread.dat","w");
+	#endif
+	
 	// misc
 	int ii = 0;
 	int rv = 0;
@@ -363,6 +369,15 @@ static void *run_method(
 //   increment fill index
 				if (start_copy) {// && !copy_in_progress_flags[index_db_out]) {
 					fprintf(stdout,"%s:%s(%d): start copying\n",__FILE__,__FUNCTION__,__LINE__);
+					
+					#ifdef DEBUG_DATADUMP
+					if (_debug_datadump_done-- > 0) {
+						if (_debug_datadump_fd != NULL) {
+							fwrite(local_db_out.bgc[index_db_out].bgv_buf_cpu, sizeof(beng_group_vdif_buffer_t), 1, _debug_datadump_fd);
+						}
+					}
+					#endif
+					
 #ifndef STANDALONE_TEST
 					//~ printf("start_copy");
 					// wait for buffer index to be ready, there may be
@@ -494,6 +509,12 @@ static void *run_method(
 	// destroy aphids context and exit
 	aphids_destroy(&aphids_ctx);
 #endif // STANDALONE_TEST
+	
+	#ifdef DEBUG_DATADUMP
+	if (_debug_datadump_fd != NULL) {
+		fclose(_debug_datadump_fd);
+	}
+	#endif
 	
 	return NULL;
 }
