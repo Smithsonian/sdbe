@@ -76,6 +76,7 @@ struct summary_stats_data
       n = mean = M2 = 0;
     }
 
+    T average()       { return mean; }
     T variance()   { return M2 / (n - 1); }
     T variance_n() { return M2 / n; }
 };
@@ -144,6 +145,7 @@ typedef struct aphids_resampler {
     int deviceId;
     int skip_chan;
     float quantizeThreshold_0, quantizeThreshold_1;
+    float quantizeOffset_0, quantizeOffset_1;
     summary_stats_data<float> ssd;
     cufftComplex *gpu_A_0, *gpu_A_1;
     cufftComplex *gpu_B_0, *gpu_B_1;
@@ -171,6 +173,9 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
   // quantization thresholds:
   resampler->quantizeThreshold_0 = 0;
   resampler->quantizeThreshold_1 = 0;
+  // quantization offsets:
+  resampler->quantizeOffset_0 = 0;
+  resampler->quantizeOffset_1 = 0;
 
   // switch to device
   cudaSetDevice(resampler->deviceId);
@@ -485,19 +490,20 @@ any number of y-threads, and any number of x-blocks.
 @author Andre Young
 @date June 2015
 */
-__global__ void quantize2bit(const float *in, unsigned int *out, int N, float thresh)
+__global__ void quantize2bit(const float *in, unsigned int *out, int N, float thresh, float offset)
 {
 	int idx_in = blockIdx.x*blockDim.x*blockDim.y + threadIdx.y*blockDim.x + threadIdx.x;
 	int idx_out = blockIdx.x*blockDim.y + threadIdx.y;
 	
 	for (int ii=0; (idx_in+ii)<N; ii+=gridDim.x*blockDim.x*blockDim.y)
 	{
+		float val_in = in[idx_in+ii] - offset;
 		//This is is for 00 = -2, 01 = -1, 10 = 0, 11 = 1.
 		/* Assume sample x > 0, lower bit indicates above threshold. Then
 		 * test, if x < 0, XOR with 11.
 		 */
 		//int sample_2bit = ( ((fabsf(in[idx_in+ii]) >= thresh) | 0x02) ^ (0x03*(in[idx_in+ii] < 0)) ) & 0x3;
-		int sample_2bit = ( ((fabsf(in[idx_in+ii]) >= thresh) | 0x02) ^ (0x03*(in[idx_in+ii] < 0)) ) & OUTPUT_MAX_VALUE_MASK;
+		int sample_2bit = ( ((fabsf(val_in) >= thresh) | 0x02) ^ (0x03*(val_in < 0)) ) & OUTPUT_MAX_VALUE_MASK;
 		//~ //This is for 11 = -2, 10 = -1, 01 = 0, 10 = 1
 		//~ int sample_2bit = ((fabsf(in[idx_in+ii]) <= thresh) | ((in[idx_in+ii] < 0)<<1)) & OUTPUT_MAX_VALUE_MASK;
 		sample_2bit = sample_2bit << (threadIdx.x*2);
@@ -859,6 +865,8 @@ static void *run_method(hashpipe_thread_args_t * args) {
 						dev_ptr + 2*BENG_CHANNELS_*BENG_SNAPSHOTS,
 						unary_op, init, binary_op);
 	  resampler[i].quantizeThreshold_0 = sqrt(result.variance());
+	  // add computation of mean
+	  resampler[i].quantizeOffset_0 = result.average();
 
 	  dev_ptr = thrust::device_pointer_cast((float *) resampler[i].gpu_A_1);
   	  init.initialize();
@@ -866,7 +874,18 @@ static void *run_method(hashpipe_thread_args_t * args) {
 						dev_ptr + 2*BENG_CHANNELS_*BENG_SNAPSHOTS,
 						unary_op, init, binary_op);
 	  resampler[i].quantizeThreshold_1 = sqrt(result.variance());
-        }
+	  // add computation of mean
+	  resampler[i].quantizeOffset_1 = result.average();
+
+      // set the same quantization parameters across all resamplers
+      for (int ii=0; ii < NUM_GPU; ii++) {
+		  resampler[ii].quantizeThreshold_0 = resampler[i].quantizeThreshold_0;
+		  resampler[ii].quantizeOffset_0 = resampler[i].quantizeOffset_0;
+		  resampler[ii].quantizeThreshold_1 = resampler[i].quantizeThreshold_1;
+		  resampler[ii].quantizeOffset_1 = resampler[i].quantizeOffset_1;
+	  }
+	  fprintf(stdout,"%s:%s(%d): Quantization parameters set to {0:(%f,%f),1:(%f,%f)}\n",__FILE__,__FUNCTION__,__LINE__,resampler[i].quantizeOffset_0,resampler[i].quantizeThreshold_0,resampler[i].quantizeOffset_1,resampler[i].quantizeThreshold_1);
+    }
 #endif
 
 	// quantize to 2-bits
@@ -875,10 +894,10 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	blocks.x = 512; blocks.y = 1; blocks.z = 1;
 	quantize2bit<<<blocks,threads>>>((float *) resampler[i].gpu_A_0, (unsigned int*) resampler[i].gpu_B_0, 
 	(2*BENG_CHANNELS_*BENG_SNAPSHOTS*EXPANSION_FACTOR),
-	resampler[i].quantizeThreshold_0);
+	resampler[i].quantizeThreshold_0,resampler[i].quantizeOffset_0);
 	quantize2bit<<<blocks,threads>>>((float *) resampler[i].gpu_A_1, (unsigned int*) resampler[i].gpu_B_1, 
 	(2*BENG_CHANNELS_*BENG_SNAPSHOTS*EXPANSION_FACTOR),
-	resampler[i].quantizeThreshold_1);
+	resampler[i].quantizeThreshold_1,resampler[i].quantizeOffset_1);
 	
 	// copy data to output buffer
 	cudaMemcpy((void *)resampler[i].gpu_out_buf,(void *)resampler[i].gpu_B_0,sizeof(vdif_out_data_block_t),cudaMemcpyDeviceToDevice);
