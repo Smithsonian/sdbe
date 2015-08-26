@@ -44,14 +44,14 @@ void init_vdif_out(vdif_out_packet_group_t **vpg_buf_cpu, int index) {
 			hdr->w0.invalid = 0;
 			// w1
 			hdr->w1.df_num_insec = 0; // needs updating for each packet
-			hdr->w1.ref_epoch = 30; // TODO: need to set reference epoch
+			hdr->w1.ref_epoch = 0; // needs updating on first packet
 			hdr->w1.UA = 0;
 			// w2
 			hdr->w2.df_len = sizeof(vdif_out_packet_t)/8;
 			hdr->w2.num_channels = 0; // 2**num_channels(0) = 1 channel
 			hdr->w2.ver = 0; // TODO: check correct value
 			// w3
-			hdr->w3.stationID = ('S'&0x00FF<<8) | ('m'&0x00FF); // TODO: check correct order
+			hdr->w3.stationID = (((uint16_t)'S')&0x00FF<<8) | (((uint16_t)'m')&0x00FF); // TODO: check correct order
 			hdr->w3.threadID = jj;
 			hdr->w3.bps = 2; // needs updating
 			hdr->w3.dt = 0; // real data

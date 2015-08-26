@@ -134,6 +134,7 @@ typedef struct beng_group_completion {
 	int gpu_id;
 	void *memcpy_stream;
 	beng_frame_completion_t bfc[BENG_FRAMES_PER_GROUP];
+	vdif_in_header_t vdif_header_template; // NOTE: This should probably be vdif_out_header_t...but for now they're compatible
 } beng_group_completion_t;
 
 // The buffer holding a given number of data units passed between 
@@ -274,6 +275,8 @@ int transfer_beng_group_to_gpu(vdif_in_databuf_t *bgc_buf, int index);
 // -------
 //   1 if complete, 0 if still busy, -1 on error
 int check_transfer_beng_group_to_gpu_complete(vdif_in_databuf_t *bgc_buf, int index);
+
+void fill_vdif_header_template(vdif_in_header_t *vdif_hdr_copy, vdif_in_packet_t *vdif_pkt_ref, int n_skipped);
 
 void print_beng_group_completion(beng_group_completion_t *bgc, const char *tag);
 

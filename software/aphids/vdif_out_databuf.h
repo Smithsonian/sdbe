@@ -113,6 +113,7 @@ typedef struct quantized_storage {
 	int N_32bit_words_per_chan; // size of quantized storage measured in 32bit wide units
 	int gpu_id;
 	void *memcpy_stream;
+	vdif_out_header_t vdif_header_template;
 } quantized_storage_t;
 
 // The buffer holding a given number of data units passed between 

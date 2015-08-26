@@ -60,6 +60,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	vdif_out_data_group_t *vdg_buf_cpu[VDIF_OUT_BUFFER_SIZE];
 	vdif_out_packet_group_t *vpg_buf_cpu[VDIF_OUT_BUFFER_SIZE];
 	uint32_t df_num_insec, // wrapped incrementing counter
+		ref_epoch, // fixed value
 		secs_inre; // incrementing counter
 	uint64_t edh_psn;
 	
@@ -121,8 +122,9 @@ static void *run_method(hashpipe_thread_args_t * args) {
 					init_vdif_out(vpg_buf_cpu, ii);
 				}
 				df_num_insec = 0;
+				ref_epoch = 0;
 				secs_inre = 0;
-				edh_psn = 136459;
+				edh_psn = (uint64_t)0xffffffffffffffff;
 				
 				// and set our next state
 				state = STATE_PROCESS;
@@ -150,6 +152,14 @@ static void *run_method(hashpipe_thread_args_t * args) {
 				qs_buf.blocks[index_db_in] = (quantized_storage_t)db_in->blocks[index_db_in];
 				// set local parameters in qs_buf.blocks, mainly local buffer
 				qs_buf.blocks[index_db_in].vdg_buf_cpu = vdg_buf_cpu[qs_buf.blocks[index_db_in].gpu_id];
+				// update timestamp information if needed
+				if (!qs_buf.blocks[index_db_in].vdif_header_template.w0.invalid) {
+					secs_inre = qs_buf.blocks[index_db_in].vdif_header_template.w0.secs_inre;
+					df_num_insec = qs_buf.blocks[index_db_in].vdif_header_template.w1.df_num_insec;
+					ref_epoch = qs_buf.blocks[index_db_in].vdif_header_template.w1.ref_epoch;
+					edh_psn = 0x01;
+					fprintf(stdout,"%s:%s(%d): initial timestamp is %u@%u.%u (psn = %lu)\n",__FILE__,__FUNCTION__,__LINE__,ref_epoch,secs_inre,df_num_insec,edh_psn);
+				}
 				
 				print_quantized_storage(&qs_buf.blocks[index_db_in], "");
 				

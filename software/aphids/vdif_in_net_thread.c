@@ -110,6 +110,7 @@ static void *run_method(
 	
 	// data transfer bookkeeping
 	int start_copy = 0;
+	int first_copy = 1;
 	char copy_in_progress_flags[BENG_GROUPS_IN_BUFFER] = { 0 };
 	
 #ifndef STANDALONE_TEST
@@ -335,6 +336,12 @@ static void *run_method(
 						if (check_beng_group_complete(&local_db_out, index_db_out)) {
 							// set transfer on filled unit
 							start_copy = 1;
+							if (first_copy) {
+								// on copy, fill the VDIF header template
+								fill_vdif_header_template(&local_db_out.bgc[index_db_out].vdif_header_template,  (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets, (int)N_SKIPPED_VDIF_PACKETS);
+								// cancel first_copy
+								first_copy = 0;
+							}
 						}
 					}
 					// check if we should start copy

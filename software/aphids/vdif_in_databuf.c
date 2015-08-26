@@ -7,6 +7,41 @@
 #include "vdif_in_databuf.h"
 #include "vdif_in_databuf_cuda.h"
 
+// *********************************************************************
+// The below two defintions are used to ensure alignment of the output
+// data with real time, based on the number of input VDIF packets 
+// skipped (due to an incomplete B-engine frame). The offset of the 
+// input data with respect to real time can be calculated from the 
+// following formula:
+//
+//   TIME_OFFSET_IN_BENG_FFT_WINDOWS = MAGIC_OFFSET_IN_BENG_FFT_WINDOWS - 128*(VDIF_PER_BENG_FRAME-N_SKIPPED_VDIF_PACKETS)/VDIF_PER_BENG_FRAME
+//
+// The value of MAGIC_OFFSET_IN_BENG_FFT_WINDOWS was empirically derived
+// using cross-correlation between SDBE and single-dish reference data 
+// for a couple of scans.
+//
+// The value of TIME_OFFSET_IN_BENG_FFT_WINDOWS is the number of 
+// B-engine FFT windows that need to be skipped at the start of the 
+// valid input data to obtain time alignment with the reference single 
+// dish data, assuming the value is positive; if it is negative, it 
+// means additional (and unavailable) data needs to be added before the 
+// start of valid output data.
+//
+// TIME_OFFSET_IN_BENG_FFT_WINDOWS needs to be converted to a unit of 
+// measure that can be accommodated in the output VDIF timestamps. The
+// following formula converts a measurement in B-engine FFT windows to 
+// a measurement in VDIF out packets:
+//
+//   TIME_OFFSET_IN_VDIF_OUT = MAGIC_BENG_FFT_WINDOW_IN_VDIF_OUT*TIME_OFFSET_IN_BENG_FFT_WINDOWS
+//
+// The value of MAGIC_BENG_FFT_WINDOW_IN_VDIF_OUT is based on the 
+// following parameters:
+//   * VDIF out packet length = 8us
+//   * SWARM (effective) rate = 2496Msps
+//   * Number of samples per SWARM FFT window = 32768
+#define MAGIC_OFFSET_IN_BENG_FFT_WINDOWS (52)
+#define MAGIC_BENG_FFT_WINDOW_IN_VDIF_OUT ((float)32768/2496e6/8e-6)
+// *********************************************************************
 
 static void print_beng_frame_completion(beng_frame_completion_t *bfc, const char *tag);
 static void print_channel_completion(channel_completion_t *cc, const char *tag);
@@ -44,6 +79,7 @@ void init_beng_group(beng_group_completion_t *bgc, beng_group_vdif_buffer_t *bgv
 		// then set B-counter value
 		bfc->b = b_start+ii;
 	}
+	bgc->vdif_header_template.w0.invalid = 1;
 	#ifdef STANDALONE_TEST
 	//~ print_beng_group_completion(bgc,"init_beng_group: ");
 	#endif
@@ -143,6 +179,24 @@ int check_transfer_beng_group_to_gpu_complete(vdif_in_databuf_t *bgc_buf, int in
 	//~ return 1;
 }
 
+void fill_vdif_header_template(vdif_in_header_t *vdif_hdr_copy, vdif_in_packet_t *vdif_pkt_ref, int n_skipped) {
+	int offset_beng_fft_windows = 0;
+	int offset_vdif_out_packets = 0;
+	offset_beng_fft_windows = MAGIC_OFFSET_IN_BENG_FFT_WINDOWS - 128*(VDIF_PER_BENG_FRAME-n_skipped)/VDIF_PER_BENG_FRAME;
+	offset_vdif_out_packets = (int)(MAGIC_BENG_FFT_WINDOW_IN_VDIF_OUT*offset_beng_fft_windows);
+	fprintf(stdout,"%s:%s(%d): n_skipped = %d, offset_beng_fft_windows = %d, offset_vdif_out_packets = %d\n",__FILE__,__FUNCTION__,__LINE__,n_skipped,offset_beng_fft_windows,offset_vdif_out_packets);
+	// do basic copy
+	memcpy(vdif_hdr_copy, vdif_pkt_ref, sizeof(vdif_in_header_t));
+	// then set timestamp information that should change
+	if (offset_vdif_out_packets < 0) {
+		vdif_hdr_copy->w0.secs_inre--;
+		vdif_hdr_copy->w1.df_num_insec = 125000+offset_vdif_out_packets;
+	} else {
+		vdif_hdr_copy->w1.df_num_insec = offset_vdif_out_packets;
+	}
+	print_beng_over_vdif_header(vdif_hdr_copy,"TEMPLATE:");
+	// the rest of the header should be updated as needed at the output stage
+}
 
 // Print human-readable representation of B-engine group completion
 void print_beng_group_completion(beng_group_completion_t *bgc, const char *tag) {
