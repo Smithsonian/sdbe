@@ -309,7 +309,7 @@ __device__ int32_t get_fid_from_vdif(const int32_t *vdif_start){
 Read B-engine B-counter from VDIF header
 @author Andre Young
 */
-__device__ int32_t get_bcount_from_vdif(const int32_t *vdif_start){
+__device__ uint64_t get_bcount_from_vdif(const int32_t *vdif_start){
   return ((*(vdif_start + BENG_VDIF_HDR_1_OFFSET_INT)&0xFF000000)>>24) + ((*(vdif_start + BENG_VDIF_HDR_0_OFFSET_INT)&0x00FFFFFF)<<8);
 }
 /**
@@ -344,7 +344,8 @@ __global__ void vdif_to_beng(
  cufftComplex *beng_data_out_0,
  cufftComplex *beng_data_out_1,
 // int32_t *beng_frame_completion,
- int32_t num_vdif_frames){
+ int32_t num_vdif_frames,
+ uint64_t b_zero){
 // int32_t bcount_offset){
   int32_t cid,fid;
   int32_t bcount;
@@ -368,7 +369,7 @@ __global__ void vdif_to_beng(
     vdif_frame_start = vdif_frames + (iframe + threadIdx.y + blockIdx.x*blockDim.y)*(VDIF_INT_SIZE);
     cid = get_cid_from_vdif(vdif_frame_start);
     fid = get_fid_from_vdif(vdif_frame_start);
-    bcount = get_bcount_from_vdif(vdif_frame_start);
+    bcount = (int32_t)(get_bcount_from_vdif(vdif_frame_start) - b_zero);
     //cid_out[iframe + threadIdx.y + blockIdx.x*blockDim.y] = cid;
     //fid_out[iframe + threadIdx.y + blockIdx.x*blockDim.y] = fid;
     //bcount_out[iframe + threadIdx.y + blockIdx.x*blockDim.y] = bcount;
@@ -825,13 +826,14 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	// buffer is exactly the required size for BENG_FRAMES_PER_GROUP 
 	// number of B-engine frames' worth of VDIF packets.
 	
+	uint64_t b_zero = this_bgc.bfc[0].b;
 	// de-packetize vdif
 	// call to vdif_to_beng?
         threads.x = 32; threads.y = 32; threads.z = 1;
         blocks.x = 128, blocks.y = 1; blocks.z = 1; 
         vdif_to_beng<<<blocks,threads>>>((int32_t*) this_bgc.bgv_buf_gpu, 
 					resampler[i].gpu_A_0, resampler[i].gpu_A_1,
-					BENG_BUFFER_IN_COUNTS*VDIF_PER_BENG_FRAME);
+					BENG_BUFFER_IN_COUNTS*VDIF_PER_BENG_FRAME,b_zero);
 	
 	// ... set the input buffer block free ...
 	hashpipe_databuf_set_free((hashpipe_databuf_t *)db_in, index_in);
