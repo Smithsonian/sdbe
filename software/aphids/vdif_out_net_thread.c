@@ -134,7 +134,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 				
 				while ((rv = hashpipe_databuf_wait_filled((hashpipe_databuf_t *)db_in, index_db_in)) != HASHPIPE_OK) {
 					if (rv == HASHPIPE_TIMEOUT) { // index is not ready
-						aphids_log(&aphids_ctx, APHIDS_LOG_ERROR, "hashpipe output databuf timeout");
+						aphids_log(&aphids_ctx, APHIDS_LOG_ERROR, "hashpipe input databuf timeout");
 						//~ fprintf(stderr,"%s:%d:timeout\n",__FILE__,__LINE__);
 						continue;
 					} else { // any other return value is an error
