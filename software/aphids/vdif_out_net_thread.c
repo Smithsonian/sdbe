@@ -179,6 +179,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 					for (jj=0; jj<VDIF_CHAN; jj++) {
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].data = vdg_buf_cpu[index_db_in]->chan[jj].datas[ii];
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w0.secs_inre = secs_inre;
+						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w1.ref_epoch = ref_epoch;
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w1.df_num_insec = df_num_insec;
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w3.threadID = jj;
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w3.bps = qs_buf.blocks[index_db_in].bit_depth - 1; // VDIF bits-per-sample adds 1
