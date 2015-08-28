@@ -503,10 +503,7 @@ __global__ void quantize2bit(const float *in, unsigned int *out, int N, float th
 		/* Assume sample x > 0, lower bit indicates above threshold. Then
 		 * test, if x < 0, XOR with 11.
 		 */
-		//int sample_2bit = ( ((fabsf(in[idx_in+ii]) >= thresh) | 0x02) ^ (0x03*(in[idx_in+ii] < 0)) ) & 0x3;
 		int sample_2bit = ( ((fabsf(val_in) >= thresh) | 0x02) ^ (0x03*(val_in < 0)) ) & OUTPUT_MAX_VALUE_MASK;
-		//~ //This is for 11 = -2, 10 = -1, 01 = 0, 10 = 1
-		//~ int sample_2bit = ((fabsf(in[idx_in+ii]) <= thresh) | ((in[idx_in+ii] < 0)<<1)) & OUTPUT_MAX_VALUE_MASK;
 		sample_2bit = sample_2bit << (threadIdx.x*2);
 		out[idx_out] = 0;
 		atomicOr(out+idx_out, sample_2bit);
