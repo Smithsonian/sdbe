@@ -444,7 +444,7 @@ __global__ void reorderTzp_smem(cufftComplex *beng_data_in, cufftComplex *beng_d
     // input snapshot id
     int sid_in = (blockIdx.x * blockDim.x + threadIdx.x) & (BENG_SNAPSHOTS-1);
     // input channel id 
-    int cid = threadIdx.y + blockDim.y * (blockIdx.x / (128 / blockDim.x));
+    int cid = threadIdx.y + blockDim.y * (blockIdx.x / (BENG_SNAPSHOTS / blockDim.x));
 
     // shift by 2-snapshots case:
     if (((cid / 4) & (0x1)) == 0) {
@@ -483,7 +483,7 @@ __global__ void reorderTzp_smem(cufftComplex *beng_data_in, cufftComplex *beng_d
 
     // zero out nyquist: 
     if (cid < 16) {
-      beng_data_out[(BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS)*bid_out + UNPACKED_BENG_CHANNELS*sid_out + BENG_CHANNELS_]	= make_cuComplex(0.,0.);
+      beng_data_out[(BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS)*bid_out + UNPACKED_BENG_CHANNELS*sid_out + BENG_CHANNELS_ + cid]	= make_cuComplex(0.,0.);
     }
 
     __syncthreads();
