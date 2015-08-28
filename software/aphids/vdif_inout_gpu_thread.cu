@@ -514,6 +514,7 @@ __global__ void quantize2bit(const float *in, unsigned int *out, int N, float th
 		//~ //This is for 11 = -2, 10 = -1, 01 = 0, 10 = 1
 		//~ int sample_2bit = ((fabsf(in[idx_in+ii]) <= thresh) | ((in[idx_in+ii] < 0)<<1)) & OUTPUT_MAX_VALUE_MASK;
 		sample_2bit = sample_2bit << (threadIdx.x*2);
+		out[idx_out] = 0;
 		atomicOr(out+idx_out, sample_2bit);
 		idx_out += gridDim.x*blockDim.y;
 	}
