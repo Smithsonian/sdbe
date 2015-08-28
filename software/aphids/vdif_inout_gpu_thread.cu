@@ -834,7 +834,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
         blocks.x = 128, blocks.y = 1; blocks.z = 1; 
         vdif_to_beng<<<blocks,threads>>>((int32_t*) this_bgc.bgv_buf_gpu, 
 					resampler[i].gpu_A_0, resampler[i].gpu_A_1,
-					BENG_BUFFER_IN_COUNTS*VDIF_PER_BENG_FRAME,b_zero);
+					this_bgc.beng_group_vdif_packet_count,b_zero);
 	
 	// ... set the input buffer block free ...
 	hashpipe_databuf_set_free((hashpipe_databuf_t *)db_in, index_in);
