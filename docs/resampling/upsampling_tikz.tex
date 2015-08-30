@@ -1,5 +1,5 @@
  %% upsampling cartoon
-\begin{figure}
+\begin{figure}[t]
 \begin{tikzpicture}[
 declare function={ 
     funcx(\x) = -0.5*sin(2*pi*0.2*\x r) + 0.2*cos(2*pi*0.32*\x r) + 
@@ -107,5 +107,7 @@ declare function={
   \draw[very thick, dashed, domain=0:23,samples=50] plot(\x/4+\talign, {funcx(\x/6.)-6});
 
 \end{tikzpicture}
-\caption{Upsampling sketches, $L = 3$}
+\caption{A sketch of upsampling when $L = 3$. The left column shows how the spectrum changes with each operation
+and the right column mirrors the effect in the time domain.}
+\label{fig:upsampling}
 \end{figure}

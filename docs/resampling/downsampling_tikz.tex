@@ -1,6 +1,6 @@
  %% cartoon explaining down-sampling
  % http://tex.stackexchange.com/questions/124878/declare-function-for-tikzpicture
-\begin{figure}
+\begin{figure}[t]
 \begin{tikzpicture}[
 declare function={ 
     funcx(\x) = -0.1*sin(2*pi*2.8*\x r) + 0.2*sin(2*pi*1.3*\x r) + 
@@ -85,5 +85,8 @@ declare function={
 
 
 \end{tikzpicture}
-\caption{Series of steps for down sampling shown in the frequency domain when $M=3$.}
+%\caption{Series of steps for down sampling shown in the frequency domain when $M=3$.}
+\caption{A sketch of downsampling when $M = 3$. The left column shows how the spectrum changes with each operation
+and the right column mirrors the effect in the time domain.}
+\label{fig:downsampling}
 \end{figure}
