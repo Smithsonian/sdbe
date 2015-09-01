@@ -24,9 +24,13 @@ if __name__ == "__main__":
                         help="set the type of input/output thread (default='null')")
     parser.add_argument("--out-type", metavar="OUT_TYPE", type=str, default="null", choices=["null", "file", "net"],
                         help="set the type of output thread (default='null')")
+    parser.add_argument("--stdout", metavar="STDOUT", type=str, default="stdout.log",
+                        help="set the filename for output to stdout (default='stdout.log')")
+    parser.add_argument("--stderr", metavar="STDERR", type=str, default="stderr.log",
+                        help="set the filename for output to stderr (default='stderr.log')")
     args = parser.parse_args()
 
-    with open("stdout.log", "w") as stdout, open("stderr.log", "w") as stderr:
+    with open(args.stdout, "w") as stdout, open(args.stderr, "w") as stderr:
         process = Popen(HASHPIPE_CMD.format(args).split(), stdout=stdout, stderr=stderr)
 
     with open("/tmp/aphids.{0}.pid".format(args.instance), "w") as pidfile:
