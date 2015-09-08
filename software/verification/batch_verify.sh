@@ -17,6 +17,9 @@ EXEC="./verify_scan.py"
 ARGS="-c 32 -v 1"
 BATCH_LOG="./out/batch_verify.log"
 
+echo "Batch started `date`" >> $BATCH_LOG
+echo "====================" >> $BATCH_LOG
+
 PATH_SINGLE_DISH=/home/ayoung/Work/obs/March2015/single-dish-data
 SEARCH_STR=`echo "${PATH_SINGLE_DISH}/${EXP}_${OBS}_${SCAN}.vdif"`
 for f in `ls $SEARCH_STR` ; do
