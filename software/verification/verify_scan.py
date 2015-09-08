@@ -49,27 +49,6 @@ def scan_to_datetime(args):
 def round_datetime_to_second(t0):
 	return t0.replace(microsecond=0) + timedelta(seconds=round(t0.microsecond*1e-6))
 
-
-#~ Mike is using
-#~ 
-#~ def Sn; clock_early = 2015y089d00h00m : 1.009 usec : 2015y089d08h10m0s : 0.633e-12; enddef;
-#~ 
-#~ more generally something like this::
-#~ 
-#~ def Sn;
- #~ clock_early=2015y089d00h00m : 1 usec : 2015y089d08h00m0s : 0.633e-12 ;
- #~ clock_early=2015y089d00h10m : 2 usec : 2015y089d08h10m0s : 0.633e-12 ;
- #~ clock_early=2015y089d00h20m : 7 usec : 2015y089d08h20m0s : 0.633e-12 ;
- #~ clock_early=2015y089d00h30m : 3 usec : 2015y089d08h30m0s : 0.633e-12 ;
- #~ ...
-#~ enddef;
-                               #~ ^
-                               #~ |
-#~ where the "offset" gets added to this column, and the range limits the
-#~ lines output.  (There may be some magic vex2difx limit we have to fix
-#~ or step around.)  The rate should't be changing and setting the rate
-#~ epoch to the rate is probably clearer.
-
 class ScanMeta(object):
 	def __init__(self,**kwargs):
 		for key,val in kwargs.items():
@@ -156,9 +135,9 @@ if __name__ == "__main__":
 	logger.info("reading {0} VDIF frames".format(N_vdif_frames))
 	
 	# copy processed scan flat files
-	#~ if get_scan_flat_files(args):
-		#~ logger.error("could not retrieve flat file for '{0.exp} {0.obs} {0.scan}'".format(args))
-		#~ sys_exit(1)
+	if get_scan_flat_files(args):
+		logger.error("could not retrieve flat file for '{0.exp} {0.obs} {0.scan}'".format(args))
+		sys_exit(1)
 	
 	# get datetime for scan start
 	time_start = scan_to_datetime(args)
