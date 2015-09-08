@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+from csv import reader
 from datetime import datetime, timedelta
 from logging import DEBUG, ERROR, FileHandler, Formatter, getLogger, INFO, WARNING
 from numpy import arange, log2, nonzero, sign, sqrt
@@ -13,7 +14,7 @@ from read_r2dbe_vdif import read_from_file
 from vdif import UTC
 
 # set various constants
-filename_delay = "delays.xml"
+filename_delay = "delays.csv"
 path_dat = "./dat"
 path_r2dbe = "/home/ayoung/Work/obs/March2015/single-dish-data"
 path_out = "./out"
@@ -262,6 +263,24 @@ if __name__ == "__main__":
 	
 	aphids_clock_early = sample_offset / aphids_rate
 	logger.info("APHIDS clock is early by {0} microseconds".format(aphids_clock_early/1e-6))
+	
+	# write entry into delays file
+	try:
+		fh = open("{0}/{1}".format(path_out,filename_delay),"r+")
+		while True:
+			pos = fh.tell()
+			line = fh.readline()
+			if not line:
+				break
+			csv_reader = reader([line])
+			timestamp = datetime.strptime(csv_reader.next()[0],"%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC())
+			if int((timestamp - meta.start_datetime).total_seconds()) == 0:
+				fh.seek(pos,0)
+				break
+	except IOError:
+		fh = open("{0}/{1}".format(path_out,filename_delay),"w")
+	fh.write("{0},{1},{2:10.6f}\r\n".format(meta.start_datetime.strftime("%Y-%m-%d %H:%M:%S"),meta.end_datetime.strftime("%Y-%m-%d %H:%M:%S"),aphids_clock_early/1e-6))
+	fh.close()
 	
 	# check peak is in zero-window offset after delay correction
 	try:
