@@ -28,9 +28,10 @@ freq_start = 150e6 # r2dbe downconversion
 freq_stop = 1174e6 # r2dbe downconversion
 
 def get_scan_flat_files(args):
-	copy_scan_cmd = "./copy_scan.sh {0.exp} {0.obs} {0.scan} {0.pkt_count} {0.pkt_size} {1}"
-	print copy_scan_cmd.format(args,path_dat)
-	return call(copy_scan_cmd.format(args,path_dat).split())
+	copy_scan_cmd = "./copy_scan.sh {0.exp} {0.obs} {0.scan} {2} {0.pkt_size} {1}"
+	# add some extra packets so that if we need to skip a few at the start we still have enough
+	print copy_scan_cmd.format(args,path_dat,args.pkt_count+256)
+	return call(copy_scan_cmd.format(args,path_dat,args.pkt_count+256).split())
 
 def scan_to_datetime(args):
 	try:
@@ -154,9 +155,9 @@ if __name__ == "__main__":
 	logger.info("reading {0} VDIF frames".format(N_vdif_frames))
 	
 	# copy processed scan flat files
-	if get_scan_flat_files(args):
-		logger.error("could not retrieve flat file for '{0.exp} {0.obs} {0.scan}'".format(args))
-		sys_exit(1)
+	#~ if get_scan_flat_files(args):
+		#~ logger.error("could not retrieve flat file for '{0.exp} {0.obs} {0.scan}'".format(args))
+		#~ sys_exit(1)
 	
 	# get datetime for scan start
 	time_start = scan_to_datetime(args)
@@ -164,12 +165,16 @@ if __name__ == "__main__":
 	# get scan meta information
 	meta = get_scan_meta_info(args)
 	
+	# initialize return code
+	pass_not_fail = True
+	
 	# read APHIDS data
 	xa,vdifa = [None,None],[None,None]
 	tag_list = ["12","34"]
 	for tag in tag_list:
 		idx = tag_list.index(tag)
-		filename_aphids = "./{0}_aphids-{1}.vdif".format(scan_to_name(args),tag)
+		filename_aphids = "{2}/{0}_aphids-{1}.vdif".format(scan_to_name(args),tag,path_dat)
+		logger.debug("read APHIDS data from {0}".format(filename_aphids))
 		xa[idx],vdifa[idx] = read_from_file(filename_aphids,N_vdif_frames,0,
 									samples_per_window=sdbe_spv,frame_size_bytes=sdbe_bpv)
 		# fix sample rate
@@ -188,7 +193,8 @@ if __name__ == "__main__":
 		# re-read APHIDS data
 		for tag in tag_list:
 			idx = tag_list.index(tag)
-			filename_aphids = "./{0}_aphids-{1}.vdif".format(scan_to_name(args),tag)
+			filename_aphids = "{2}/{0}_aphids-{1}.vdif".format(scan_to_name(args),tag,path_dat)
+			logger.debug("read APHIDS data from {0}".format(filename_aphids))
 			xa[idx],vdifa[idx] = read_from_file(filename_aphids,N_vdif_frames,N_vdif_offset_aphids,
 										samples_per_window=sdbe_spv,frame_size_bytes=sdbe_bpv)
 			# fix sample rate
@@ -230,6 +236,7 @@ if __name__ == "__main__":
 		assert peak/sigma > 5 # looking for at least >5sigma peak, otherwise something very wrong
 		logger.info("peak-to-std is {0} at sample {1} in window {2}".format(peak/sigma,abs(s_a1xr[p_a1xr.argmax(),:]).argmax(),search_range[p_a1xr.argmax()]))
 	except AssertionError:
+		pass_not_fail = False
 		logger.error("cross-correlation peak not above 5-sigma ({0} at sample {1} in window {2})".format(peak/sigma,abs(s_a1xr[p_a1xr.argmax(),:]).argmax(),search_range[p_a1xr.argmax()]))
 	
 	# try to correct delay
@@ -237,24 +244,37 @@ if __name__ == "__main__":
 	# first delay aphids data
 	s_tmp,S_tmp,p_tmp = corr_FXt(xa[1][sample_offset:],xr,fft_window_size=sdbe_spv,search_avg=search_avg-1,search_range=search_range)
 	logger.debug("assuming APHIDS data leads: peak-to-std is {0} at offset {1} in window {2} (after delay correction)".format(peak/sigma,abs(s_tmp[p_tmp.argmax(),:]).argmax(),search_range[p_tmp.argmax()]))
-	if not search_range[p_tmp.argmax()] == 0:
-		s_tmp,S_tmp,p_tmp = corr_FXt(xa[1],xr[sdbe_spv-sample_offset:],fft_window_size=sdbe_spv,search_avg=search_avg-1,search_range=search_range)
+	if abs(s_tmp[p_tmp.argmax(),:]).argmax() != 0:
+		sample_offset = sample_offset-sdbe_spv
+		s_tmp,S_tmp,p_tmp = corr_FXt(xa[1],xr[-sample_offset:],fft_window_size=sdbe_spv,search_avg=search_avg-1,search_range=search_range)
 		logger.debug("assuming R2DBE data leads: peak-to-std is {0} at offset {1} in window {2} (after delay correction)".format(peak/sigma,abs(s_tmp[p_tmp.argmax(),:]).argmax(),search_range[p_tmp.argmax()]))
-		aphids_clock_early = -sample_offset / aphids_rate
-	else:
-		aphids_clock_early = sample_offset / aphids_rate
+	
+	# correct delay if we're outside 0 offset window
+	if search_range[p_tmp.argmax()] != 0:
+		# APHIDS clock offset possibly larger than single window?
+		sample_offset_whole_windows = -search_range[p_a1xr.argmax()]*sdbe_spv
+		logger.debug("delay is multiple windows, applying whole-window sample offset of {0}".format(sample_offset_whole_windows))
+		sample_offset += sample_offset_whole_windows
+		if sample_offset > 0:
+			s_tmp,S_tmp,p_tmp = corr_FXt(xa[1][sample_offset:],xr,fft_window_size=sdbe_spv,search_avg=search_avg-1-abs(search_range[p_a1xr.argmax()]),search_range=search_range)
+		else:
+			s_tmp,S_tmp,p_tmp = corr_FXt(xa[1],xr[-sample_offset:],fft_window_size=sdbe_spv,search_avg=search_avg-1-abs(search_range[p_a1xr.argmax()]),search_range=search_range)
+	
+	aphids_clock_early = sample_offset / aphids_rate
 	logger.info("APHIDS clock is early by {0} microseconds".format(aphids_clock_early/1e-6))
 	
 	# check peak is in zero-window offset after delay correction
 	try:
 		assert search_range[p_tmp.argmax()] == 0
 	except AssertionError:
+		pass_not_fail = False
 		logger.error("cross-correlation peak not in zero-offset window (after delay correction, offset = {0})".format(search_range[p_a1xr.argmax()]))
 	
 	# check peak is at sample zero
 	try:
 		assert abs(s_tmp[p_tmp.argmax(),:]).argmax() == 0
 	except AssertionError:
+		pass_not_fail = False
 		logger.error("cross-correlation peak not at sample zero (after delay correction, sample = {0})".format(s_tmp[p_tmp.argmax(),:].argmax()))
 	
 	# check peak-to-noise is sensible
@@ -264,9 +284,15 @@ if __name__ == "__main__":
 		assert peak/sigma > 5 # looking for at least >5sigma peak, otherwise something very wrong
 		logger.info("peak-to-std is {0} at sample {1} in window {2} (after delay correction)".format(peak/sigma,abs(s_tmp[p_tmp.argmax(),:]).argmax(),search_range[p_tmp.argmax()]))
 	except AssertionError:
+		pass_not_fail = False
 		logger.error("cross-correlation peak not above 5-sigma (after delay correction, peak-to-std = {0})".format(peak/sigma))
 	
 	loghndl.close()
+	
+	if pass_not_fail:
+		sys_exit(0)
+	else:
+		sys_exit(2)
 #~ 
 #~ Ss0 = cross_corr.corr_Xt(Xs0,Xs0,fft_window_size=sdbe_spv)[1]
 #~ Ss1 = cross_corr.corr_Xt(Xs1,Xs1,fft_window_size=sdbe_spv)[1]

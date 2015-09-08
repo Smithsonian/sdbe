@@ -107,7 +107,7 @@ def corr_Xt_search(X0,X1,fft_window_size=32768,search_range=None,search_avg=1):
 	for iwindow in search_range:
 		#~ print "X0(%d,%d) and X1(%d,%d)" % (snapshots_center,snapshots_center+search_avg,snapshots_center+iwindow,snapshots_center+iwindow+search_avg)
 		s_0x1[ii,:],S_0x1[ii,:] = corr_Xt(X0[(snapshots_center):(snapshots_center+search_avg),:],X1[(snapshots_center+iwindow):(snapshots_center+iwindow+search_avg),:],fft_window_size=fft_window_size)
-		s_peaks[ii] = s_0x1[ii,:].max()
+		s_peaks[ii] = abs(s_0x1[ii,:]).max()
 		ii += 1
 	
 	return s_0x1,S_0x1,s_peaks
