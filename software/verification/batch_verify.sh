@@ -15,6 +15,7 @@ SCAN=$3
 
 EXEC="./verify_scan.py"
 ARGS="-c 32 -v 1"
+BATCH_LOG="./out/batch_verify.log"
 
 PATH_SINGLE_DISH=/home/ayoung/Work/obs/March2015/single-dish-data
 SEARCH_STR=`echo "${PATH_SINGLE_DISH}/${EXP}_${OBS}_${SCAN}.vdif"`
@@ -22,8 +23,8 @@ for f in `ls $SEARCH_STR` ; do
 	FILENAME=`echo $f | grep -E -o "[^[:space:]/]*.vdif"`
 	PARTS=`echo $FILENAME | sed y/\_/\ / | sed s/".vdif"// | sed s/Sn/Sm/`
 	if $EXEC $ARGS $PARTS ; then 
-		echo "SUCCESS ($FILENAME)"
+		echo "SUCCESS ($FILENAME)" >> $BATCH_LOG
 	else
-		echo "FAILURE ($FILENAME)"
+		echo "FAILURE ($FILENAME)" >> $BATCH_LOG
 	fi
 done
