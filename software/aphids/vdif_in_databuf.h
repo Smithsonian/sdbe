@@ -152,6 +152,26 @@ typedef struct vdif_in_databuf {
 hashpipe_databuf_t *vdif_in_databuf_create(int instance_id, int databuf_id);
 #endif // STANDALONE_TEST
 
+// Copy header from one VDIF to another VDIF
+// Arguments:
+// ----------
+//   dest -- Pointer to memory of destination VDIF packet
+//   src -- Pointer to memory of source VDIF packet
+// Returns:
+// --------
+//   void
+void copy_vdif_header(vdif_in_packet_t *dest, vdif_in_packet_t *src);
+
+// Copy data from one VDIF to another VDIF
+// Arguments:
+// ----------
+//   dest -- Pointer to memory of destination VDIF packet
+//   src -- Pointer to memory of source VDIF packet
+// Returns:
+// --------
+//   void
+void copy_vdif_data(vdif_in_packet_t *dest, vdif_in_packet_t *src);
+
 // Read B-engine counter value from the given VDIF header
 // Arguments:
 // ----------

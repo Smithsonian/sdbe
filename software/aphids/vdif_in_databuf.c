@@ -58,6 +58,17 @@ hashpipe_databuf_t *vdif_in_databuf_create(int instance_id, int databuf_id)
 }
 #endif // STANDALONE_TEST
 
+void copy_vdif_header(vdif_in_packet_t *dest, vdif_in_packet_t *src) {
+	memcpy(dest,src,sizeof(vdif_in_header_t));
+}
+
+void copy_vdif_data(vdif_in_packet_t *dest, vdif_in_packet_t *src) {
+	int ii;
+	for (ii=0; ii<VDIF_IN_PKT_DATA_SIZE; ii++) {
+		dest->data[ii] = src->data[ii];
+	}
+}
+
 int64_t get_packet_b_count(vdif_in_header_t *vdif_pkt_hdr) {
 	int64_t b = 0;
 	b |= ((int64_t)(vdif_pkt_hdr->beng.b_upper)&(int64_t)0x00000000FFFFFFFF) << 8;

@@ -103,6 +103,11 @@ static void *run_method(
 	ssize_t index_received_vdif_packets = 0;
 	ssize_t N_ALL_VDIF_PACKETS = 0, N_SKIPPED_VDIF_PACKETS = 0, N_USED_VDIF_PACKETS = 0, N_INVALID_VDIF_PACKETS = 0;
 	
+	// temporary storage for VDIF headers
+	vdif_in_packet_t *vdif_packet_buffer_per_stream[4] = { NULL };
+	int stream_id = -1;
+	int stream_fid = -1;
+	
 	// B-engine bookkeeping
 	int64_t b_first = -1;
 	#define MAX_INDEX_LOOK_AHEAD 2
@@ -305,8 +310,37 @@ static void *run_method(
 				 * buffer */
 				fprintf(stdout,"%s:%s(%d): index=%d <?< n_received=%d\n",__FILE__,__FUNCTION__,__LINE__,(int)index_received_vdif_packets,(int)n_received_vdif_packets);
 				while (index_received_vdif_packets < n_received_vdif_packets) {
+					// translate fid to stream index
+					stream_fid = ((vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets)->header.beng.f;
+					switch(stream_fid) {
+						case 0:
+						case 1:
+							stream_id = 0;
+							break;
+						case 2:
+						case 3:
+							stream_id = 1;
+							break;
+						case 4:
+						case 5:
+							stream_id = 2;
+							break;
+						case 6:
+						case 7:
+							stream_id = 3;
+							break;
+					}
+					// for each packet: the current header is correct, but
+					// the correct data was in the previous packet in the
+					// same stream
+					if (vdif_packet_buffer_per_stream[stream_id] == NULL) {
+						vdif_packet_buffer_per_stream[stream_id] = malloc(sizeof(vdif_in_packet_t));
+					}
+					// copy current header into buffer, but don't replace
+					// the data (which could be zero on the first go)
+					copy_vdif_header(vdif_packet_buffer_per_stream[stream_id], (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets);
 					// get index offset
-					index_offset = get_beng_group_index_offset(&local_db_out, index_db_out, (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets);
+					index_offset = get_beng_group_index_offset(&local_db_out, index_db_out, vdif_packet_buffer_per_stream[stream_id]);
 					if (index_offset < 0) {
 						if (index_offset == vidErrorPacketInvalid) {
 							N_INVALID_VDIF_PACKETS++;
@@ -314,6 +348,11 @@ static void *run_method(
 						if (index_offset == vidErrorPacketBeforeStartTime) {
 							N_SKIPPED_VDIF_PACKETS++;
 						}
+						// copy current data into buffer for next round
+						// this needs to be done for every loop iteration,
+						// so do it before continue (and below for case
+						// where packet is used)
+						copy_vdif_data(vdif_packet_buffer_per_stream[stream_id], (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets);
 						// throw away these frames, they are from before
 						// the range we're interested in
 						index_received_vdif_packets++;
@@ -328,7 +367,7 @@ static void *run_method(
 						// insert VDIF packet: this copies VDIF to the 
 						// local buffer, updates the frame counters and
 						// flags, and returns the number of insertions
-						insert_vdif_in_beng_group_buffer(&local_db_out, index_db_out, index_offset, (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets);
+						insert_vdif_in_beng_group_buffer(&local_db_out, index_db_out, index_offset, vdif_packet_buffer_per_stream[stream_id]);
 						// we're done with this VDIF packet, increment 
 						// index
 						index_received_vdif_packets++;
@@ -338,11 +377,16 @@ static void *run_method(
 							start_copy = 1;
 							if (first_copy) {
 								// on copy, fill the VDIF header template
-								fill_vdif_header_template(&local_db_out.bgc[index_db_out].vdif_header_template,  (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets, (int)N_SKIPPED_VDIF_PACKETS);
+								fill_vdif_header_template(&local_db_out.bgc[index_db_out].vdif_header_template,  vdif_packet_buffer_per_stream[stream_id], (int)N_SKIPPED_VDIF_PACKETS);
 								// cancel first_copy
 								first_copy = 0;
 							}
 						}
+						// copy current data into buffer for next round
+						// this needs to be done for every loop iteration,
+						// so do it before we reach end of loop iteration
+						// (and also above for case where packet is unused)
+						copy_vdif_data(vdif_packet_buffer_per_stream[stream_id], (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets);
 					}
 					// check if we should start copy
 					if (start_copy) {
