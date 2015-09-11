@@ -368,6 +368,12 @@ static void *run_method(
 						// local buffer, updates the frame counters and
 						// flags, and returns the number of insertions
 						insert_vdif_in_beng_group_buffer(&local_db_out, index_db_out, index_offset, vdif_packet_buffer_per_stream[stream_id]);
+						// copy current data into buffer for next round
+						// this needs to be done for every loop iteration,
+						// so do it before we reach end of loop iteration
+						// and before the VDIF packet index is incremented,
+						// (and also above for case where packet is unused)
+						copy_vdif_data(vdif_packet_buffer_per_stream[stream_id], (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets);
 						// we're done with this VDIF packet, increment 
 						// index
 						index_received_vdif_packets++;
@@ -382,11 +388,6 @@ static void *run_method(
 								first_copy = 0;
 							}
 						}
-						// copy current data into buffer for next round
-						// this needs to be done for every loop iteration,
-						// so do it before we reach end of loop iteration
-						// (and also above for case where packet is unused)
-						copy_vdif_data(vdif_packet_buffer_per_stream[stream_id], (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets);
 					}
 					// check if we should start copy
 					if (start_copy) {
