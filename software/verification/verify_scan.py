@@ -232,7 +232,7 @@ if __name__ == "__main__":
 	# correct delay if we're outside 0 offset window
 	if search_range[p_tmp.argmax()] != 0:
 		# APHIDS clock offset possibly larger than single window?
-		sample_offset_whole_windows = -search_range[p_a1xr.argmax()]*sdbe_spv
+		sample_offset_whole_windows = -search_range[p_tmp.argmax()]*sdbe_spv
 		logger.debug("delay is multiple windows, applying whole-window sample offset of {0}".format(sample_offset_whole_windows))
 		sample_offset += sample_offset_whole_windows
 		if sample_offset > 0:
