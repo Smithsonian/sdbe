@@ -12,10 +12,12 @@ from time import sleep
 
 from ctrl_shared import *
 
+PATH_LAST_DIR="data"
+
 class ListenerTX(Thread):
 	chan_list = [CHAN_GLOBAL, CHAN_TX]
 	SGTX_CMD = "./sgtx {0}.vdif {1} {2} {3}"
-	SGTX_FMT_STR = "/mnt/disks/%u/%u/swarm/%s"
+	SGTX_FMT_STR = "/mnt/disks/%u/%u/{0}/%s".format(PATH_LAST_DIR)
 	SGTX_IP_ADDR = "192.168.10.10"
 	SGTX_PORT = "12345"
 	
@@ -152,7 +154,7 @@ class ListenerTX(Thread):
 		return self._stop.isSet()
 
 def make_dataset_list(filters):
-	SEARCH_PATH="/mnt/disks/1/0/swarm/"
+	SEARCH_PATH="/mnt/disks/1/0/{0}/".format(PATH_LAST_DIR)
 	dataset_list = []
 	for f in filters:
 		ls_list = glob(SEARCH_PATH+f)
