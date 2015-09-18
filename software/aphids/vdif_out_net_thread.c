@@ -56,7 +56,6 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	//~ int tx_tries = 0;
 	
 	// I'm all about that VDIF
-	#define VDIF_FRAMES_PER_SECOND 125000
 	vdif_out_data_group_t *vdg_buf_cpu[VDIF_OUT_BUFFER_SIZE];
 	vdif_out_packet_group_t *vpg_buf_cpu[VDIF_OUT_BUFFER_SIZE];
 	uint32_t df_num_insec, // wrapped incrementing counter
@@ -186,7 +185,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.edh_psn = edh_psn;
 					}
 					df_num_insec++;
-					if (df_num_insec == VDIF_FRAMES_PER_SECOND) {
+					if (df_num_insec == VDIF_OUT_FRAMES_PER_SECOND) {
 						df_num_insec = 0;
 						secs_inre++;
 					}

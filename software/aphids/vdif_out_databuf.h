@@ -6,6 +6,8 @@
 #include "hashpipe.h"
 #include "hashpipe_databuf.h"
 
+#include "sample_rates.h"
+
 ////////////////////////////////////////////////////////////////////////
 // This set of structures are used for memory storage of normal VDIF on
 // the output side before transmitting.
@@ -78,8 +80,8 @@ typedef struct vdif_out_packet {
 //      33554432 / (4096Bytes / 0.25samples-per-Byte) = 2048 packets
 // This holds VDIF for single SWARM channel, so typicall need two of 
 // these (in parallel) for all the data
-//~ #define VDIF_OUT_PKTS_PER_BLOCK 8192 // 6/11 SWARM rate
-#define VDIF_OUT_PKTS_PER_BLOCK 2048 // 8/11 SWARM rate
+//~ #define VDIF_OUT_PKTS_PER_BLOCK 8192 <<--- moved to sample_rates.h
+//~ #define VDIF_OUT_PKTS_PER_BLOCK 2048 // 8/11 SWARM rate <<--- moved to sample_rates.h
 typedef struct vdif_out_packet_block {
 	vdif_out_packet_t packets[VDIF_OUT_PKTS_PER_BLOCK];
 } vdif_out_packet_block_t;
