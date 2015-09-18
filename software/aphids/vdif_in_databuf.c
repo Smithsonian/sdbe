@@ -7,6 +7,8 @@
 #include "vdif_in_databuf.h"
 #include "vdif_in_databuf_cuda.h"
 
+#include "sample_rates.h"
+
 // *********************************************************************
 // The below two defintions are used to ensure alignment of the output
 // data with real time, based on the number of input VDIF packets 
@@ -36,11 +38,11 @@
 //
 // The value of MAGIC_BENG_FFT_WINDOW_IN_VDIF_OUT is based on the 
 // following parameters:
-//   * VDIF out packet length = 8us
+//   * VDIF out packet length = 8us (1/VDIF_OUT_FRAMES_PER_SECOND)
 //   * SWARM (effective) rate = 2496Msps
 //   * Number of samples per SWARM FFT window = 32768
-#define MAGIC_OFFSET_IN_BENG_FFT_WINDOWS (52)
-#define MAGIC_BENG_FFT_WINDOW_IN_VDIF_OUT ((float)32768/2496e6/8e-6)
+//~ #define MAGIC_OFFSET_IN_BENG_FFT_WINDOWS (52) <<--- definition moved to sample_rates.h
+#define MAGIC_BENG_FFT_WINDOW_IN_VDIF_OUT ((float)32768/SWARM_RATE*VDIF_OUT_FRAMES_PER_SECOND)
 // *********************************************************************
 
 static void print_beng_frame_completion(beng_frame_completion_t *bfc, const char *tag);
