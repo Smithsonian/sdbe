@@ -5,6 +5,7 @@
 # Then add c/h files
 !*.h
 !*.c
+!*.py
 # And Makefile
 !Makefile
 # But keep a few files untracked...

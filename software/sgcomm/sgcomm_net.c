@@ -105,6 +105,11 @@ int make_socket_bind_listen(const char *host, uint16_t port) {
 //~NOTIMEOUT~	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,(void *)&timeout,sizeof(timeout)) < 0) {
 //~NOTIMEOUT~		//~**~log_message(RL_WARNING,"%s:%s(%d):Unable to set timeout on receiving socket",__FILE__,__FUNCTION__,__LINE__);
 //~NOTIMEOUT~	}
+	int val = 1;
+	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(int)) < 0) {
+		// log error, but try to continue anyway
+		perror("setsockopt");
+	}
 	init_sockaddr(&serv_addr, host, port);
 	if (bind(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
 		fprintf(stderr,"%s:%s(%d):Unable to bind socket",__FILE__,__FUNCTION__,__LINE__);
