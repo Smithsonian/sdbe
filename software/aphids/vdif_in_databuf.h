@@ -87,8 +87,8 @@ typedef struct beng_frame_vdif_buffer {
 // Examples:
 //   6/11 rate + 03/15 reordering = 39 + 1 = 40-sized units at input
 //   8/11 rate + 03/15 reordering = 13 + 1 = 14-sized units at input
-#define BENG_FRAMES_PER_GROUP 40 // 6/11 rate + 03/15 reordering
-//~ #define BENG_FRAMES_PER_GROUP 14 // 8/11 rate + 03/15 reordering
+//~ #define BENG_FRAMES_PER_GROUP 40 // 6/11 rate + 03/15 reordering
+#define BENG_FRAMES_PER_GROUP 14 // 8/11 rate + 03/15 reordering
 typedef struct beng_group_vdif_buffer {
 	beng_frame_vdif_buffer_t frames[BENG_FRAMES_PER_GROUP];
 } beng_group_vdif_buffer_t;

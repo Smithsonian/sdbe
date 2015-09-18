@@ -71,9 +71,15 @@ typedef struct vdif_out_packet {
 //      39 x 128 x 32768 = 163577856 samples at 6/11 SWARM rate
 //      163577856 * 2048 / 2496 = 134217728 samples at R2DBE rate
 //      134217728 / (4096Bytes / 0.25samples-per-Byte) = 8192 packets
+//   *  13 B-engine frames (8/11 rate), 4096Byte output packet size, 
+//      2bit output samples: 4096 VDIF packets per B-engine group.
+//      13 x 128 x 32768 = 54525952 samples at 8/11 SWARM rate
+//      54525952 * 2048 / 2496 = 33554432 samples at R2DBE rate
+//      33554432 / (4096Bytes / 0.25samples-per-Byte) = 2048 packets
 // This holds VDIF for single SWARM channel, so typicall need two of 
 // these (in parallel) for all the data
-#define VDIF_OUT_PKTS_PER_BLOCK 8192
+//~ #define VDIF_OUT_PKTS_PER_BLOCK 8192 // 6/11 SWARM rate
+#define VDIF_OUT_PKTS_PER_BLOCK 2048 // 8/11 SWARM rate
 typedef struct vdif_out_packet_block {
 	vdif_out_packet_t packets[VDIF_OUT_PKTS_PER_BLOCK];
 } vdif_out_packet_block_t;
