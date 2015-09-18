@@ -4,8 +4,10 @@
 #include "hashpipe.h"
 #include "hashpipe_databuf.h"
 
+#include "sample_rates.h"
+
 // rates
-#define SWARM_RATE 2496e6
+//~ #define SWARM_RATE 2496e6 <<--- definition moved to sample_rates.h
 #define R2DBE_RATE 4096e6
 
 // VDIF constants
@@ -22,7 +24,7 @@
 #define BENG_CHANNELS_ 16384
 #define BENG_CHANNELS (BENG_CHANNELS_+1) // number of channels PLUS added sample-rate/2 component for the complex-to-real inverse transform
 #define BENG_SNAPSHOTS 128
-#define BENG_BUFFER_IN_COUNTS 40 // will likey be replaced by BENG_FRAMES_PER_GROUP
+//~ #define BENG_BUFFER_IN_COUNTS 40 // will likey be replaced by BENG_FRAMES_PER_GROUP <<--- definition moved to sample_rates.h
 #define SWARM_N_FIDS 8
 #define SWARM_XENG_PARALLEL_CHAN 8
 
@@ -33,8 +35,8 @@
 
 // Resampling factors
 // Note that you need to check this plan.
-#define DECIMATION_FACTOR 39
-#define EXPANSION_FACTOR 32
+//~ #define DECIMATION_FACTOR 39  <<--- definition moved to sample_rates.h
+//~ #define EXPANSION_FACTOR 32  <<--- definition moved to sample_rates.h
 #define RESAMPLING_CHUNK_SIZE (DECIMATION_FACTOR * 512)
 #define RESAMPLING_BATCH 512
 
