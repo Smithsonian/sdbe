@@ -29,7 +29,7 @@
 	// resampling factors
 	#define DECIMATION_FACTOR 13
 	#define EXPANSION_FACTOR 8
-// ****--- THIS VALUE IS NOT CORRECT FOR 8/11 ----**** // time alignment 
+	// time alignment, value confirmed to be the same as for 6/11 using two different datasets
 	#define MAGIC_OFFSET_IN_BENG_FFT_WINDOWS (52) // see vdif_in_databuf.c for details
 	// number of VDIF frames produced in output stream for one block of
 	// B-engine frame at input (see vdif_out_databuf.h for more info)
