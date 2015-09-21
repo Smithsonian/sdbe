@@ -23,7 +23,7 @@ echo "====================" >> $BATCH_LOG
 #~ PATH_SINGLE_DISH=/home/ayoung/Work/obs/March2015/single-dish-data
 #~ SEARCH_STR=`echo "${PATH_SINGLE_DISH}/${EXP}_${OBS}_${SCAN}.vdif"`
 #~ for f in `ls $SEARCH_STR` ; do
-PATH_SWARM_DATA=/mnt/disks/1/0/swarm
+PATH_SWARM_DATA=/mnt/disks/1/0/data
 SEARCH_STR=`echo "${PATH_SWARM_DATA}/${EXP}_${OBS}_${SCAN}.vdif"`
 for f in `ssh Mark6-4015 "ls $SEARCH_STR"` ; do
 	FILENAME=`echo $f | grep -E -o "[^[:space:]/]*.vdif"`
