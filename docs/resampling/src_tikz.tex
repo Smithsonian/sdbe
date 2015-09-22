@@ -1,0 +1,141 @@
+ %% cartoon explaining rational factor resampling
+\begin{figure}[scale=1.1]
+\begin{tikzpicture}[
+declare function={ 
+    funcx(\x) = -0.5*sin(2*pi*0.2*\x r) + 0.2*cos(2*pi*0.32*\x r) + 
+                0.3*sin((2*pi*0.9*\x - 0.3) r) + 0.6*sin(2*pi*0.5*\x r);},
+]
+% frequency domain
+
+%% |X|
+\draw [<->, rounded corners, very thick](\falign,1.5) -- (\falign,0) --(\falign+6.5,0) node[below] {$f$};
+\node[left] at (\falign,0.7) {$|X|$};
+\node[below] at (\falign+1,0) {$f_0/2$};
+\foreach \i in {1,...,6}
+  \draw[thick] (\i, 0) -- (\i,0.1);
+  \draw[very thick] (\falign,1) to [out=0, in=170] 
+                    (0.5+\falign,1.03) to [out=350, in=105] 
+                    (\falign+1,0);
+  \draw[very thick,dashed] (\falign+1,0) to [out=75, in=190]  
+                           (\falign+1.5,1.03) to [out=10, in=180] 
+                           (\falign+2, 1) to [out=0,in=170] 
+                            (\falign+2.5, 1.03) to [out=350, in=105] 
+                            (\falign+3,0);
+  \draw[very thick,dashed] (\falign+3,0) to [out=75, in=190]  
+                            (\falign+3.5,1.03) to [out=10, in=180] 
+                            (\falign+4, 1) to [out=0,in=170] 
+                            (\falign+4.5, 1.03) to [out=350, in=105] 
+                            (\falign+5,0);
+  \draw[very thick,dashed] (\falign+6-0,1) to [out=170, in=0] 
+                            (\falign+6-0.5,1.03) to [out=190, in=75] 
+                            (\falign+6-1,0);
+
+  %% W
+  \draw [<->, rounded corners, very thick](\falign,-0.5) -- (\falign,-2) -- (\falign+6.5,-2);
+  \node[left] at (\falign,0.7-2) {$|X_L|$};
+  \node[below] at (\falign+3,-2) {$Lf_0/2$};
+  \foreach \i in {1,...,6}
+    \draw[thick] (\i, -2) -- (\i,0.1-2);
+  \draw[very thick] (\falign,1-2) to [out=0, in=170] 
+                    (0.5,1.03-2) to [out=350, in=105] 
+                    (\falign+1,-2);
+  \draw[very thick,] (\falign+1,-2) to [out=75, in=190]  
+                     (\falign+1.5,1.03-2) to [out=10, in=180] 
+                     (\falign+2, 1-2) to [out=0,in=170] 
+                     (\falign+2.5, 1.03-2) to [out=350, in=105] 
+                     (\falign+3,-2);
+  \draw[very thick,dashed] (\falign+3,-2) to [out=75, in=190]  
+                            (\falign+3.5,1.03-2) to [out=10, in=180] 
+                            (\falign+4, 1-2) to [out=0,in=170] 
+                            (\falign+4.5, 1.03-2) to [out=350, in=105] 
+                            (\falign+5,-2);
+  \draw[very thick,dashed] (\falign+6-0,1-2) to [out=170, in=0] 
+                            (\falign+6-0.5,1.03-2) to [out=190, in=75] 
+                            (\falign+6-1,-2);
+
+%% H
+  \draw [<->, rounded corners, very thick](\falign,-2.5) -- (\falign,-4) -- (\falign+6.5,-4);
+  \foreach \i in {1,...,6}
+    \draw[thick] (\i, -4) -- (\i,0.1-4);
+  \node[left] at (\falign,0.7-4) {$|H|$};
+  \node[below] at (\falign+1,-4) {$f_0/2$};
+  \node[below] at (\falign+6,-4) {$Lf_0$};
+  \draw[very thick] (\falign+0,1-4) -- (\falign+0.8,1-4) -- (\falign+1,0-4);
+  \draw[very thick,dashed] (\falign+5,0-4) -- (\falign+5+0.2,1-4) -- (\falign+6,1-4);
+
+  %% H * X_L 
+  \draw [<->, rounded corners, very thick](\falign,-4.5) -- (\falign,-6) -- (\falign+6.5,-6);
+  \foreach \i in {1,...,6}
+    \draw[thick] (\i, -6) -- (\i,0.1-6);
+  \node[left,align=right] at (\falign,0.7-6) {$|HX_L|$};
+  \node[below] at (\falign+6,-6) {$Lf_0$};
+  \node[below] at (\falign+3,-6) {$Lf_0/2$};
+  \draw[very thick] (\falign,1-6) to [out=0, in=170] 
+                    (0.5,1.03-6) to [out=350, in=105] 
+                    (\falign+1,-6);
+  \draw[very thick,dashed] (\falign+6-0,1-6) to [out=170, in=0] 
+                            (\falign+6-0.5,1.03-6) to [out=190, in=75] 
+                            (\falign+6-1,-6);
+  %% Y
+  \draw [<->, rounded corners, very thick](\falign,-4.5) -- (\falign,-8) -- (\falign+6.5,-8) node[below] {$f$};
+  \foreach \i in {1,...,6}
+    \draw[thick] (\i, -8) -- (\i,0.1-8);
+  \node[left,align=right] at (\falign,0.7-8) {$|Y|$};
+  \node[below] at (\falign+3,-8) {$Lf_0/M$};
+  \draw[very thick] (\falign,1-8) to [out=0, in=170] 
+                    (0.5,1.03-8) to [out=350, in=105] 
+                    (\falign+1,-8);
+  \draw[very thick,dashed] (\falign+2,-8) to [out=75, in=190]  
+                            (\falign+2.5,1.03-8) to [out=10, in=180] 
+                            (\falign+3, 1-8) to [out=0,in=170] 
+                            (\falign+3.5, 1.03-8) to [out=350, in=105] 
+                            (\falign+4,-8);
+  \draw[very thick,dashed] (\falign+6-0,1-8) to [out=170, in=0] 
+                            (\falign+6-0.5,1.03-8) to [out=190, in=75] 
+                            (\falign+6-1,-8);
+
+  %%%%%%%%%%%%%%%
+  % time domain
+  %% x
+  \draw [<->, rounded corners, very thick](\talign,1.5) -- (\talign,0) -- (\talign+6.5,0) node[below] {$i$};
+  \node[left] at (\talign,0.7) {$x$};
+  \foreach \i in {0,...,7}
+    \draw[thick] (3*\i/4+\talign,0) -- (3*\i/4+\talign,{funcx(\i/2.)});
+  \foreach \i in {0,...,7}
+    \draw[fill] (3*\i/4+\talign,{funcx(\i/2.)}) circle[radius=0.05];
+  \draw[very thick, dashed, domain=0:23,samples=50] plot(\x/4+\talign, {funcx(\x/6.)});
+
+  %% x_L
+  \draw [<->, rounded corners, very thick](\talign,-0.5) -- (\talign,-2) -- (\talign+6.5,-2) node[below] {$i$};
+  \node[left] at (\talign,0.7-2) {$x_L$};
+  \foreach \i in {0,...,7}{
+    \draw[thick] (3*\i/4+\talign,-2) -- (3*\i/4+\talign,{funcx(\i/2.)-2});
+    \draw[fill] (3*\i/4+\talign,{funcx(\i/2.)-2}) circle[radius=0.05];}
+  \foreach \i in {0,...,7}
+    \foreach \j in {1,2} 
+    \draw[fill] (3*\i/4+\talign+\j/4,0-2) circle[radius=0.05];
+  \draw[very thick, dashed, domain=0:23,samples=50] plot(\x/4+\talign, {funcx(\x/6.)-2});
+
+ %% h \ast x_L
+  \draw [<->, rounded corners, very thick](\talign,-4.5) -- (\talign,-6) -- (\talign+6.5,-6) node[below] {$i$};
+  \node[left] at (\talign,0.7-6) {$h \ast x_L$};
+  \foreach \i in {0,...,22}{
+    \draw[thick] (\i/4+\talign,-6) -- (\i/4+\talign,{funcx(\i/6.)-6});
+    \draw[fill] (\i/4+\talign,{funcx(\i/6.)-6}) circle[radius=0.05];}
+  \draw[very thick, dashed, domain=0:23,samples=50] plot(\x/4+\talign, {funcx(\x/6.)-6});
+
+
+ %% y 
+  \draw [<->, rounded corners, very thick](\talign,-6.5) -- (\talign,-8) -- (\talign+6.5,-8) node[below] {$j$};
+  \node[left] at (\talign,0.7-8) {$y$};
+  \foreach \i in {0,...,22}{
+    %\draw[thick] (\i/4+\talign,-8) -- (\i/4+\talign,{funcx(\i/6.)-8});
+    \draw[gray] (\i/4+\talign,-8) -- (\i/4+7.5,{funcx(\i/6.)-8});}
+  \foreach \i in {0,...,11}{
+    \draw[thick] (2*\i/4+\talign,-8) -- (2*\i/4+\talign,{funcx(2*\i/6.)-8});
+    \draw[fill] (2*\i/4+\talign,{funcx(2*\i/6.)-8}) circle[radius=0.05];}
+  \draw[very thick, dashed, domain=0:23,samples=50] plot(\x/4+\talign, {funcx(\x/6.)-8});
+
+\end{tikzpicture}
+\caption{$L = 3$, $M = 2$}
+\end{figure}

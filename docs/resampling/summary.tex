@@ -1,0 +1,540 @@
+\documentclass[11pt,preprint]{aastex}
+\usepackage{natbib}
+\bibliographystyle{apj}
+\usepackage{amsmath,epstopdf}
+\usepackage{tikz}
+\usetikzlibrary{dsp,chains,shapes,arrows}
+\usepackage{rotating,lscape,threeparttablex}
+\DeclareGraphicsRule{.pdftex}{pdf}{*}{}
+
+\DeclareMathAlphabet{\mathpzc}{OT1}{pzc}{m}{it}
+\newcommand{\z}{\mathpzc{z}}
+\newcommand{\falign}{0}
+\newcommand{\talign}{7.5}
+
+\begin{document}
+
+\title{Resampling phased SWARM for VLBI \\ v0.1}
+
+\author{The APHIDS Team\altaffilmark{1}}
+\altaffiltext{1}{Harvard-Smithsonian Center for Astrophysics, 60 Garden Street, Cambridge, MA 02138, USA}
+
+\begin{abstract}
+ABSTRACT
+\end{abstract}
+
+\section{Introduction}
+
+Very Long Baseline Interferometry (VLBI) uses similar techniques as the connected element arrays
+featured in the previous chapters.  By using detectors located thousands of miles away, perhaps on different 
+continents or even in space, this technique can achieve milliarcsecond resolution at radio wavelengths.  Each 
+station must have its own clock and, after the observation campaign, the recorded signals is correlated off-site. 
+Examples of VLBI applications include geodesy, astrometry, and imaging. Technical developments in the 
+field continue to unveil singular scientific opportunities.
+
+One exciting example is the development of mm and sub-mm wave VLBI by collaborations such as the Event Horizon
+Telescope (EHT).  Using these extremely high resolution data, the EHT observes nearby
+super massive black holes on scales of their Schwarzschild radius and offers a unique lab to study 
+general relativity and accretion physics.  One of the challenges that the EHT faces is the inhomogeneity 
+of its array since the EHT array is a conglomeration of many independently operating observatories.
+While many of these telescopes will use the same back end hardware such as the state-of-the-art ROACH2 VLBI 
+Digital Back-end (R2DBE), a few key sites cannot use these systems and produce very 
+different data products. In particular, the sampling rate of the phased ALMA, SMA, and CARMA arrays are 
+incompatible with the standard VLBI rate.  Before the EHT's software correlator
+\citep[DIFX][]{deller07} can find fringes using these data, they must be resampled to the R2DBE rate of 
+4096\,MHz.  
+
+This chapter summarizes the \textbf{A}daptive \textbf{P}hased-array and \textbf{H}eterogeneous 
+\textbf{I}nterpolator, and \textbf{D}ownsampler for \textbf{S}WARM (APHIDS), a resampling software designed for 
+phased SMA data products.  We concentrate our discussion to early development and design in the project with 
+a particular emphasis on the resampling problem.  APHIDS also has very general applications for 
+post-processing of VLBI data since it features fast read/write capabilities, a modular threaded pipeline 
+and a GPU enabled fast data processing.  The code base is open-source and available online at 
+\url{https://github.com/sma-wideband/sdbe}.
+
+The purpose of APHIDS is to take data recorded at the SMA and process it for correlation using
+DIFX.  The SMA is a key site for the EHT that provides important East-West baselines and a zero baseline with 
+its neighbor JCMT.  The phased sum is calculated by the SMA correlator, SWARM 
+\citep[\textbf{S}MA \textbf{W}ideband \textbf{A}stronomical \textbf{R}OACH2 \textbf{M}achine][]{weintroub14}, 
+which is currently being deployed in stages as the array's bandwidth capabilities are 
+upgraded.  For EHT observations in 2015, SWARM recorded at a sampling rate of 2496\,MHz in 2 separate phased
+sums.
+
+In \S\ref{sec:src_basics} we discuss the sampling rate conversion problem and several common solutions.
+The current APHIDS resampling algorithm is described in \S\ref{sec:aphids} along with discussions of important
+design considerations.  We include measurements of performance as well as a successful
+demonstration of the software's operation.  We end by summarizing the goals for near and long-term project 
+development.
+
+\include{upsampling_tikz}
+
+\section{Sample Rate Conversion} \label{sec:src_basics}
+
+Sample rate conversion, or resampling, is the process of taking a digital signal ($x[i]$) sampled at some rate 
+($f_0$) and calculating new samples ($y[i]$) at a different rate ($f_1$).  To analyze this problem we use the 
+ratio between the two rates: $f_1/f_0 = L/M$, where $L$ and $M$ are relatively prime integers.  Operationally, 
+sample rate conversions is the combination of upsampling and downsampling \citep{oppenheim10,lyons11}.  
+Upsampling, (also commonly called interpolation or expansion), increases the sampling rate 
+by a factor of $L$ with the insertion of $L-1$ zeroes between the original $x[i]$.  A low-pass, 
+anti-imaging filter smooths the signal and supresses the high frequency spectral images greater than the original 
+$f_0$ that have been introduced by the zero inserts.  Figure \ref{fig:upsampling} sketches this process in the 
+time and frequency domain for when $L$ equals 3. 
+
+\include{downsampling_tikz}
+
+Downsampling, or decimation, by an integer factor of $M$ requires that the signal be first low-pass filtered to 
+avoid aliasing at frequencies greater than the desired rate $f_0/M$.  Next, the sampling rate is reduced to 
+$f_0/M$ by selecting every $M$th sample from the filtered signal.  Figure \ref{fig:downsampling} shows this 
+process in the time and frequency domain for when $M$ equals 3.
+
+Sample rate conversion by a factor $L/M$ can be conceptualized as a three step process where the original signal 
+is expanded by $L$, filtered, and then decimated by $M$.  As illustrated by Figure \ref{fig:resample_basic}, 
+the serial anti-imaging and 
+anti-aliasing filters are combined into a single filter with cutoff frequency of 
+$1/\mathrm{max}(L,M) \times Lf_0/2$.  Under this scheme, interpolation must precede decimation otherwise desired 
+frequency components greater than $f_0/M$ cannot be preserved.
+
+\begin{figure}[t]
+\centering
+\label{fig:resample_basic}
+\begin{tikzpicture}
+   \node[dspnodeopen,dsp/label=left]  (c0) {$x[i]$};
+   \node[dspsquare,right=of c0]                     (c1) {\upsamplertext{L}};
+   \node[dspfilter,right=of c1]                     (c2) {$H(\z)$};
+   \node[dspsquare,right=of c2]                    (c3) {\downsamplertext{M}};
+   \node[dspnodeopen,right=of c3,dsp/label=right]  (c4) {$y[j]$};
+   \foreach \i [evaluate = \i as \j using int(\i+1)] in {0,1,...,3}
+       \draw[dspconn] (c\i) -- (c\j);
+\end{tikzpicture}
+\caption{Basic multirate resampling signal flow graph.}
+\end{figure}
+
+Computationally, this basic sample rate conversion scheme is highly inefficient.  The filtering is applied at 
+the highest possible sample rate, $Lf_0$, on a time-series that is $(L-1)/L$ zeros by fraction. Furthermore, the 
+decimator discards an $(M-1)/M$ fraction of the samples.  As a result, this algorithm requires a lot of memory 
+and spends precious clock time with wasted math.  There is a vast literature of techniques and algorithms that 
+improve performance including multistage resampling, folded filter structures, and polyphase representations 
+\citep{oppenheim10,lyons11,vaidyanathan93}.
+
+There have been recent development of polyphase filter representations for GPU architectures 
+\citep[i.e.][]{vanderveldt12,adamek14,kim14a}.  These filter structures can operate at the low sample rate of 
+$f_0/M$
+by introducing delays to switch the expander and decimatator \citep{crochiere81}.  However, they require 
+some filter design and careful book-keeping or buffering to keep track of sample indices \citep{wang01}.
+The implementation in \citet{kim14a} assigned each thread to a filter coefficient, parallelizing the 
+inner product operation.  However, \citet{kim14a} found that their GPU kernel was dominated by the 
+indexing operations.  \citet{adamek14} (building on the work by \citet{vanderveldt12}) presented tantalizing 
+implementations of 
+polyphase filter banks that could run at data rates in excess of 6.5\,GB/s (their estimate for the single channel 
+output of the SKA's Low Frequency Aperture Array).
+
+%  https://github.com/wesarmour/astro-accelerate
+
+A simple option for resampling is to use linear interpolation:
+\begin{equation}
+y[i] = x[j] + (x[j+1] - x[j]) (if_0/f_1 - j)
+\end{equation}
+where $j = \mathrm{floor}(if_0/f_1)$.  This is equivalent to applying a ``tent'' FIR filter with $2L$ taps on the 
+upsampled $Lf_0$ time series before decimation \citep{oppenheim10}.  Similarly, a $2L$ tap box-car filter is 
+equivalent to nearest-neighbor interpolation:
+\begin{equation}
+y[i] = x[\mathrm{round}(if_0/f_1)].
+\end{equation}
+
+Neither linear or nearest-neighbor interpolation consider the frequency content of the original signal and, as a 
+result, perform poorly for signals with any significant power near the Nyquist rate \citep{fraser89}.  To further 
+emphasize this point, Figure 
+\ref{fig:windows} shows the frequency response for both methods when 
+the resampling factor $L/M$ is $64/39$.  Note that both methods have large side lobes and so the 
+resampled signal will introduce a large slope in the passband.  However, GPUs can compute 
+these low-order interpolations directly on the card using texture memory.  \citet{kim14b} utilize this feature 
+by using the cuFFT library to upsample the signal in the Fourier domain by some initial factor, $U$, and then 
+interpolating in texture memory.  It would be straight forward to 
+expand upon the framework introduced by \citet{kim14b} to handle cases where $M$ is greater than $L$.  
+This scheme should help reduce loss from aliasing, albeit 
+at the cost of two FFTs and much larger memory requirements.
+
+\begin{figure}[H!]
+\epsscale{1.0}
+\plotone{windows.eps}
+\caption{Frequency response for FIR filters equivalent to linear and nearest interpolation when $L/M = 64/39$.
+The orange region shows the first Nyquist zone of the target $L/Mf_0$ sample rate.  Spectral components at all 
+other frequencies are aliased into this region.}
+\label{fig:windows}
+\end{figure}
+ 
+\subsection{Resampling in the Fourier Domain} \label{sec:fourier_resampling}
+In contrast to the previous methods, one can also implement a rational $L/M$ sample rate conversion entirely in 
+the Fourier domain \citep{gold69,yeh82}.  After accumulating $kM$ samples at a clock rate of $f_0$ 
+(where $k=1,2,3\cdots$), the DFT 
+returns spectral components spaced at $f_0/kM$.  If $f_1 > f_0$, the resampled spectrum is generated by inserting
+$p$ zeros to match the new $f_1$ while maintaining the correct frequency components: 
+\begin{equation}
+\frac{f_1}{kM+p} = \frac{f_0}{kM}.
+\end{equation} 
+Solving for $p = k(L - M)$.  If $f_0 < f_1$, the spectrum is instead trimmed by $p$ samples.  The time series
+sampled at $f_1$ can then be constructed from the inverse DFT.  This method is equivalent to sinc 
+interpolation using an ideal low-pass filter and is a perfect interpolator
+if the original, continuous signal has a discrete spectral density distribution that is band-limited below the 
+Nyquist limit.  In practice, small errors may be introduced from aliased spectral leakage. 
+
+Trimming or padding the spectrum is equivalent to convolving a normalized sinc function with the original series 
+wrapped periodically.  Consequenty, errors will be introduced into the beginning and end of the
+resampled signal.  The far this error significantly propagates away from the time series edges depends on the 
+width of the sinc function which is set by the resampling factors $L$ and $M$: 
+\begin{equation} \label{eq:sinc}
+B\,\mathrm{sinc}(B t) \overset{\mathcal{F}}{\Longleftrightarrow} \begin{cases} 1 \quad |f| < B/2 \\ 0 \quad |f| > B/2 \end{cases}
+\end{equation}
+where $B = \mathrm{min}(f_0,L/Mf_0)$.  
+The number of samples for which this makes a large difference is small and can be roughly treated as less than a 
+1\% effect when $N > 100\,\mathrm{max}(L/M,1)$.  One option to mitigate this error to stitch together 
+overlapping, resampled segments \citep{bi11} which requires more computation and memory.  A second strategy is to 
+multiply the original signal by some tapered window function \citep{fraser89}.
+
+For post-processing phased SWARM, DFT resampling is a good fit because one can access arbitrary large chunks of 
+the time series without accumulators in hardware and has well-behaved errors
+that can be easily modeled.  However, the speed of the FFT depends on the resampling factors ($L/M = 32/39$ for 
+the March 2015 EHT observations) and zero-padding in the case that the $L\gg M$ may require large amounts of 
+memory.
+
+%% Loss table : /home/krosenfe/resampling/losses.py
+% losses for FIR filtering, interpolation schemes, and FFT
+\begin{deluxetable}{l|ccc}
+\tablecolumns{4}
+\tablewidth{0pc}
+\tablecaption{Correlation coefficient loss from resampling \label{tab:loss}}
+\tablehead{\colhead{Method} & \colhead{64/39} & \colhead{32/39} & \colhead{128/125}}
+\startdata
+Nearest-Neighbor            & 13\% & 17\% & 13\% \\
+Linear                      &  5\% &  7\% &  5\% \\
+Hamming window ($16L$ taps) &  1\% &  2\% &  2\% \\
+FFT ($N=M$)                 &  1\% &  1\% & 0.2\%
+\enddata
+\end{deluxetable}
+
+\section{APHIDS} \label{sec:aphids}
+
+We are developing a software solution to the resampling problem called APHIDS (\textbf{A}daptive 
+\textbf{P}hased-array and 
+\textbf{H}eteregeneous \textbf{I}nterpolator and \textbf{D}ownsampler for \textbf{S}WARM).  This open-source 
+code \footnote{\url{https://github.com/sma-wideband/sdbe}} is written in C/CUDA using
+HASHPIPE (\textbf{H}igh \textbf{A}vailibility \textbf{Sh}ared \textbf{Pipe}line
+ Engine)\footnote{\url{https://github.com/david-macmahon/hashpipe}}.  The software is designed to use 
+modularized, lightweight threads to handle reading data packets from hard drives, resampling on a GPU cluster, 
+and then writing back to separate disks.  These three steps are each loosely mapped to threads we call the 
+vdif\_in\_net thread, vdif\_inout\_gpu\_thread, and vdif\_out\_net thread. 
+The ultimate goal of is to process data streamed directly at the telescope.  The flowchart in Figure 
+\ref{fig:aphids_flow_chart} shows how data progresses 
+through the pipeline and this section will describe each block covering the major hardware components, software 
+design, and data formats.  We will conclude with a discussion of future development and applications of APHIDS.
+
+\tikzstyle{line} = [draw,-latex']
+\tikzstyle{cpu} = [rectangle, draw, fill=blue!20,
+    text width=5em, text centered, rounded corners, minimum height=4em]
+\tikzstyle{gpu} = [rectangle, draw, fill=red!20,
+    text width=5em, text centered, rounded corners, minimum height=4em]
+\tikzstyle{resamp} = [rectangle, draw, minimum height=4.5em, align=center, minimum width=15em] 
+
+\begin{figure}[H]
+\begin{center}
+\begin{tikzpicture} [node distance = 5cm, auto]
+\node [cpu] (mark6_in) {Mark6 Reader};
+\node[gpu,below of=mark6_in](reader){Reader};
+\node[gpu,right of=reader](rIFFT){rIFFT};
+\node[gpu,right of=rIFFT](resampler){Resampler};
+\node[cpu,right of=resampler](VDIF_pkt){VDIF packet \\ \& header};
+\node[cpu,below of=VDIF_pkt](mark6_out){Mark6 Writer};
+
+\path[line] (mark6_in) -- node[align=center] {BENG @ 2496 GHz \\ quantized to 2-bits}(reader);
+\path[line] (reader) -- node[align=center] {spectra of \\ 16k complex64} (rIFFT);
+\path[line] (rIFFT) --  node[align=center] {time series of \\ 32k float32} (resampler);
+\path[line] (resampler) --  node[align=center] {time series \\ @ 2048 GHz}(VDIF_pkt);
+\path[line] (VDIF_pkt) -- node[align=center, left]{VDIF @ 4096 GHz \\ quantized to 2-bits}(mark6_out);
+\end{tikzpicture}
+\label{fig:aphids_flow_chart}
+\caption{This signal flow chart shows an overview of APHIDS.  The red boxes represent operations on the GPU 
+while blue boxes are for the CPU.  Once the B-engine frames have been unpacked, each of the two phased sum 
+streams are processed independently and in a serial fashion.}
+\end{center}
+\end{figure}
+
+\subsection{Hardware and Data description}
+
+APHIDS features three main hardware components: an I/O data system, CPU, and GPU server.  For I/O, the 
+EHT observations taken by SWARM in March, 2015 have been stored on four disk-packs that each hold eight, 
+6\,TB hard drives (totaling $48 \times 4 = 192$\,TB of data).  The Mark6 VLBI data system has four modules that 
+can hold one disk-pack and we use
+two seprate Mark6 units to handle the recording and playback of data.  APHIDS itself is run on a separate CPU 
+that controls the GPU server.
+
+The GPU server as four GTX 980 GPUs, each with 4GB of local memory.  Data from the CPU (or host) is copied over 
+a PCI-E bus into the local GPU (or device) memory.  Once the data is transferred, the host directs the device
+to perform functions (or kernels) on the data which must be again moved from the local device memory onto 
+on-chip memory for the individual streaming multiprocessors that make up the GPU.  After computation is done, 
+the host transfers the data off of the device memory.
+
+The observations were recorded using a scatter/gather file system which disperses the 
+data composing individual scans over the four modules.  APHIDS uses fast, general purpose software called 
+sgcomm (\textbf{s}catter \textbf{g}ather \textbf{comm}unication) to read in 
+the scattered data into CPU shared memory over a 10 Gigabit Ethernet network.  Data from phased SWARM was 
+streamed through a special version of the R2DBE called the SDBE (Swarm Digital Back End) and packaged into
+a customized B-engine format.  Each B-engine frame is composed of 1024, 1056B VDIF frames 
+\footnote{\url{http://www.vlbi.org/vdif/}} with 128 snapshots of a 
+16384 sample SWARM spectra.  However, the current SDBE bitcode packs
+neither the snapshots contiguously in time nor the spectrum samples contiguously in frequency.  Furthermore, 
+each B-frames overlaps the preceding one in memory.  Our resampling algorithm handles $19968$\,SWARM samples
+simultaneously, so in order to reduce the amount of book-keeping the inout thread buffers 40 B-engine frames to 
+produce $39 \times 128$ complete SWARM snapshots.  The inout thread does preliminary checks to ensure that the 
+B-engine frames are complete before assigning each buffer to a GPU.  The data is written as a time series using 
+following the VDIF specification.
+
+As mentioned previously, the data is split into two phased sums that together cover the desired 4096\,MHz of 
+observing bandwidth.  Since DIFX can handle the chunks independently we do not stitch the spectra together. 
+However, the observation was designed to include guard bands which must be removed by APHIDS 
+(see Figure \ref{fig:swarm_amp_spec}).
+
+\begin{figure}[t!]
+\epsscale{1.0}
+\plotone{SWARM_amp_spectra.eps}
+% /home/krosenfe/sdbe/software/prototyping/cuda/SWARM_amp_spectra.eps
+\caption{This figure shows both channels of the detrended amplitude spectral density of phased SWARM along with 
+the R2DBE (SMA single-dish in gray).}
+\label{fig:swarm_amp_spec}
+\end{figure}
+
+\subsection{Resampling Block}\label{sec:resamp_block}
+
+APHIDS resamples the data in the Fourier domain (see \S \ref{sec:fourier_resampling}).  There were several 
+contributing factors that led us to make
+this choice rather than apply filters in the time domain.  First, the GPU cluster can handle relatively large 
+chunks of data at a time so losses from the DFT are very manageable.  Second, regardless of 
+what resampling algorithm is used the SWARM spectra must 
+be transformed into the time domain, the guard bands trimmed and the signal modulated.  These operations are done 
+naturally in the Fourier domain.  However, the cost of the resampling operation will be largely dominated by 
+these operations.  Lastly, we can utilize the optimized cuFFT library
+\footnote{\url{https://developer.nvidia.com/cuFFT}} to ensure good performace, reduce development time and 
+maintain a manageably sized codebase.
+
+The APHIDS resampling block is composed of three 1-dimensional FFTs (A, B, and C; see Figure 
+\ref{fig:resampling_block}).  Following the cuFFT API reference to improve performace, we utilize batched
+FFTs (launching more than one FFT at a time using the cuFFT API), out-of-place transforms, 
+and ensure that transforms operate on contiguous chunks of memory.  We also use single precision transforms to 
+reduce the memory transfer bandwidth and ensure that 
+the resampling block can be run on a single device.  The latter point is important since it allows the inout
+thread to parallelize the resampling operation across the cluster and provide a roughly x4 speedup.
+
+The first FFT (A) takes the complex valued, 16384 sample SWARM spectrum into the time domain, returning 
+32768 real samples.  Since SWARM omits the Nyquist sample which is far outside the SWARM cutoff frequency, 
+we insert a zero as the 16385th sample.  Since this transform is radix-2, the performance should benefit from 
+the Cooley-Tukey algorithm.  However, on our cluster the cuFFT library exhibits linear improvement in Gflops 
+with transform size up to N of 16384 (see Figure \ref{fig:C2R_performance}).  This behavior is consistent with 
+the CUDA 7.0 performance 
+report\footnote{\url{http://on-demand.gputechconf.com/gtc/2015/webinar/gtc-express-cuda7-performance-overview.pdf}} 
+and we find that this transform, just ouside of the optimal regime, operates at 6.7 Gsps.
+
+Next, we Fourier transform chunks of $N_B = 19968$ consecutive time series samples (B).  The resulting 
+spectrum has a frequency resolution of $2496$\,MHz$/19958=125$\,kHz.  The folllowing step is to apply a third
+complex-to-real transform (C) on a subset of the spectrum, using only frequences from $150$\,MHz to $1174$\,MHz.  
+The final time series has size $N_C= 2\times(1174-150)/0.125=16384$ per batch element and our desired 
+sampling rate of 
+$16384 \times 0.125$\,MHz$ = 2048$\,MHz.  This simple operation simultaneously resamples the signal, modulates 
+the signal, and trims the guard bands.  Furthermore, it is easily implemented using cuFFT by using the same 
+batch size as the second real-to-complex transform, increasing the input pointer index by $150 / 0.125 = 1200$
+(equivalent to masking out the first 1200 channels) and then using a input stride of $9980$ for the 
+$N=16384$ complex-to-real transform.
+
+The choice of FFT size was set to maximize performance.  In order for the target sampling rate to be achieved
+$N_B$ must be a multiple of 39.  Furthermore, so that the 150\,MHz guard band can be removed, we must ensure that 
+150 is a multiple of $2496/N_B$:
+\begin{equation}
+\frac{150\times39}{2496} = \frac{75}{32} = \frac{i}{j}, \quad i,j = 1, 2,3, \ldots
+\end{equation}
+To ensure this, $j$ should be a multiple of 32 so that 
+\begin{equation}
+N_B = 39j = 1248i, \quad i=1,2,3,\ldots
+\end{equation}
+Lastly, the size of the C transform is then determined:
+\begin{equation}
+N_C = \frac{32}{39} N_B.
+\end{equation}
+The dashed line in Figure \ref{fig:C2R_performance} shows the performance for candidate $N_B$s.  Unlike for 
+the radix-2 cases, the configuration that has the best Gflop performance does not also provide the best Gsps
+rate.  This is likely because the Gflop calculation is not an actual flop count, but a scaling from the 
+original Cooley-Tukey algorithm \citep{cooley65}.  The Gsps metric is perhaps more useful in this case as it
+shows that choices of $N_B <= 19968$ will have good performance.  However, the figure also demonstrates
+that this non radix-2 FFT is about $2\times$ slower than the radix-2 case.
+
+\begin{figure}[t!]
+\epsscale{0.95}
+\plotone{C2R_performance.eps}
+\caption{This figure shows the performance of radix-2, single precision, batched, complex-to-real, 1D transforms 
+measured on our GPU cluster. The benchmark conventions follow FFTW  (http://www.fftw.org/speed/method.html).}
+\label{fig:C2R_performance}
+\end{figure}
+
+\subsection{Timing Performance}
+
+In this section we report on timing measurements of the APHIDS resampling kernels.  We consider the cost of 
+loading the data onto the device separately and do not include it in the scores of the individual kernels.  
+Furthermore, we do not include the cost of building the FFT plan since this operation is done only once.
+We have designed the resampling block to operate on a single GPU so there is no time spent moving data 
+between devices and we can parallelize across each card.  The
+kernels (except for the depacketer) must be called
+twice, once on each phased sum.  Our current implementation uses synchronous calls (one kernel function is 
+called at a time).  We tested an asynchronous setup, but saw no speedup.  This indicates that the majority of 
+the GPU resources are being used.  Table \ref{tab:kernel_times} lists the time it takes for the kernel to be 
+executed a single time and also the speed of the kernel assuming it is operating on a buffered 0.32\,Gb data 
+chunk (see \S\ref{sec:resamp_block}).
+
+%% Loss table : /home/krosenfe/resampling/losses.py
+% losses for FIR filtering, interpolation schemes, and FFT
+\begin{deluxetable}{l|cc}
+\tablecolumns{3}
+\tablewidth{0pc}
+\tablecaption{Timing measurements of APHIDS kernels \label{tab:kernel_times}}
+\tablehead{\colhead{Kernel} & \colhead{time [ms]} & \colhead{rate [Gbps]}}
+\startdata
+Reorder                & 10.5 & 31.5 \\
+FFT A (N=32768)        & 25.4 & 12.9 \\
+FFT B (N=19968)        & 38.0 & 8.6  \\
+FFT C (N=16384)        & 13.8 & 23.7 \\
+Quantize (2-bit)       & 12.0 & 27.3
+\enddata
+\end{deluxetable}
+
+
+\subsection{FFT Accuracy}
+One concern with using multiple FFTs to change the sampling rate is the error introduced by bit growth.
+The floating point error grows as $\mathcal{O}\sqrt{\log{N}}$ \citep{schatzman96} on average for the Cooley-Tukey
+algorithm, but errors can be exacerbated by innacurate twiddle factors or our choice of FFT algorithm (see
+benchFFT\footnote{\url{http://www.fftw.org/accuracy/}}).  We have computed the accuracy of the cufft library 
+using single precision for 
+radix-2 transforms as well as the $N_b = 19968$ case in Figure \ref{fig:fft_accuracy}.  These values 
+were computed using benchFFT and we compare against fftw3\footnote{\url{http://www.fftw.org/}}
+results also computed on our GPU cluster.  For random input, the cufft library follows the expected 
+$\mathcal{O}\sqrt{\log{N}}$ behavior
+but with larger scatter and slightly worse performance than fftw3.
+
+\begin{figure}[H!]
+\plotone{fft_accuracy.eps}
+\caption{Accuracy of the FFT algorithm as measured by the $L_2$ error from benchFFT} \label{fig:fft_accuracy}
+%/home/krosenfe/testing/cufft_accuracy/make_figure.py
+\end{figure}
+
+Round off error and bit growth is also a general concern for scientific computing on GPUs.  
+Increasing the precision to double can significantly slow down performance and then 
+require reoptimization or even the redesign of kernels.  Generally, well implemented FFTs can 
+be very stable options.  The results of ours test suggest that 
+bit growth will not be a large source of loss for the resampling scheme presented in \S\ref{sec:resampling_block}.
+
+\subsection{Quantization}
+Another source of loss and distortion to consider is the requantization back to 2-bits that is done
+before writing back to disk on the Mark6 (see Figure \ref{fig:aphids_flow_chart}).  In theory, APHIDS could 
+record higher bit data (or even the full 32 bits for floating point), but this adds complications for 
+correlation 
+in DIFX and would incur costs for both disk space and output data rate.  While the former cost is monetary, the 
+latter could be an important limiting factor for real-time operation of APHIDS at the back end of the SDBE.  
+The signal-to-noise loss expected from 2-bit quantization is a function of the quantization 
+thresholds, but for Gaussian noise and Nyquist sampling is at best 12\% \citep{cooper70,thompson01}.
+
+\subsection{Inverting the Polyphase Filterbank}
+Under normal operation, SWARM uses a polyphase filter bank (PFB) to generate its spectra.  The PFB is an 
+efficient method of producing spectra where each channel has a frequency response much better than the 
+sinc pattern of the DFT.  This is achieved by using a window function and a polyphase filter structure to reduce 
+the effects of leakage and scalloping \citep{lyons11}.  However, for VLBI observations we must transform the 
+spectrum into the original time series to resample the data.  Inverting the PFB is a non-trivial operation so 
+the operators use a version of the SWARM bit-code that replaces the PFB with an FFT.  However, for the first 
+two nights of the 2015 EHT campaign this version was not used and so we must consider this problem.
+
+One option is to simply apply the generic APHIDS pipeline on the PFP spectra which uses an DFT to invert the 
+SWARM spectra into time series.  The resulting pseudo time-series is a series of weighted 
+averages of the original time series.  The weights are determined by the window function used in the 
+PFB and the number of elements in the sum by the number of taps, $N_T$.  For example, if the window function is 
+a box car, then the weights are equal and the correlation coefficient for a white noise time stream goes like:
+\begin{equation}
+\rho = \frac{1}{\sqrt{N_T}}.
+\end{equation}
+SWARM uses four taps and a Hanning filter.  We simulated the resulting correlation loss and saw a 34\% loss, 
+exceeding the largest loss we expect in the pipeline from the 2-bit quantization (12\%).  Using the PFB inversion
+technique developed by Richard Shaw\footnote{\url{https://github.com/jrs65/pfb-inverse}} we see excellent 
+recovery with a loss of only 0.5\% although the inversion routine takes about 10 times longer than numpy's
+iFFT and already uses the highly optimized LAPACK library.  CUDA libraries offer many of the required functions 
+to implement this solution on the GPU and we have ported Shaw's solution to CUDA using a combination of 
+CUBLAS and CUSolver.  The current implementation runs about 5 times slower than an inverse FFT batched over 
+the same size data chunk.
+
+\subsection{Current Status and Results}
+
+The APHIDS software is still under development, but we have tested the resampling blocks on a small sample of
+the data.  To do so we took several hundred milliseconds of data collected by phased SWARM and correlated against
+a single dish in the SMA array to find a non-cosmic zero-baseline fringe.  The ability to do this was extremely 
+important as it allowed us to characterize how the data was ordered and guide efforts to find fringes at longer 
+baselines.  A cosmic fringe detection between the LMT in Mexico and the SMA (both the single dish and phased 
+SWARM) were confirmed in May (see Figure \ref{fig:sma_lmt}).
+
+\begin{figure}[t!]
+\includegraphics[bb=0 0 100 100]{SMA-LMT.png}
+\caption{This figure shows the cosmic fringe detection at 1.3\,mm between phased SWARM and the LMT, a deprojected 
+baseline of more than 4 G$\lambda$ (figure from Mike Titus).}
+\label{fig:sma_lmt}
+\end{figure}
+
+\subsection{Conclusion and Future Development}
+
+APHIDS promises to be an important tool for the EHT.  It crucially enables the correlation in
+DIFX of non-standard sampling rates and also provides a platform for any general pre-processing of 
+VLBI data.  It features fast data IO from Mark6 recorders and GPU accelarated processing.  
+We have demonstrated the correctness and speed of this design and its immediate applicability to 
+the 2015 EHT data as well as technical tests with phased ALMA.  However,
+there remain a number of challenges for future development of the software.
+
+For future VLBI campaigns at the SMA, it would be ideal if APHIDS could run in real-time 
+at the backend of the SDBE.  This would reduce the media requirements and also the 
+hassle of post-processing the data offsite.  However, the performance will need to improve as the
+SWARM data rates increase and if the front-end of the pipeline is optimized to reduce the 
+amount of SNR loss from quantization.  Additionally, some analysis on the cooling requiremeents 
+of the cards should be conducted to ensure that the GTX980s used in out GPU cluster can safely run 
+at the altitude of the SMA (4100\,meters).  Regardless of where it operates, APHIDS will need 
+maintence to remain compatible with SWARM as it and the SDBE are updated.  The current 
+git repository and its wiki is a good solution for keeping track of versioning and performance status.
+
+In order to handle phased ALMA data products, a separate APHIDS resampling block would need 
+to be developed.  In some ways this is a simpler design since there are no guard-bands, but 
+there are more phased sums for book-keeping and larger data requirements for the higher 
+sampling rate. APP expertise is located at Haystack and in close collaboration with members of 
+the APHIDS team.  
+
+\begin{figure}
+\centering
+\begin{tikzpicture}[node distance = 2.2cm, auto]
+\node[align=center](init){};
+\node[resamp,below of=init](rfft){batched real FFT \\ dimension of $39 \times N$};
+\node[resamp,below of=rfft](trim){Trim band and shift frequency};
+\node[resamp,below of=trim](rifft){batched real IFFT \\ dimension of $32 \times N$};
+\node[align=center,below of=rifft](final){};
+
+\path[line](init) -- node[align=left]{ time series \\ @ 2496\,MHz} (rfft);
+\path[line](rfft) -- (trim);
+\path[line](trim) -- (rifft);
+\path[line](rifft) -- node[align=left]{ time series \\ @ 2048\,MHz}(final);
+\end{tikzpicture}
+\label{fig:resampling_block}
+\caption{The resampling block trims the phased SWARM guard bands and shifts the passband to DC as part of the 
+resampling operation.}
+\end{figure}
+
+
+%% Delay rate is red curve and multiband delay rate is blue curve.
+
+\section{The Team}
+The text to this document was written by KR with referral to intermediate documents written by
+members of the APHIDS team.  LB ran simulations on 2-bit quantization and suggested the DFT resampling 
+architecture appropriate for phased SWARM. AY wrote sgcomm, the front and back-end kernels de-and re-packetizing 
+the data along with quantization. RP handled HASHPIPE and the general pipeline design.  The B-engine data format 
+along with the SDBE bit code was developed by LV and RP.
+
+\acknowledgments 
+\clearpage
+
+\bibliography{sdbe}
+\end{document}
