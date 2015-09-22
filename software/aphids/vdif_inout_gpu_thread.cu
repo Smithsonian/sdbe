@@ -21,6 +21,8 @@ extern "C" {
 #include <cuda_runtime.h>
 #include <vector_types.h>
 #include <cufft.h>
+#include <cublas_v2.h>
+#include <cusolverSp.h>
 
 //#define GPU_DEBUG		// slows down performance
 #define GPU_COMPUTE
@@ -56,6 +58,31 @@ static void HandleError( cudaError_t err,const char *file,int line ) {
 #endif
 }
 #define HANDLE_ERROR( err ) (HandleError( err, __FILE__, __LINE__ ))
+
+#define CUDA_CALL(x) do { if((x)!=cudaSuccess) { \
+    printf("Error at %s:%d: %s\n",__FILE__,__LINE__,cudaGetErrorString(x));\
+    return EXIT_FAILURE;}} while(0)
+
+#define CUFFT_CALL(x) do { if((x)!=CUFFT_SUCCESS) { \
+    printf("Error at %s:%d\n",__FILE__,__LINE__);\
+    return EXIT_FAILURE;}} while(0)
+
+#define CUSOLVER_CALL(x) do { if((x)!=CUSOLVER_STATUS_SUCCESS) { \
+    printf("Error at %s:%d\n",__FILE__,__LINE__);\
+    return EXIT_FAILURE;}} while(0)
+
+#define CUBLAS_CALL(x) do { if((x)!=CUBLAS_STATUS_SUCCESS) { \
+    printf("Error at %s:%d\n",__FILE__,__LINE__);\
+    return EXIT_FAILURE;}} while(0)
+
+#define CUSPARSE_CALL(x) do { if((x)!=CUSPARSE_STATUS_SUCCESS) { \
+    printf("Error at %s:%d\n",__FILE__,__LINE__);\
+    return EXIT_FAILURE;}} while(0)
+
+#define PI 3.14159265359
+__host__ __device__ float hamming(int n, int m){
+  return 0.54 - 0.46*cos(2.*PI*n/(m-1.));
+}
 
 /**
  * structure used to accumulate the moments and other 
@@ -509,6 +536,167 @@ __global__ void quantize2bit(const float *in, unsigned int *out, int N, float th
 		atomicOr(out+idx_out, sample_2bit);
 		idx_out += gridDim.x*blockDim.y;
 	}
+}
+
+/*
+ d_s is complex PFB timestream [num_snapshots, num_freqs]
+*/
+int inverse_pfb(cufftComplex *d_s, int num_samples, int num_tap, int num_freq, float *d_rts){
+  // pull out the number of blocks and their length
+  int lblock = 2 * (num_freq - 1);
+  int nblock = num_samples / lblock - (num_tap - 1);
+  int ntsblock = nblock + num_tap - 1;
+
+  cublasHandle_t cublasH;
+  cusparseHandle_t cusparseH;
+  cufftHandle plan;
+  float *d_pts, *d_yh;
+  const float alpha = 1., beta = 0.;
+
+  cusolverSpHandle_t cusolverH = NULL;
+  // GPU does batch QR
+  csrqrInfo_t info = NULL;
+  cusparseMatDescr_t descrBandPPT = NULL;
+  cusparseMatDescr_t descrBandP = NULL;
+  cusolverStatus_t cusolver_status;
+  cusparseStatus_t cusparse_status;
+  cublasStatus_t cublas_status;
+
+  // create cublas context
+  CUBLAS_CALL( cublasCreate(&cublasH) );
+
+  // create cusparse context
+  CUSPARSE_CALL( cusparseCreate(&cusparseH) );
+
+  // GPU does batch QR
+  // batchsize = lblock
+  // m = nblock
+  // d_A is CSR format, d_csrValA is of size nnzA*batchSize = 
+  // d_x is a matrix of size batchSize * m
+  // d_b is a matrix of size batchSize * m
+  int *csrRowPtrBandPPT,*csrColIndBandPPT, *csrRowPtrBandP, *csrColIndBandP;
+  int *d_csrRowPtrBandPPT,*d_csrColIndBandPPT, *d_csrRowPtrBandP, *d_csrColIndBandP;
+  float *csrValBandPPT, *csrValBandP;
+  float *d_csrValBandPPT, *d_csrValBandP;
+  int ind, u = num_tap - 1;
+  size_t size_qr = 0;
+  size_t size_internal = 0;
+  void *buffer_qr = NULL; // working space for numerical factorization
+
+  // set up banded P matrices
+  int mBandP = lblock * ntsblock, nBandP = lblock * nblock;
+  int nnzBandP = lblock * num_tap * nblock; 
+  csrRowPtrBandP = (int *) malloc((mBandP + 1)*sizeof(int));
+  csrColIndBandP = (int *) malloc(nnzBandP*sizeof(int));
+  csrValBandP = (float *) malloc(nnzBandP*sizeof(float));
+
+  ind = 0;
+  for (int batchId = 0; batchId < lblock; batchId++){
+    for (int j = 0; j < ntsblock; j++){
+      csrRowPtrBandP[batchId*ntsblock + j] = ind;
+      for (int i = 0; i < nblock; i++){
+        if (((u+i-j) >= 0) && (i <= j)) {
+          csrColIndBandP[ind] = batchId*nblock + i;
+          csrValBandP[ind] = hamming(lblock*(j-i) + batchId, num_tap*lblock);
+          ++ind;
+        }
+      }
+    }
+  }
+  csrRowPtrBandP[mBandP] = nnzBandP;
+
+  // set up banded P*P^T matrices
+  int mBandPPT = nblock;
+  int nnzBandPPT = 2 * (num_tap*nblock - (num_tap - 1) * num_tap / 2) - nblock;
+  csrRowPtrBandPPT = (int *) malloc((mBandPPT + 1)*sizeof(int));
+  csrColIndBandPPT = (int *) malloc(nnzBandPPT*sizeof(int));
+  csrValBandPPT = (float *) malloc(lblock*nnzBandPPT*sizeof(float));
+
+  for (int batchId = 0; batchId < lblock; batchId++){  
+    ind = 0;
+    // loop over rows
+    for (int j=0; j < mBandPPT; j++){
+      csrRowPtrBandPPT[j] = ind;
+      // loop over columns
+      for (int i=0; i < mBandPPT; i++){
+        int dji = abs(j-i);
+        if ((u-dji) >= 0) {
+          float val = 0.;
+          for (int k = 0; k < num_tap - dji; k ++) {
+            val += hamming(lblock*(k+dji) + batchId, num_tap*lblock) * hamming(lblock*k + batchId, num_tap*lblock);
+          }
+          csrColIndBandPPT[ind] = i;
+          csrValBandPPT[nnzBandPPT*batchId + ind] = val;
+          ++ind;
+        }
+      }
+    }
+    csrRowPtrBandPPT[mBandPPT] = nnzBandPPT;
+  }
+
+  // copy banded P*P^T matrices to device
+  CUDA_CALL( cudaMalloc((void **) &d_yh, ntsblock*lblock*sizeof(float)) );
+  CUDA_CALL( cudaMalloc((void**)&d_csrValBandPPT, sizeof(float)*nnzBandPPT*lblock) );
+  CUDA_CALL( cudaMalloc((void**)&d_csrColIndBandPPT, sizeof(int)*nnzBandPPT) );
+  CUDA_CALL( cudaMalloc((void**)&d_csrRowPtrBandPPT, sizeof(int)*(mBandPPT+1)) );
+  CUDA_CALL( cudaMalloc((void**)&d_csrValBandP, sizeof(float)*nnzBandP) );
+  CUDA_CALL( cudaMalloc((void**)&d_csrColIndBandP, sizeof(int)*nnzBandP) );
+  CUDA_CALL( cudaMalloc((void**)&d_csrRowPtrBandP, sizeof(int)*(mBandP+1)) );
+  CUDA_CALL( cudaMemcpy(d_csrValBandPPT, csrValBandPPT, sizeof(float)*nnzBandPPT*lblock, cudaMemcpyHostToDevice) );
+  CUDA_CALL( cudaMemcpy(d_csrColIndBandPPT, csrColIndBandPPT, sizeof(int)*nnzBandPPT, cudaMemcpyHostToDevice) );
+  CUDA_CALL( cudaMemcpy(d_csrRowPtrBandPPT, csrRowPtrBandPPT, sizeof(int)*(mBandPPT+1), cudaMemcpyHostToDevice) );
+  CUDA_CALL( cudaMemcpy(d_csrValBandP, csrValBandP, sizeof(float)*nnzBandP, cudaMemcpyHostToDevice) );
+  CUDA_CALL( cudaMemcpy(d_csrColIndBandP, csrColIndBandP, sizeof(int)*nnzBandP, cudaMemcpyHostToDevice) );
+  CUDA_CALL( cudaMemcpy(d_csrRowPtrBandP, csrRowPtrBandP, sizeof(int)*(mBandP+1), cudaMemcpyHostToDevice) );
+
+  // create cusolver handle, qr info, and matrix descriptor
+  CUSOLVER_CALL( cusolverSpCreate(&cusolverH) );
+  CUSPARSE_CALL( cusparseCreateMatDescr(&descrBandPPT) );
+  CUSPARSE_CALL( cusparseCreateMatDescr(&descrBandP) );
+  CUSOLVER_CALL( cusolverSpCreateCsrqrInfo(&info) );	// for batched execution
+
+  // symbolic analysis
+  cusolver_status = cusolverSpXcsrqrAnalysisBatched(
+		cusolverH, mBandPPT, mBandPPT, nnzBandPPT,
+		descrBandPPT, d_csrRowPtrBandPPT, d_csrColIndBandPPT,
+		info);
+  CUSOLVER_CALL( cusolver_status );
+
+  // prepare working space
+  cusolver_status = cusolverSpScsrqrBufferInfoBatched(
+		cusolverH, mBandPPT, mBandPPT, nnzBandPPT,
+		descrBandPPT, d_csrValBandPPT, d_csrRowPtrBandPPT, d_csrColIndBandPPT,
+		lblock,
+		info,
+		&size_internal,
+		&size_qr);
+  CUSOLVER_CALL( cusolver_status );
+
+  // generate pseudo timestream
+  CUDA_CALL( cudaMalloc((void **) &d_pts, ntsblock*lblock*sizeof(float)) );
+  CUFFT_CALL( cufftPlanMany(&plan, 1, &lblock, NULL, 1, 0, NULL, 1, 0, CUFFT_C2R, nblock) );
+  CUFFT_CALL( cufftExecC2R(plan, d_s, d_yh) );
+
+  // clean up
+  free(csrRowPtrBandPPT);
+  free(csrColIndBandPPT);
+  free(csrValBandPPT);
+  CUDA_CALL( cudaFree(buffer_qr) );
+  CUDA_CALL( cudaFree(d_yh) );
+  CUDA_CALL( cudaFree(d_pts) );
+  CUDA_CALL( cudaFree(d_csrValBandPPT) );
+  CUDA_CALL( cudaFree(d_csrColIndBandPPT) );
+  CUDA_CALL( cudaFree(d_csrRowPtrBandPPT) );
+  CUDA_CALL( cudaFree(d_csrValBandP) );
+  CUDA_CALL( cudaFree(d_csrColIndBandP) );
+  CUDA_CALL( cudaFree(d_csrRowPtrBandP) );
+  CUFFT_CALL( cufftDestroy(plan) );
+  CUBLAS_CALL( cublasDestroy(cublasH) );
+  CUSOLVER_CALL( cusolverSpDestroyCsrqrInfo(info) );
+  CUSPARSE_CALL( cusparseDestroyMatDescr(descrBandPPT) );
+  CUSPARSE_CALL( cusparseDestroyMatDescr(descrBandP) );
+  CUSPARSE_CALL( cusparseDestroy(cusparseH) );
+  return 1;
 }
 
 /** @brief Transform SWARM spectra into timeseries
