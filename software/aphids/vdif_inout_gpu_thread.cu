@@ -28,6 +28,27 @@ extern "C" {
 #define QUANTIZE_THRESHOLD_COMPUTE // toggle threshold calculation
 //#define QUANTIZE_THRESHOLD 1.f
 
+/* Number of defines for PFB inverse
+ */
+// specifies the precision to be used for PFB-inverse computations
+#define PFB_INVERSE_NO_SOLVE
+#ifdef PFB_INVERSE_NO_SOLVE
+#include <curand.h>
+#include <cublas_v2.h>
+#include <cusolverDn.h>
+#define PFB_BATCH_SIZE 32 // number of consecutive snapshots to process
+#define PFB_TAPS 4 // number of taps in FIR filter
+#define DOUBLE_PRECISION
+#ifdef DOUBLE_PRECISION
+typedef double _precision_ipfb_no_solve;
+typedef cufftDoubleComplex _precision_c_ipfb_no_solve;
+#else
+typedef float _precision_ipfb_no_solve;
+typedef cufftComplex _precision_c_ipfb_no_solve;
+#endif
+#endif // PFB_INVERSE_NO_SOLVE
+/* end defines for PFB inverse */
+
 #ifdef GPU_MULTI
 #define NUM_GPU 4
 #else
@@ -56,6 +77,72 @@ static void HandleError( cudaError_t err,const char *file,int line ) {
 #endif
 }
 #define HANDLE_ERROR( err ) (HandleError( err, __FILE__, __LINE__ ))
+
+#ifdef PFB_INVERSE_NO_SOLVE
+#define CUDA_CALL(x) handle_cuda_err(x)
+#define CUBLAS_CALL(x) handle_cublas_sta(x)
+void handle_cuda_err(cudaError_t err) {
+	if (err != cudaSuccess) {
+		fprintf(stderr,"CUDA error %d [%s]\n",(int)err,cudaGetErrorString(err));
+	}
+}
+void handle_cublas_sta(cublasStatus_t sta) {
+	if (sta != CUBLAS_STATUS_SUCCESS) {
+		fprintf(stderr,"CUBLASS error %D\n",(int)sta);
+	}
+}
+// return hamming window in _precision vector
+// NM is length of window (number of samples)
+// out is pointer to N-wide _precision array
+// for N-point FFT and M-tap PFB, NM should be N*M in size
+__global__ void hamming(int NM, _precision_ipfb_no_solve *out) {
+	int ii;
+	int idx = blockIdx.x*blockDim.x + threadIdx.x;
+	_precision_ipfb_no_solve one_over_nm_min_1 = 1.0/((_precision_ipfb_no_solve)NM-1.);
+	for (ii=idx; ii<NM; ii+=gridDim.x*blockDim.x) {
+		out[ii] = 0.54 - 0.46*cos(2.*M_PI*ii*one_over_nm_min_1);
+	}
+}
+// H is a collection of N matrices of size Q x (M+Q-1), each stored
+// in column-major order, and data for each matrix contiguous in memory
+// ensure H is initialized to zero
+__global__ void make_H(int N, int M, int Q, _precision_ipfb_no_solve *window, _precision_ipfb_no_solve *H[]) {
+	int ii, jj, kk;
+	int idx = blockIdx.x*blockDim.x + threadIdx.x;
+	for (kk=0; kk<Q; kk++) {
+		for (ii=idx; ii<N; ii+=gridDim.x*blockDim.x) {
+			for (jj=0; jj<M; jj++) {
+				H[ii][kk + Q*(jj+kk)] = window[ii + jj*N];
+				//~ printf("ii=%d, jj=%d, kk=%d, idx=%d, H = %f\n",ii,jj,kk,idx,H[ii][kk + Q*(jj+kk)]);
+			}
+		}
+	}
+}
+// Convert cublas type matrix from double precision to single precision
+// c number of mxn matrices
+__global__ void double_to_single_mat(int m, int n, double **in, float **out, int c) {
+	int ii, jj;
+	for (ii=0; ii<c; ii++) {
+		int idx = blockIdx.x*blockDim.x + threadIdx.x;
+		for (jj=idx; jj<n*m; jj+=gridDim.x*blockDim.x) {
+			out[ii][jj] = __double2float_rd(in[ii][jj]);
+		}
+	}
+}
+// Reorder reconstructed time-series to have consecutive samples adjacent
+__global__ void reorder_reconstructed_time_series(float **in, float *out) {
+	int M = PFB_TAPS;
+	int N = 2*BENG_CHANNELS_;
+	int Q = PFB_BATCH_SIZE;
+	int n, q;
+	for (n=0; n<N; n++) {
+		int idx = blockIdx.x*blockDim.x + threadIdx.x;
+		for (q=idx; q<Q; q+=gridDim.x*blockDim.x) {
+			out[N*q + n] = in[n][q];
+		}
+	}
+}
+#endif
 
 /**
  * structure used to accumulate the moments and other 
@@ -152,12 +239,207 @@ typedef struct aphids_resampler {
     vdif_out_data_group_t *gpu_out_buf;
     int fft_size[3],batch[3],repeat[3];
     cufftHandle cufft_plan[3];
+#ifdef PFB_INVERSE_NO_SOLVE
+	float **ipfb_tfm_matrix_gpu;
+	float **ipfb_tfm_matrix_gpu_proxy;
+#endif
 #ifdef GPU_DEBUG
     cudaStream_t stream;
     cudaEvent_t tic,toc;
 #endif
 
 } aphids_resampler_t;
+
+#ifdef PFB_INVERSE_NO_SOLVE
+/* Setup operator to transform pseudo-time-stream from iFFT applied
+ * to PFB-FFT output to estimated time-stream. Based on pfb-inverse by
+ * ....
+ */
+void pfb_setup_inverse_operator(aphids_resampler_t *resampler) {
+	int ii;
+	int Q = PFB_BATCH_SIZE;
+	int M = PFB_TAPS;
+	int N = 2*BENG_CHANNELS_;
+	
+	dim3 blocks(64,1,1);
+	dim3 threads(512,1,1);
+	
+	// window -- 1
+	int nm = N*M;
+	_precision_ipfb_no_solve *h_gpu;
+	CUDA_CALL(cudaMalloc((void **)&h_gpu, nm * sizeof(_precision_ipfb_no_solve)));
+	hamming<<<blocks,threads>>>(nm, h_gpu);
+	CUDA_CALL(cudaDeviceSynchronize());
+	
+	// ipfb: build H -- 2
+	_precision_ipfb_no_solve **H_gpu_proxy;
+	_precision_ipfb_no_solve **H_gpu;
+	int size_H = Q*(M+Q-1);
+	H_gpu_proxy = (_precision_ipfb_no_solve **)malloc(N*sizeof(*H_gpu));
+	CUDA_CALL(cudaMalloc((void **)&H_gpu,N*sizeof(*H_gpu)));
+	for (ii=0; ii<N; ii++) {
+		CUDA_CALL(cudaMalloc((void **)&H_gpu_proxy[ii], size_H * sizeof(_precision_ipfb_no_solve)));
+		CUDA_CALL(cudaMemset(H_gpu_proxy[ii],0,size_H*sizeof(_precision_ipfb_no_solve)));
+	}
+	CUDA_CALL(cudaMemcpy(H_gpu,H_gpu_proxy,N*sizeof(*H_gpu),cudaMemcpyHostToDevice));
+	make_H<<<blocks,threads>>>(N, M, Q, h_gpu, H_gpu);
+	CUDA_CALL(cudaDeviceSynchronize());
+	
+	// ipfb: build HHT -- 3
+	cublasHandle_t handle_cublas;
+	CUBLAS_CALL(cublasCreate(&handle_cublas));
+	_precision_ipfb_no_solve **HHT_gpu_proxy;
+	_precision_ipfb_no_solve **HHT_gpu;
+	int size_HHT = Q*Q;
+	_precision_ipfb_no_solve alpha = 1.0;
+	_precision_ipfb_no_solve beta = 0.0;
+	HHT_gpu_proxy = (_precision_ipfb_no_solve **)malloc(N*sizeof(*HHT_gpu));
+	CUDA_CALL(cudaMalloc((void **)&HHT_gpu, N*sizeof(*HHT_gpu)));
+	for (ii=0; ii<N; ii++) {
+		CUDA_CALL(cudaMalloc((void **)&HHT_gpu_proxy[ii], size_HHT * sizeof(_precision_ipfb_no_solve)));
+		CUDA_CALL(cudaMemset(HHT_gpu_proxy[ii],0,size_HHT*sizeof(_precision_ipfb_no_solve)));
+	}
+	CUDA_CALL(cudaMemcpy(HHT_gpu,HHT_gpu_proxy,N*sizeof(*HHT_gpu),cudaMemcpyHostToDevice));
+#ifdef DOUBLE_PRECISION
+	CUBLAS_CALL(cublasDgemmBatched(handle_cublas, CUBLAS_OP_N, CUBLAS_OP_T, 
+		Q, Q, Q+M-1, &alpha, (const _precision_ipfb_no_solve **)H_gpu, Q, (const _precision_ipfb_no_solve **)H_gpu, Q,
+		&beta, HHT_gpu, Q, N));
+#else
+	CUBLAS_CALL(cublasSgemmBatched(handle_cublas, CUBLAS_OP_N, CUBLAS_OP_T, 
+		Q, Q, Q+M-1, &alpha, (const _precision_ipfb_no_solve **)H_gpu, Q, (const _precision_ipfb_no_solve **)H_gpu, Q,
+		&beta, HHT_gpu, Q, N));
+#endif
+	
+	// ifpb: compute iHHT -- 4
+	//~ cusolverDnHandle_t handle_cusolver;
+	//~ CUSOLVER_CALL(cusolverDnCreate(&handle_cusolver));
+	_precision_ipfb_no_solve **iHHT_gpu_proxy;
+	_precision_ipfb_no_solve **iHHT_gpu;
+	int size_iHHT = Q*Q;
+	iHHT_gpu_proxy = (_precision_ipfb_no_solve **)malloc(N*sizeof(*iHHT_gpu));
+	CUDA_CALL(cudaMalloc((void **)&iHHT_gpu, N*sizeof(*iHHT_gpu)));
+	for (ii=0; ii<N; ii++) {
+		CUDA_CALL(cudaMalloc((void **)&iHHT_gpu_proxy[ii], size_iHHT * sizeof(_precision_ipfb_no_solve)));
+		CUDA_CALL(cudaMemset(iHHT_gpu_proxy[ii],0,size_iHHT*sizeof(_precision_ipfb_no_solve)));
+	}
+	CUDA_CALL(cudaMemcpy(iHHT_gpu,iHHT_gpu_proxy,N*sizeof(*iHHT_gpu),cudaMemcpyHostToDevice));
+	//~ int *Pivot;
+	int *Pivot_gpu;
+	int *Info;
+	int *Info_gpu;
+	//~ Pivot = (int *)malloc(Q*N*sizeof(*Pivot));
+	CUDA_CALL(cudaMalloc((void **)&Pivot_gpu,Q*N*sizeof(*Pivot_gpu)));
+	Info = (int *)malloc(N*sizeof(*Info));
+	CUDA_CALL(cudaMalloc((void **)&Info_gpu,N*sizeof(*Info)));
+#ifdef DOUBLE_PRECISION
+	CUBLAS_CALL(cublasDgetrfBatched(handle_cublas, Q, HHT_gpu,
+		Q, Pivot_gpu, Info_gpu, N));
+#else
+	CUBLAS_CALL(cublasSgetrfBatched(handle_cublas, Q, HHT_gpu,
+		Q, Pivot_gpu, Info_gpu, N));
+#endif
+	CUDA_CALL(cudaMemcpy(Info,Info_gpu,N*sizeof(*Info_gpu),cudaMemcpyDeviceToHost));
+	int lu_success = 1;
+	for (ii=0; ii<N; ii++) {
+		if (Info[ii] < 0) {
+			fprintf(stderr,"WARNING: in LU factorization of %dth matrix the %dth parameter had illegal value\n",ii,-Info[ii]);
+			lu_success = 0;
+		} else if (Info[ii] > 0) {
+			fprintf(stderr,"WARNING: in LU factorization of %dth matrix the U matrix is singular (U[%d,%d] = 0)\n",ii,Info[ii],Info[ii]);
+			lu_success = 0;
+		}
+	}
+	if (!lu_success) {
+		hashpipe_error(__FILE__, "LU factorization failed");
+	}
+#ifdef DOUBLE_PRECISION
+	CUBLAS_CALL(cublasDgetriBatched(handle_cublas, Q, (const _precision_ipfb_no_solve **)HHT_gpu,
+		Q, Pivot_gpu, iHHT_gpu, Q, Info_gpu, N));
+#else
+	CUBLAS_CALL(cublasSgetriBatched(handle_cublas, Q, (const _precision_ipfb_no_solve **)HHT_gpu,
+		Q, Pivot_gpu, iHHT_gpu, Q, Info_gpu, N));
+#endif
+	CUDA_CALL(cudaMemcpy(Info,Info_gpu,N*sizeof(*Info_gpu),cudaMemcpyDeviceToHost));
+	int inv_success = 1;
+	for (ii=0; ii<N; ii++) {
+		if (Info[ii] > 0) {
+			fprintf(stderr,"WARNING: Inversion of %dth matrix failed, the U matrix is singular (U[%d,%d] = 0)\n",ii,Info[ii],Info[ii]);
+			inv_success = 0;
+		}
+	}
+	if (!inv_success) {
+		hashpipe_error(__FILE__, "Matrix inversion factorization failed");
+	}
+	
+	// ipfb: HTiHHT -- 5
+	_precision_ipfb_no_solve **HTiHHT_gpu_proxy;
+	_precision_ipfb_no_solve **HTiHHT_gpu;
+	int size_HTiHHT = (M+Q-1)*Q;
+	alpha = 1.0;
+	beta = 0.0;
+	HTiHHT_gpu_proxy = (_precision_ipfb_no_solve **)malloc(N*sizeof(*HTiHHT_gpu));
+	CUDA_CALL(cudaMalloc((void **)&HTiHHT_gpu, N*sizeof(*HTiHHT_gpu)));
+	for (ii=0; ii<N; ii++) {
+		CUDA_CALL(cudaMalloc((void **)&HTiHHT_gpu_proxy[ii], size_HTiHHT * sizeof(_precision_ipfb_no_solve)));
+		CUDA_CALL(cudaMemset(HTiHHT_gpu_proxy[ii],0,size_HTiHHT*sizeof(_precision_ipfb_no_solve)));
+	}
+	CUDA_CALL(cudaMemcpy(HTiHHT_gpu,HTiHHT_gpu_proxy,N*sizeof(*HTiHHT_gpu),cudaMemcpyHostToDevice));
+#ifdef DOUBLE_PRECISION
+	CUBLAS_CALL(cublasDgemmBatched(handle_cublas, CUBLAS_OP_T, CUBLAS_OP_N, 
+		M+Q-1, Q, Q, &alpha, (const _precision_ipfb_no_solve **)H_gpu, Q, (const _precision_ipfb_no_solve **)iHHT_gpu, Q,
+		&beta, HTiHHT_gpu, M+Q-1, N));
+#else
+	CUBLAS_CALL(cublasSgemmBatched(handle_cublas, CUBLAS_OP_T, CUBLAS_OP_N, 
+		M+Q-1, Q, Q, &alpha, (const _precision_ipfb_no_solve **)H_gpu, Q, (const _precision_ipfb_no_solve **)iHHT_gpu, Q,
+		&beta, HTiHHT_gpu, M+Q-1, N));
+#endif
+	
+	// ipfb: final step, convert double-precision result to single
+	// precision -- 6
+	resampler->ipfb_tfm_matrix_gpu_proxy = (float **)malloc(N*sizeof(*resampler->ipfb_tfm_matrix_gpu_proxy));
+	CUDA_CALL(cudaMalloc((void **)&resampler->ipfb_tfm_matrix_gpu, N*sizeof(*resampler->ipfb_tfm_matrix_gpu_proxy)));
+	for (ii=0; ii<N; ii++) {
+		CUDA_CALL(cudaMalloc((void **)&resampler->ipfb_tfm_matrix_gpu_proxy[ii], size_HTiHHT * sizeof(float)));
+		CUDA_CALL(cudaMemset(resampler->ipfb_tfm_matrix_gpu_proxy[ii],0,size_HTiHHT*sizeof(float)));
+	}
+	CUDA_CALL(cudaMemcpy(resampler->ipfb_tfm_matrix_gpu,resampler->ipfb_tfm_matrix_gpu_proxy,N*sizeof(*resampler->ipfb_tfm_matrix_gpu_proxy),cudaMemcpyHostToDevice));
+	double_to_single_mat<<<blocks,threads>>>(M+Q-1, Q, HTiHHT_gpu, resampler->ipfb_tfm_matrix_gpu, N);
+	CUDA_CALL(cudaDeviceSynchronize());
+	
+	// clean-up
+	CUBLAS_CALL(cublasDestroy(handle_cublas));
+	// stage 1
+	CUDA_CALL(cudaFree(h_gpu));
+	// stage 2
+	for (ii=0; ii<N; ii++) {
+		CUDA_CALL(cudaFree(H_gpu_proxy[ii]));
+	}
+	free(H_gpu_proxy);
+	CUDA_CALL(cudaFree(H_gpu));
+	// stage 3
+	for (ii=0; ii<N; ii++) {
+		CUDA_CALL(cudaFree(HHT_gpu_proxy[ii]));
+	}
+	free(HHT_gpu_proxy);
+	CUDA_CALL(cudaFree(HHT_gpu));
+	// stage 4
+	for (ii=0; ii<N; ii++) {
+		CUDA_CALL(cudaFree(iHHT_gpu_proxy[ii]));
+	}
+	free(iHHT_gpu_proxy);
+	CUDA_CALL(cudaFree(iHHT_gpu));
+	CUDA_CALL(cudaFree(Pivot_gpu));
+	CUDA_CALL(cudaFree(Info_gpu));
+	free(Info);
+	// stage 5
+	for (ii=0; ii<N; ii++) {
+		CUDA_CALL(cudaFree(HTiHHT_gpu_proxy[ii]));
+	}
+	free(HTiHHT_gpu_proxy);
+	CUDA_CALL(cudaFree(HTiHHT_gpu));
+	// stage 6 -- nothing to clean-up, that should happen at the end
+}
+#endif // PFB_INVERSE_NO_SOLVE
 
 /** @brief Initialize resampler structure (including device memory).
  */
@@ -179,6 +461,11 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
 
   // switch to device
   cudaSetDevice(resampler->deviceId);
+  
+#ifdef PFB_INVERSE_NO_SOLVE
+  pfb_setup_inverse_operator(resampler);
+#endif
+  
 
 #ifdef GPU_DEBUG
   int i;
@@ -194,7 +481,19 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
   cudaMalloc((void **)&(resampler->gpu_B_0), (BENG_FRAMES_PER_GROUP-1)*BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS*sizeof(cufftComplex));	// 654950400B
   cudaMalloc((void **)&(resampler->gpu_B_1), (BENG_FRAMES_PER_GROUP-1)*BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS*sizeof(cufftComplex));	// 654950400B
   cudaMalloc((void **)&(resampler->gpu_out_buf), sizeof(vdif_out_data_group_t)); // 67108864B
+  
 
+#ifdef PFB_INVERSE_NO_SOLVE
+  resampler->fft_size[0] = 2*BENG_CHANNELS_;
+  inembed[0]  = UNPACKED_BENG_CHANNELS; 
+  onembed[0]  = 2*BENG_CHANNELS_;
+  resampler->batch[0]    = PFB_BATCH_SIZE;
+  resampler->repeat[0]   = (BENG_SNAPSHOTS/PFB_BATCH_SIZE) * (BENG_FRAMES_PER_GROUP - 1);
+  cufft_status = cufftPlanMany(&(resampler->cufft_plan[0]), 1, &(resampler->fft_size[0]),
+		inembed, 1, inembed[0],
+		onembed, PFB_BATCH_SIZE, 1,
+		CUFFT_C2R, resampler->batch[0]);
+#else 
  /*
  * http://docs.nvidia.com/cuda/cufft/index.html#cufft-setup
  * iFFT transforming complex SWARM spectra into real time series.
@@ -211,6 +510,7 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
 		inembed,1,inembed[0],
 		onembed,1,onembed[0],
 		CUFFT_C2R,resampler->batch[0]);
+#endif // PFB_INVERSE_NO_SOLVE
   if (cufft_status != CUFFT_SUCCESS)
   {
     hashpipe_error(__FILE__, "CUFFT error: plan 0 creation failed");
@@ -221,7 +521,7 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
   fprintf(stdout,"GPU_DEBUG : plan 0 is %dx%dx%d\n", resampler->repeat[0],resampler->batch[0],resampler->fft_size[0]);
   fprintf(stdout,"GPU_DEBUG : plan 0 worksize: %u\n",(unsigned) workSize[0]);
   reportDeviceMemInfo();
-#endif  
+#endif
 
   /*
  * FFT transforming time series into complex spectrum.
@@ -552,6 +852,95 @@ int SwarmC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
   return STATE_PROC;
 }
 
+#ifdef PFB_INVERSE_NO_SOLVE
+int pfb_inverse_operate(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx) {
+	int i, ii;
+	int Q = PFB_BATCH_SIZE;
+	int M = PFB_TAPS;
+	int N = 2*BENG_CHANNELS_;
+	
+	dim3 blocks(64,1,1);
+	dim3 threads(512,1,1);
+	
+	cublasHandle_t handle_cublas;
+	CUBLAS_CALL(cublasCreate(&handle_cublas));
+	cufftResult_t cufft_status;
+
+	// ipfb: xr = reconstructed time-series in cuBLAS convenient order,
+	// memory needs allocating, as well as pointers.,
+	float *xr_gpu;
+	float **xr_rearr_gpu_proxy;
+	float **xr_rearr_gpu;
+	int size_HTiHHTy = M+Q-1;
+	float alpha = 1.0f;
+	float beta = 0.0f;
+	CUDA_CALL(cudaMalloc((void **)&xr_gpu, N*size_HTiHHTy*sizeof(float)));
+	xr_rearr_gpu_proxy = (float **)malloc(N*sizeof(*xr_rearr_gpu_proxy));
+	CUDA_CALL(cudaMalloc((void **)&xr_rearr_gpu, N*sizeof(*xr_rearr_gpu)));
+	// reconstructed time-series will always be copied computed into 
+	// same location (overwritten)
+	for (ii=0; ii<N; ii++) {
+		xr_rearr_gpu_proxy[ii] = xr_gpu + ii*size_HTiHHTy;
+	}
+	CUDA_CALL(cudaMemcpy(xr_rearr_gpu,xr_rearr_gpu_proxy,N*sizeof(*xr_rearr_gpu_proxy),cudaMemcpyHostToDevice));
+	
+	// ipfb: yr = input time-series in cuBLAS convenient order, since
+	// data is already in allocated memory (after SwarmC2R) we don't 
+	// need any actual data allocation, just pointers
+	float **yr_rearr_gpu_proxy;
+	float **yr_rearr_gpu;
+	yr_rearr_gpu_proxy = (float **)malloc(N*sizeof(*yr_rearr_gpu_proxy));
+	CUDA_CALL(cudaMalloc((void **)&yr_rearr_gpu,N*sizeof(*yr_rearr_gpu)));
+	
+	// now loop over batches:
+	for (i = 0; i < resampler->repeat[0]; ++i) {
+	//   * iFFT
+		cufft_status = cufftExecC2R(resampler->cufft_plan[0],
+				resampler->gpu_B_0 + i*resampler->batch[0]*UNPACKED_BENG_CHANNELS, 
+				(cufftReal *)resampler->gpu_A_0 + i*resampler->batch[0]*(2*BENG_CHANNELS_));
+		cufft_status = cufftExecC2R(resampler->cufft_plan[0],
+				resampler->gpu_B_1 + i*resampler->batch[0]*UNPACKED_BENG_CHANNELS, 
+				(cufftReal *)resampler->gpu_A_1 + i*resampler->batch[0]*(2*BENG_CHANNELS_));
+#ifdef GPU_DEBUG
+		if (cufft_status != CUFFT_SUCCESS){
+		    hashpipe_error(__FILE__, "CUFFT error: plan 0 execution failed");
+		    return STATE_ERROR;
+ 		}
+#endif // GPU_DEBUG
+	//   * update pointers to new location for input
+		for (ii=0; ii<N; ii++) {
+			yr_rearr_gpu_proxy[ii] = (cufftReal *)resampler->gpu_A_0 + i*resampler->batch[0]*(2*BENG_CHANNELS_) + ii*Q;
+		}
+		CUDA_CALL(cudaMemcpy(yr_rearr_gpu,yr_rearr_gpu_proxy,N*sizeof(*yr_rearr_gpu),cudaMemcpyHostToDevice));
+	//   * transform yr --> xr
+		CUBLAS_CALL(cublasSgemmBatched(handle_cublas, CUBLAS_OP_N, CUBLAS_OP_N, 
+			M+Q-1, 1, Q, &alpha, (const float **)resampler->ipfb_tfm_matrix_gpu, M+Q-1, (const float **)yr_rearr_gpu, Q,
+			&beta, xr_rearr_gpu, M+Q-1, N));
+	//   * copy xr to correct location in inout
+		reorder_reconstructed_time_series<<<blocks,threads>>>(xr_rearr_gpu, (cufftReal *)resampler->gpu_A_0 + i*resampler->batch[0]*(2*BENG_CHANNELS_));
+		CUDA_CALL(cudaDeviceSynchronize());
+	// ...and repeat the last three steps for gpu_A_0
+		for (ii=0; ii<N; ii++) {
+			yr_rearr_gpu_proxy[ii] = (cufftReal *)resampler->gpu_A_1 + i*resampler->batch[0]*(2*BENG_CHANNELS_) + ii*Q;
+		}
+		CUDA_CALL(cudaMemcpy(yr_rearr_gpu,yr_rearr_gpu_proxy,N*sizeof(*yr_rearr_gpu),cudaMemcpyHostToDevice));
+		CUBLAS_CALL(cublasSgemmBatched(handle_cublas, CUBLAS_OP_N, CUBLAS_OP_N, 
+			M+Q-1, 1, Q, &alpha, (const float **)resampler->ipfb_tfm_matrix_gpu, M+Q-1, (const float **)yr_rearr_gpu, Q,
+			&beta, xr_rearr_gpu, M+Q-1, N));
+		reorder_reconstructed_time_series<<<blocks,threads>>>(xr_rearr_gpu, (cufftReal *)resampler->gpu_A_1 + i*resampler->batch[0]*(2*BENG_CHANNELS_));
+		CUDA_CALL(cudaDeviceSynchronize());
+	}
+	
+	// clean-up
+	CUBLAS_CALL(cublasDestroy(handle_cublas));
+	free(xr_rearr_gpu_proxy);
+	CUDA_CALL(cudaFree(xr_rearr_gpu));
+	CUDA_CALL(cudaFree(xr_gpu));
+	free(yr_rearr_gpu_proxy);
+	CUDA_CALL(cudaFree(yr_rearr_gpu));
+}
+#endif // PFB_INVERSE_NO_SOLVE
+
 /** @brief Transform SWARM timeseries into R2DBE compatible spectrum
  */
 int SwarmR2C(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
@@ -647,6 +1036,14 @@ int aphids_resampler_destroy(aphids_resampler_t *resampler) {
   HANDLE_ERROR( cudaFree(resampler->gpu_A_1) );
   HANDLE_ERROR( cudaFree(resampler->gpu_B_1) );
   HANDLE_ERROR( cudaFree(resampler->gpu_out_buf) );
+#ifdef PFB_INVERSE_NO_SOLVE
+	int N = 2*BENG_CHANNELS_;
+	for (i=0; i<N; i++) {
+		CUDA_CALL(cudaFree(resampler->ipfb_tfm_matrix_gpu_proxy[i]));
+	}
+	free(resampler->ipfb_tfm_matrix_gpu_proxy);
+	CUDA_CALL(cudaFree(resampler->ipfb_tfm_matrix_gpu));
+#endif // PFB_INVERSE_NO_SOLVE
   for (i=0; i < 3; ++i){
 	cufft_status = cufftDestroy(resampler->cufft_plan[i]);
 	if (cufft_status != CUFFT_SUCCESS){
@@ -837,7 +1234,11 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	reorderTzp_smem<<<blocks,threads>>>(resampler[i].gpu_A_1, resampler[i].gpu_B_1, BENG_BUFFER_IN_COUNTS);
 
 	// transform SWARM spectra to time series
+#ifdef PFB_INVERSE_NO_SOLVE
+	pfb_inverse_operate(&(resampler[i]), &aphids_ctx);
+#else
 	state = SwarmC2R(&(resampler[i]), &aphids_ctx);
+#endif // PFB_INVERSE_NO_SOLVE
 
 	// transform SWARM time series to R2DBE compatible spectra
 	state = SwarmR2C(&(resampler[i]), &aphids_ctx);

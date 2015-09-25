@@ -14,7 +14,7 @@ CFLAGS = -fPIC -Wall -std=gnu99 $(INC) $(CPREP)
 NVCC = nvcc
 NFLAGS = -ccbin gcc --compiler-options="$(CFLAGS)" --device-c 
 
-LIBS = -lcufft -lhiredis -lcuda -lcudart
+LIBS = -lcufft -lhiredis -lcuda -lcudart -lcublas
 
 DATABUFS = vdif_in_databuf.o vdif_in_databuf_cuda.o vdif_out_databuf.o vdif_out_databuf_cuda.o
 APHIDS = aphids_db.o aphids_loop.o aphids_log.o
