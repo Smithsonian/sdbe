@@ -135,13 +135,34 @@ __global__ void reorder_reconstructed_time_series(float **in, float *out) {
 	int N = 2*BENG_CHANNELS_;
 	int Q = PFB_BATCH_SIZE;
 	int n, q;
-	for (n=0; n<N; n++) {
-		int idx = blockIdx.x*blockDim.x + threadIdx.x;
-		for (q=idx; q<Q; q+=gridDim.x*blockDim.x) {
+	
+	int idx_n = blockIdx.x;
+	int idx_q = threadIdx.x;
+	for (n=idx_n; n<N; n+=gridDim.x) {
+		for (q=idx_q; q<Q; q+=blockDim.x) {
 			out[N*q + n] = in[n][q];
 		}
 	}
+	//~ for (n=0; n<N; n++) {
+		//~ int idx = blockIdx.x*blockDim.x + threadIdx.x;
+		//~ for (q=idx; q<Q; q+=gridDim.x*blockDim.x) {
+			//~ out[N*q + n] = in[n][q];
+		//~ }
+	//~ }
 }
+
+// Step offset in memory
+__global__ void apply_memory_stepped_offset(float **ptr, float *base, int offset, int step) {
+	int M = PFB_TAPS;
+	int N = 2*BENG_CHANNELS_;
+	int Q = PFB_BATCH_SIZE;
+	int n;
+	int idx = blockIdx.x*blockDim.x + threadIdx.x;
+	for (n=idx; n<N; n+=gridDim.x*blockDim.x) {
+		ptr[n] = base + offset + n*step;
+	}
+}
+
 #endif
 
 /**
@@ -242,6 +263,9 @@ typedef struct aphids_resampler {
 #ifdef PFB_INVERSE_NO_SOLVE
 	float **ipfb_tfm_matrix_gpu;
 	float **ipfb_tfm_matrix_gpu_proxy;
+	float **ipfb_xr_rearr_gpu;
+	float **ipfb_xr_rearr_gpu_proxy;
+	float **ipfb_yr_rearr_gpu;
 #endif
 #ifdef GPU_DEBUG
     cudaStream_t stream;
@@ -405,6 +429,24 @@ void pfb_setup_inverse_operator(aphids_resampler_t *resampler) {
 	CUDA_CALL(cudaMemcpy(resampler->ipfb_tfm_matrix_gpu,resampler->ipfb_tfm_matrix_gpu_proxy,N*sizeof(*resampler->ipfb_tfm_matrix_gpu_proxy),cudaMemcpyHostToDevice));
 	double_to_single_mat<<<blocks,threads>>>(M+Q-1, Q, HTiHHT_gpu, resampler->ipfb_tfm_matrix_gpu, N);
 	CUDA_CALL(cudaDeviceSynchronize());
+	
+	// ipfb: xr = reconstructed time-series in cuBLAS convenient order,
+	// memory needs allocating, as well as pointers.,
+	//~ float *xr_gpu;
+	//~ float **xr_rearr_gpu;
+	int size_HTiHHTy = M+Q-1;
+	resampler->ipfb_xr_rearr_gpu_proxy = (float **)malloc(N*sizeof(*resampler->ipfb_xr_rearr_gpu_proxy));
+	CUDA_CALL(cudaMalloc((void **)&resampler->ipfb_xr_rearr_gpu, N*sizeof(*resampler->ipfb_xr_rearr_gpu)));
+	for (ii=0; ii<N; ii++) {
+		CUDA_CALL(cudaMalloc((void **)&resampler->ipfb_xr_rearr_gpu_proxy[ii], size_HTiHHTy * sizeof(float)));
+		CUDA_CALL(cudaMemset(resampler->ipfb_xr_rearr_gpu_proxy[ii],0,size_HTiHHTy*sizeof(float)));
+	}
+	CUDA_CALL(cudaMemcpy(resampler->ipfb_xr_rearr_gpu,resampler->ipfb_xr_rearr_gpu_proxy,N*sizeof(*resampler->ipfb_xr_rearr_gpu_proxy),cudaMemcpyHostToDevice));
+	
+	// ipfb: yr = input time-series in cuBLAS convenient order, since
+	// data is already in allocated memory (after SwarmC2R) we don't 
+	// need any actual data allocation, just pointers
+	CUDA_CALL(cudaMalloc((void **)&resampler->ipfb_yr_rearr_gpu,N*sizeof(*resampler->ipfb_yr_rearr_gpu)));
 	
 	// clean-up
 	CUBLAS_CALL(cublasDestroy(handle_cublas));
@@ -859,40 +901,21 @@ int pfb_inverse_operate(aphids_resampler_t *resampler, aphids_context_t *aphids_
 	int M = PFB_TAPS;
 	int N = 2*BENG_CHANNELS_;
 	
-	dim3 blocks(64,1,1);
-	dim3 threads(512,1,1);
+	dim3 blocks(512,1,1);
+	dim3 threads(32,1,1);
 	
 	cublasHandle_t handle_cublas;
 	CUBLAS_CALL(cublasCreate(&handle_cublas));
 	cufftResult_t cufft_status;
-
-	// ipfb: xr = reconstructed time-series in cuBLAS convenient order,
-	// memory needs allocating, as well as pointers.,
-	float *xr_gpu;
-	float **xr_rearr_gpu_proxy;
-	float **xr_rearr_gpu;
+	
+	cudaStream_t stream;
+	CUDA_CALL(cudaStreamCreate(&stream));
+	
+	// now loop over batches:
 	int size_HTiHHTy = M+Q-1;
 	float alpha = 1.0f;
 	float beta = 0.0f;
-	CUDA_CALL(cudaMalloc((void **)&xr_gpu, N*size_HTiHHTy*sizeof(float)));
-	xr_rearr_gpu_proxy = (float **)malloc(N*sizeof(*xr_rearr_gpu_proxy));
-	CUDA_CALL(cudaMalloc((void **)&xr_rearr_gpu, N*sizeof(*xr_rearr_gpu)));
-	// reconstructed time-series will always be copied computed into 
-	// same location (overwritten)
-	for (ii=0; ii<N; ii++) {
-		xr_rearr_gpu_proxy[ii] = xr_gpu + ii*size_HTiHHTy;
-	}
-	CUDA_CALL(cudaMemcpy(xr_rearr_gpu,xr_rearr_gpu_proxy,N*sizeof(*xr_rearr_gpu_proxy),cudaMemcpyHostToDevice));
-	
-	// ipfb: yr = input time-series in cuBLAS convenient order, since
-	// data is already in allocated memory (after SwarmC2R) we don't 
-	// need any actual data allocation, just pointers
-	float **yr_rearr_gpu_proxy;
-	float **yr_rearr_gpu;
-	yr_rearr_gpu_proxy = (float **)malloc(N*sizeof(*yr_rearr_gpu_proxy));
-	CUDA_CALL(cudaMalloc((void **)&yr_rearr_gpu,N*sizeof(*yr_rearr_gpu)));
-	
-	// now loop over batches:
+	fprintf(stdout,"%s:%s(%d): pfb-inverse main loop start\n",__FILE__,__FUNCTION__,__LINE__);
 	for (i = 0; i < resampler->repeat[0]; ++i) {
 	//   * iFFT
 		cufft_status = cufftExecC2R(resampler->cufft_plan[0],
@@ -908,36 +931,37 @@ int pfb_inverse_operate(aphids_resampler_t *resampler, aphids_context_t *aphids_
  		}
 #endif // GPU_DEBUG
 	//   * update pointers to new location for input
-		for (ii=0; ii<N; ii++) {
-			yr_rearr_gpu_proxy[ii] = (cufftReal *)resampler->gpu_A_0 + i*resampler->batch[0]*(2*BENG_CHANNELS_) + ii*Q;
-		}
-		CUDA_CALL(cudaMemcpy(yr_rearr_gpu,yr_rearr_gpu_proxy,N*sizeof(*yr_rearr_gpu),cudaMemcpyHostToDevice));
+		//~ for (ii=0; ii<N; ii++) {
+			//~ yr_rearr_gpu_proxy[ii] = (cufftReal *)resampler->gpu_A_0 + i*resampler->batch[0]*(2*BENG_CHANNELS_) + ii*Q;
+		//~ }
+		//~ CUDA_CALL(cudaMemcpy(yr_rearr_gpu,yr_rearr_gpu_proxy,N*sizeof(*yr_rearr_gpu),cudaMemcpyHostToDevice));
+		apply_memory_stepped_offset<<<blocks,threads>>>(resampler->ipfb_yr_rearr_gpu, (cufftReal *)resampler->gpu_A_0, i*resampler->batch[0]*(2*BENG_CHANNELS_), Q);
+		CUDA_CALL(cudaStreamSynchronize(stream));
 	//   * transform yr --> xr
 		CUBLAS_CALL(cublasSgemmBatched(handle_cublas, CUBLAS_OP_N, CUBLAS_OP_N, 
-			M+Q-1, 1, Q, &alpha, (const float **)resampler->ipfb_tfm_matrix_gpu, M+Q-1, (const float **)yr_rearr_gpu, Q,
-			&beta, xr_rearr_gpu, M+Q-1, N));
+			M+Q-1, 1, Q, &alpha, (const float **)resampler->ipfb_tfm_matrix_gpu, M+Q-1, (const float **)resampler->ipfb_yr_rearr_gpu, Q,
+			&beta, resampler->ipfb_xr_rearr_gpu, M+Q-1, N));
 	//   * copy xr to correct location in inout
-		reorder_reconstructed_time_series<<<blocks,threads>>>(xr_rearr_gpu, (cufftReal *)resampler->gpu_A_0 + i*resampler->batch[0]*(2*BENG_CHANNELS_));
-		CUDA_CALL(cudaDeviceSynchronize());
+		reorder_reconstructed_time_series<<<blocks,threads>>>(resampler->ipfb_xr_rearr_gpu, (cufftReal *)resampler->gpu_A_0 + i*resampler->batch[0]*(2*BENG_CHANNELS_));
+		CUDA_CALL(cudaStreamSynchronize(stream));
 	// ...and repeat the last three steps for gpu_A_0
-		for (ii=0; ii<N; ii++) {
-			yr_rearr_gpu_proxy[ii] = (cufftReal *)resampler->gpu_A_1 + i*resampler->batch[0]*(2*BENG_CHANNELS_) + ii*Q;
-		}
-		CUDA_CALL(cudaMemcpy(yr_rearr_gpu,yr_rearr_gpu_proxy,N*sizeof(*yr_rearr_gpu),cudaMemcpyHostToDevice));
+		//~ for (ii=0; ii<N; ii++) {
+			//~ yr_rearr_gpu_proxy[ii] = (cufftReal *)resampler->gpu_A_1 + i*resampler->batch[0]*(2*BENG_CHANNELS_) + ii*Q;
+		//~ }
+		//~ CUDA_CALL(cudaMemcpy(yr_rearr_gpu,yr_rearr_gpu_proxy,N*sizeof(*yr_rearr_gpu),cudaMemcpyHostToDevice));
+		apply_memory_stepped_offset<<<blocks,threads>>>(resampler->ipfb_yr_rearr_gpu, (cufftReal *)resampler->gpu_A_1, i*resampler->batch[0]*(2*BENG_CHANNELS_), Q);
+		CUDA_CALL(cudaStreamSynchronize(stream));
 		CUBLAS_CALL(cublasSgemmBatched(handle_cublas, CUBLAS_OP_N, CUBLAS_OP_N, 
-			M+Q-1, 1, Q, &alpha, (const float **)resampler->ipfb_tfm_matrix_gpu, M+Q-1, (const float **)yr_rearr_gpu, Q,
-			&beta, xr_rearr_gpu, M+Q-1, N));
-		reorder_reconstructed_time_series<<<blocks,threads>>>(xr_rearr_gpu, (cufftReal *)resampler->gpu_A_1 + i*resampler->batch[0]*(2*BENG_CHANNELS_));
-		CUDA_CALL(cudaDeviceSynchronize());
+			M+Q-1, 1, Q, &alpha, (const float **)resampler->ipfb_tfm_matrix_gpu, M+Q-1, (const float **)resampler->ipfb_yr_rearr_gpu, Q,
+			&beta, resampler->ipfb_xr_rearr_gpu, M+Q-1, N));
+		reorder_reconstructed_time_series<<<blocks,threads>>>(resampler->ipfb_xr_rearr_gpu, (cufftReal *)resampler->gpu_A_1 + i*resampler->batch[0]*(2*BENG_CHANNELS_));
+		CUDA_CALL(cudaStreamSynchronize(stream));
 	}
+	fprintf(stdout,"%s:%s(%d): pfb-inverse main loop end\n",__FILE__,__FUNCTION__,__LINE__);
 	
 	// clean-up
+	CUDA_CALL(cudaStreamDestroy(stream));
 	CUBLAS_CALL(cublasDestroy(handle_cublas));
-	free(xr_rearr_gpu_proxy);
-	CUDA_CALL(cudaFree(xr_rearr_gpu));
-	CUDA_CALL(cudaFree(xr_gpu));
-	free(yr_rearr_gpu_proxy);
-	CUDA_CALL(cudaFree(yr_rearr_gpu));
 }
 #endif // PFB_INVERSE_NO_SOLVE
 
@@ -1040,9 +1064,13 @@ int aphids_resampler_destroy(aphids_resampler_t *resampler) {
 	int N = 2*BENG_CHANNELS_;
 	for (i=0; i<N; i++) {
 		CUDA_CALL(cudaFree(resampler->ipfb_tfm_matrix_gpu_proxy[i]));
+		CUDA_CALL(cudaFree(resampler->ipfb_xr_rearr_gpu_proxy[i]));
 	}
 	free(resampler->ipfb_tfm_matrix_gpu_proxy);
 	CUDA_CALL(cudaFree(resampler->ipfb_tfm_matrix_gpu));
+	free(resampler->ipfb_xr_rearr_gpu_proxy);
+	CUDA_CALL(cudaFree(resampler->ipfb_xr_rearr_gpu));
+	CUDA_CALL(cudaFree(resampler->ipfb_yr_rearr_gpu));
 #endif // PFB_INVERSE_NO_SOLVE
   for (i=0; i < 3; ++i){
 	cufft_status = cufftDestroy(resampler->cufft_plan[i]);
