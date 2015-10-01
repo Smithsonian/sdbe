@@ -329,6 +329,12 @@ static void *run_method(
 						// set transfer on non-filled unit
 						fprintf(stdout,"%s:%s(%d): about to copy non-filled unit (offset is %d)\n",__FILE__,__FUNCTION__,__LINE__,index_offset);
 						start_copy = 1;
+						if (first_copy) {
+							// on copy, fill the VDIF header template
+							fill_vdif_header_template(&local_db_out.bgc[index_db_out].vdif_header_template,  (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets, (int)N_SKIPPED_VDIF_PACKETS);
+							// cancel first_copy
+							first_copy = 0;
+						}
 					} else {
 						N_USED_VDIF_PACKETS++;
 						// insert VDIF packet: this copies VDIF to the 
