@@ -10,6 +10,14 @@
 #include "sample_rates.h"
 
 // *********************************************************************
+// These definitions are used to do time realignment on day 85, 2015 data
+// bitfield that defines valid FIDs usable for b_first inference
+#define DAY085_FID_BFIRST (0xFC) // all but 0,1
+// bitfield that defines valid FIDs usable for VDIF template inference
+#define DAY085_FID_VDIF_TEMPLATE (0x03) // only 0,1
+// *********************************************************************
+
+// *********************************************************************
 // The below two defintions are used to ensure alignment of the output
 // data with real time, based on the number of input VDIF packets 
 // skipped (due to an incomplete B-engine frame). The offset of the 
@@ -62,6 +70,10 @@ hashpipe_databuf_t *vdif_in_databuf_create(int instance_id, int databuf_id)
 
 int64_t get_packet_b_count(vdif_in_header_t *vdif_pkt_hdr) {
 	int64_t b = 0;
+	// check FID
+	if (! (0x01<<vdif_pkt_hdr->beng.f)&DAY085_FID_BFIRST ) {
+		return -1;
+	}
 	b |= ((int64_t)(vdif_pkt_hdr->beng.b_upper)&(int64_t)0x00000000FFFFFFFF) << 8;
 	b |= (int64_t)(vdif_pkt_hdr->beng.b_lower)&(int64_t)0x00000000000000FF;
 	return b;
@@ -181,9 +193,12 @@ int check_transfer_beng_group_to_gpu_complete(vdif_in_databuf_t *bgc_buf, int in
 	//~ return 1;
 }
 
-void fill_vdif_header_template(vdif_in_header_t *vdif_hdr_copy, vdif_in_packet_t *vdif_pkt_ref, int n_skipped) {
+int fill_vdif_header_template(vdif_in_header_t *vdif_hdr_copy, vdif_in_packet_t *vdif_pkt_ref, int n_skipped) {
 	int offset_beng_fft_windows = 0;
 	int offset_vdif_out_packets = 0;
+	if (! (0x01<<vdif_pkt_ref->beng.f)&DAY085_FID_VDIF_TEMPLATE ) {
+		return -1;
+	}
 	offset_beng_fft_windows = MAGIC_OFFSET_IN_BENG_FFT_WINDOWS - 128*(VDIF_PER_BENG_FRAME-n_skipped)/VDIF_PER_BENG_FRAME;
 	offset_vdif_out_packets = (int)(MAGIC_BENG_FFT_WINDOW_IN_VDIF_OUT*offset_beng_fft_windows);
 	fprintf(stdout,"%s:%s(%d): n_skipped = %d, offset_beng_fft_windows = %d, offset_vdif_out_packets = %d\n",__FILE__,__FUNCTION__,__LINE__,n_skipped,offset_beng_fft_windows,offset_vdif_out_packets);
@@ -198,6 +213,7 @@ void fill_vdif_header_template(vdif_in_header_t *vdif_hdr_copy, vdif_in_packet_t
 	}
 	print_beng_over_vdif_header(vdif_hdr_copy,"TEMPLATE:");
 	// the rest of the header should be updated as needed at the output stage
+	return 0
 }
 
 // Print human-readable representation of B-engine group completion

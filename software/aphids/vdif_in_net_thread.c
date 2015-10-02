@@ -271,7 +271,7 @@ static void *run_method(
 					}
 					
 					// On first frame received, initialize all completion buffers
-					if (b_first == -1) {
+					while (b_first == -1) {
 						b_first = get_packet_b_count((vdif_in_header_t *)received_vdif_packets);
 						//~ printf("b_first = %ld\n",b_first);
 						// from there on range starts with end value for previous range
@@ -325,9 +325,10 @@ static void *run_method(
 						start_copy = 1;
 						if (first_copy) {
 							// on copy, fill the VDIF header template
-							fill_vdif_header_template(&local_db_out.bgc[index_db_out].vdif_header_template,  (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets, (int)N_SKIPPED_VDIF_PACKETS);
-							// cancel first_copy
-							first_copy = 0;
+							if (fill_vdif_header_template(&local_db_out.bgc[index_db_out].vdif_header_template,  (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets, (int)N_SKIPPED_VDIF_PACKETS) == 0) {
+								// cancel first_copy
+								first_copy = 0;
+							}
 						}
 					} else {
 						N_USED_VDIF_PACKETS++;
@@ -344,9 +345,10 @@ static void *run_method(
 							start_copy = 1;
 							if (first_copy) {
 								// on copy, fill the VDIF header template
-								fill_vdif_header_template(&local_db_out.bgc[index_db_out].vdif_header_template,  (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets, (int)N_SKIPPED_VDIF_PACKETS);
-								// cancel first_copy
-								first_copy = 0;
+								if (fill_vdif_header_template(&local_db_out.bgc[index_db_out].vdif_header_template,  (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets, (int)N_SKIPPED_VDIF_PACKETS) == 0) {
+									// cancel first_copy
+									first_copy = 0;
+								}
 							}
 						}
 					}

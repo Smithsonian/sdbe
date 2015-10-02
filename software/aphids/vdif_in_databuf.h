@@ -279,7 +279,7 @@ int transfer_beng_group_to_gpu(vdif_in_databuf_t *bgc_buf, int index);
 //   1 if complete, 0 if still busy, -1 on error
 int check_transfer_beng_group_to_gpu_complete(vdif_in_databuf_t *bgc_buf, int index);
 
-void fill_vdif_header_template(vdif_in_header_t *vdif_hdr_copy, vdif_in_packet_t *vdif_pkt_ref, int n_skipped);
+int fill_vdif_header_template(vdif_in_header_t *vdif_hdr_copy, vdif_in_packet_t *vdif_pkt_ref, int n_skipped);
 
 void print_beng_group_completion(beng_group_completion_t *bgc, const char *tag);
 
