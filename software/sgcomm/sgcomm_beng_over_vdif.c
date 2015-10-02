@@ -1,3 +1,4 @@
+#include "stdint.h"
 #include "sgcomm_beng_over_vdif.h"
 
 int64_t get_packet_b_count(vdif_in_header_t *vdif_pkt_hdr) {

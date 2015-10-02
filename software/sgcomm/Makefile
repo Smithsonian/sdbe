@@ -3,7 +3,7 @@ OPTIM=-O3
 CFLAGS=-std=gnu99 -fPIC $(OPTIM) -g
 LIBS=-lrt -lpthread -lscatgat
 LFLAGS=$(LIBS)
-DEPS=sgcomm_report.o sgcomm_net.o sgcomm_threads.o
+DEPS=sgcomm_report.o sgcomm_net.o sgcomm_threads.o sgcomm_beng_over_vdif.o
 EXEC_TRANSCEIVER=sgtxrx
 OBJS_TRANSCEIVER=sgcomm_tx_rx_test.o $(DEPS)
 

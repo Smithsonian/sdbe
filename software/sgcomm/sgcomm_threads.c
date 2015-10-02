@@ -387,7 +387,7 @@ static void * _threaded_reader(void *arg) {
 	set_thread_state(st, CS_START, "%s:%s(%d):Thread started",__FILE__,__FUNCTION__,__LINE__);
 	
 	int n_mod_all = 3, n_mod_skip = 1;
-	int mod_list_all[3] = {2,3,4}, mod_list_skip = {1};
+	int mod_list_all[3] = {2,3,4}, mod_list_skip[1] = {1};
 	
 	/* Make scatter-gather plan */
 	n_sg_all = make_sg_read_plan(&sgpln_all, msg->pattern, msg->fmtstr, mod_list_all, n_mod_all, msg->disk_list, msg->n_disk); // REDO: n_sg = 1;
@@ -472,6 +472,9 @@ static void * _threaded_reader(void *arg) {
 				b_skip = get_packet_b_count(n_skipped_frames + (vdif_in_header_t *)local_buf_skip);
 				total_skipped_frames++;
 			}
+			if (n_skipped_frames == -1) {
+				n_skipped_frames = 0;
+			}
 			log_message(RL_DEBUGVVV,"%s:%s(%d):B-count in skip data is %ld >= %ld-1 after %d iterations and %d skipped frames (%d in total)",__FILE__,__FUNCTION__,__LINE__,b_skip,b_all,skip_iter,n_skipped_frames,total_skipped_frames);
 			// now allocate memory and copy data into combined data buffer
 			int total_frames_combined = n_frames_all + n_frames_skip-n_skipped_frames;
@@ -484,7 +487,8 @@ static void * _threaded_reader(void *arg) {
 			if (local_buf_skip != NULL) {
 				free(local_buf_skip);
 			}
-			log_message(RL_DEBUGVVV,"%s:%s(%d):Read %d frames (combined)",__FILE__,__FUNCTION__,__LINE__,total_frames_combined);
+			n_frames = total_frames_combined;
+			log_message(RL_DEBUGVVV,"%s:%s(%d):Read %d frames (combined)",__FILE__,__FUNCTION__,__LINE__,n_frames);
 		}
 		
 		/* If there are frames to process, insert into shared buffer */
@@ -551,8 +555,17 @@ static void * _threaded_reader(void *arg) {
 		free(local_buf);
 		local_buf = NULL;
 	}
+	if (local_buf_all != NULL) {
+		free(local_buf_all);
+		local_buf_all = NULL;
+	}
+	if (local_buf_skip != NULL) {
+		free(local_buf_skip);
+		local_buf_skip = NULL;
+	}
 	
-	close_sg_read_plan(sgpln);
+	close_sg_read_plan(sgpln_all);
+	close_sg_read_plan(sgpln_skip);
 	
 	set_thread_state(st, CS_DONE,"%s:%s(%d):Thread is done",__FILE__,__FUNCTION__,__LINE__);
 	return NULL;
