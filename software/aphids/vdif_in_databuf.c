@@ -10,14 +10,6 @@
 #include "sample_rates.h"
 
 // *********************************************************************
-// These definitions are used to do time realignment on day 85, 2015 data
-// bitfield that defines valid FIDs usable for b_first inference
-#define DAY085_FID_BFIRST (0xFC) // all but 0,1
-// bitfield that defines valid FIDs usable for VDIF template inference
-#define DAY085_FID_VDIF_TEMPLATE (0x03) // only 0,1
-// *********************************************************************
-
-// *********************************************************************
 // The below two defintions are used to ensure alignment of the output
 // data with real time, based on the number of input VDIF packets 
 // skipped (due to an incomplete B-engine frame). The offset of the 
@@ -70,10 +62,6 @@ hashpipe_databuf_t *vdif_in_databuf_create(int instance_id, int databuf_id)
 
 int64_t get_packet_b_count(vdif_in_header_t *vdif_pkt_hdr) {
 	int64_t b = 0;
-	// check FID
-	if (!((0x01<<vdif_pkt_hdr->beng.f)&DAY085_FID_BFIRST)) {
-		return -1;
-	}
 	b |= ((int64_t)(vdif_pkt_hdr->beng.b_upper)&(int64_t)0x00000000FFFFFFFF) << 8;
 	b |= (int64_t)(vdif_pkt_hdr->beng.b_lower)&(int64_t)0x00000000000000FF;
 	return b;

@@ -122,6 +122,8 @@ static void *run_method(
 	}
 #endif // STANDALONE_TEST
 	
+	fprintf(stdout,"*** THIS IS THE DAY 085, 2015 SPECIFIC APHIDS CODE ***");
+	
 	while (
 #ifndef STANDALONE_TEST
 	run_threads()
@@ -270,19 +272,25 @@ static void *run_method(
 						break; // switch(state)
 					}
 					
+					// B-engine bookkeeping ////////////////////////////////////////////
+					// reset index into received packets
+					index_received_vdif_packets = 0;
 					// On first frame received, initialize all completion buffers
 					while (b_first == -1) {
-						b_first = get_packet_b_count((vdif_in_header_t *)received_vdif_packets);
-						//~ printf("b_first = %ld\n",b_first);
+						b_first = get_packet_b_count(index_received_vdif_packets + (vdif_in_header_t *)received_vdif_packets);
+						// check FID
+						if (!((0x01<<(index_received_vdif_packets + (vdif_in_header_t *)received_vdif_packets)->beng.f)&DAY085_FID_BFIRST)) {
+							b_first = -1;
+							index_received_vdif_packets++;
+							continue;
+						}
+						printf("b_first = %ld\n",b_first);
 						// from there on range starts with end value for previous range
 						for (ii=0; ii<BENG_GROUPS_IN_BUFFER; ii++) {
 							// initialize output databuffer blocks
 							init_beng_group(local_db_out.bgc+ii, bgv_buf_cpu[ii], bgv_buf_gpu[ii], b_first+1 + (BENG_FRAMES_PER_GROUP-1)*ii);
 						}
 					}
-					// B-engine bookkeeping ////////////////////////////////////////////
-					// reset index into received packets
-					index_received_vdif_packets = 0;
 					//~ fprintf(stderr,"%s:%d: done receiving\n",__FILE__,__LINE__);
 					N_ALL_VDIF_PACKETS += n_received_vdif_packets;
 				}
@@ -323,6 +331,19 @@ static void *run_method(
 						// set transfer on non-filled unit
 						fprintf(stdout,"%s:%s(%d): about to copy non-filled unit (offset is %d)\n",__FILE__,__FUNCTION__,__LINE__,index_offset);
 						start_copy = 1;
+						//~ if (first_copy) {
+							//~ // on copy, fill the VDIF header template
+							//~ if (fill_vdif_header_template(&local_db_out.bgc[index_db_out].vdif_header_template,  (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets, (int)N_SKIPPED_VDIF_PACKETS) == 0) {
+								//~ // cancel first_copy
+								//~ first_copy = 0;
+							//~ }
+						//~ }
+					} else {
+						N_USED_VDIF_PACKETS++;
+						// insert VDIF packet: this copies VDIF to the 
+						// local buffer, updates the frame counters and
+						// flags, and returns the number of insertions
+						insert_vdif_in_beng_group_buffer(&local_db_out, index_db_out, index_offset, (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets);
 						if (first_copy) {
 							// on copy, fill the VDIF header template
 							if (fill_vdif_header_template(&local_db_out.bgc[index_db_out].vdif_header_template,  (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets, (int)N_SKIPPED_VDIF_PACKETS) == 0) {
@@ -330,12 +351,6 @@ static void *run_method(
 								first_copy = 0;
 							}
 						}
-					} else {
-						N_USED_VDIF_PACKETS++;
-						// insert VDIF packet: this copies VDIF to the 
-						// local buffer, updates the frame counters and
-						// flags, and returns the number of insertions
-						insert_vdif_in_beng_group_buffer(&local_db_out, index_db_out, index_offset, (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets);
 						// we're done with this VDIF packet, increment 
 						// index
 						index_received_vdif_packets++;
@@ -343,13 +358,13 @@ static void *run_method(
 						if (check_beng_group_complete(&local_db_out, index_db_out)) {
 							// set transfer on filled unit
 							start_copy = 1;
-							if (first_copy) {
-								// on copy, fill the VDIF header template
-								if (fill_vdif_header_template(&local_db_out.bgc[index_db_out].vdif_header_template,  (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets, (int)N_SKIPPED_VDIF_PACKETS) == 0) {
-									// cancel first_copy
-									first_copy = 0;
-								}
-							}
+							//~ if (first_copy) {
+								//~ // on copy, fill the VDIF header template
+								//~ if (fill_vdif_header_template(&local_db_out.bgc[index_db_out].vdif_header_template,  (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets, (int)N_SKIPPED_VDIF_PACKETS) == 0) {
+									//~ // cancel first_copy
+									//~ first_copy = 0;
+								//~ }
+							//~ }
 						}
 					}
 					// check if we should start copy

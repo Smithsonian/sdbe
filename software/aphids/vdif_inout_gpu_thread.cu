@@ -803,9 +803,11 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	// memory to get a complete group of B-engine frames. The GPU memory
 	// buffer is exactly the required size for BENG_FRAMES_PER_GROUP 
 	// number of B-engine frames' worth of VDIF packets.
-	
 	uint64_t b_zero = this_bgc.bfc[0].b;
 	// de-packetize vdif
+	// zero out the buffer first
+	cudaMemset(resampler[i].gpu_A_0, 0,BENG_FRAMES_PER_GROUP*BENG_SNAPSHOTS*BENG_CHANNELS_*sizeof(cufftComplex));
+	cudaMemset(resampler[i].gpu_A_1, 0,BENG_FRAMES_PER_GROUP*BENG_SNAPSHOTS*BENG_CHANNELS_*sizeof(cufftComplex));
 	// call to vdif_to_beng?
         threads.x = 32; threads.y = 32; threads.z = 1;
         blocks.x = 128, blocks.y = 1; blocks.z = 1; 

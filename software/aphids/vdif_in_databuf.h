@@ -17,6 +17,14 @@ typedef enum {
 	vidErrorPacketBeforeStartTime = -2
 } vdif_in_databuf_error_t;
 
+// *********************************************************************
+// These definitions are used to do time realignment on day 85, 2015 data
+// bitfield that defines valid FIDs usable for b_first inference
+#define DAY085_FID_BFIRST (0xFC) // all but 0,1
+// bitfield that defines valid FIDs usable for VDIF template inference
+#define DAY085_FID_VDIF_TEMPLATE (0x03) // only 0,1
+// *********************************************************************
+
 ////////////////////////////////////////////////////////////////////////
 // This set of structures are used for memory storage of B-engine-over- 
 // VDIF. The input thread will receive VDIF packets, pack them into a   
