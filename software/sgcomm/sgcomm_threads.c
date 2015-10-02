@@ -9,6 +9,7 @@
 #include "sgcomm_net.h"
 #include "sgcomm_report.h"
 #include "sgcomm_threads.h"
+#include "sgcomm_beng_over_vdif.h"
 
 #include "scatgat.h"
 
@@ -363,10 +364,16 @@ int _destroy_writer_msg(void *type_msg) {
 }
 
 static void * _threaded_reader(void *arg) {
-	int n_sg; // number of scatter gather files
-	SGPlan *sgpln; // SGPlan for reading data
+	int n_sg_all; // number of scatter gather files for good data
+	int n_sg_skip; // number of scatter gather files for skipped data
+	SGPlan *sgpln_all; // SGPlan for reading good data
+	SGPlan *sgpln_skip; // SGPlan for reading data that needs to be skipped at the start
 	uint32_t *local_buf = NULL; // local reader buffer
+	uint32_t *local_buf_all = NULL; // local buffer for reading good data
+	uint32_t *local_buf_skip = NULL; // local buffer for reading skipped data
 	int n_frames = 0; // number of frames available in buffer
+	int n_frames_all = 0; // number of frames available in good data buffer
+	int n_frames_skip = 0; // number of frames available in skipped data buffer
 	int n_frames_copied = 0; // number of frames copied from local to shared buffer
 	int n_frames_this_copy = 0; // number for frames copied per iteration
 	int wait_after_data = 0;
@@ -379,16 +386,21 @@ static void * _threaded_reader(void *arg) {
 	/* Set this thread just started (i.e. not yet in loop) */
 	set_thread_state(st, CS_START, "%s:%s(%d):Thread started",__FILE__,__FUNCTION__,__LINE__);
 	
+	int n_mod_all = 3, n_mod_skip = 1;
+	int mod_list_all[3] = {2,3,4}, mod_list_skip = {1};
+	
 	/* Make scatter-gather plan */
-	n_sg = make_sg_read_plan(&sgpln, msg->pattern, msg->fmtstr, msg->mod_list, msg->n_mod, msg->disk_list, msg->n_disk); // REDO: n_sg = 1;
-	if (n_sg <= 0)
-		set_thread_state(st, CS_ERROR, "%s:%s(%d):Read-mode SGPlan failed, returned %d",__FILE__,__FUNCTION__,__LINE__,n_sg);
+	n_sg_all = make_sg_read_plan(&sgpln_all, msg->pattern, msg->fmtstr, mod_list_all, n_mod_all, msg->disk_list, msg->n_disk); // REDO: n_sg = 1;
+	n_sg_skip = make_sg_read_plan(&sgpln_skip, msg->pattern, msg->fmtstr, mod_list_skip, n_mod_skip, msg->disk_list, msg->n_disk); // REDO: n_sg = 1;
+	if (n_sg_all <= 0 || n_sg_skip <= 0)
+		set_thread_state(st, CS_ERROR, "%s:%s(%d):Read-mode SGPlan failed, returned %d | %d (all | skip)",__FILE__,__FUNCTION__,__LINE__,n_sg_all,n_sg_skip);
 	else {
-		log_message(RL_INFO,"%s:%s(%d):Read-mode SGPlan created from %d files",__FILE__,__FUNCTION__,__LINE__,n_sg);
+		log_message(RL_INFO,"%s:%s(%d):Read-mode SGPlan created from %d + %d files (all + skip)",__FILE__,__FUNCTION__,__LINE__,n_sg_all,n_sg_skip);
 		
 		/* From scatter-gather plan we can set frame size */
 		if (obtain_data_lock(dest) == 0) {
-			dest->frame_size = sgpln->sgprt[0].sgi->pkt_size/sizeof(uint32_t); // REDO: dest->frame_size = 1;
+			// no need to do for sgpln_skip also
+			dest->frame_size = sgpln_all->sgprt[0].sgi->pkt_size/sizeof(uint32_t); // REDO: dest->frame_size = 1;
 			if (release_data_lock(dest) != 0)
 				set_thread_state(st, CS_ERROR, "%s:%s(%d):Cannot release shared buffer",__FILE__,__FUNCTION__,__LINE__);
 		} else
@@ -419,18 +431,60 @@ static void * _threaded_reader(void *arg) {
 		 * once-off sleep for one wait period before attempting to pass
 		 * data again to shared buffer. */
 		if (n_frames == 0) {
-			n_frames = read_next_block_vdif_frames(sgpln, &local_buf); // REDO: n_frames = dest->buf_size/dest->frame_size; n_frames_copied = 0; local_buf = (uint32_t *)malloc(n_frames*dest->frame_size*sizeof(uint32_t)); for (int ii=0; ii<n_frames; ii++) local_buf[ii] = (uint32_t)ii;
+			n_frames_all = read_next_block_vdif_frames(sgpln_all, &local_buf_all); // REDO: n_frames = dest->buf_size/dest->frame_size; n_frames_copied = 0; local_buf = (uint32_t *)malloc(n_frames*dest->frame_size*sizeof(uint32_t)); for (int ii=0; ii<n_frames; ii++) local_buf[ii] = (uint32_t)ii;
+			n_frames_skip = read_next_block_vdif_frames(sgpln_skip, &local_buf_skip);
 			/* If number of frames read is non-positive, cannot continue
 			 * running */
-			if (n_frames < 0) {
-				set_thread_state(st,CS_ERROR,"%s:%s(%d):Reading from SGPlan failed, returned %d",__FILE__,__FUNCTION__,__LINE__,n_frames);
+			if (n_frames_all < 0 || n_frames_skip < 0) {
+				set_thread_state(st,CS_ERROR,"%s:%s(%d):Reading from SGPlan failed, returned %d | %d (all | skip)",__FILE__,__FUNCTION__,__LINE__,n_frames_all,n_frames_skip);
 				break;
-			} else if (n_frames == 0) {
-				set_thread_state(st,CS_STOP,"%s:%s(%d):End of scatter-gather reached, returned %d",__FILE__,__FUNCTION__,__LINE__,n_frames);
+			} else if (n_frames_all == 0 || n_frames_skip == 0) {
+				set_thread_state(st,CS_STOP,"%s:%s(%d):End of scatter-gather reached, returned %d | %d (all | skip)",__FILE__,__FUNCTION__,__LINE__,n_frames_all,n_frames_skip);
 				break;
 			}
-			
-			log_message(RL_DEBUGVVV,"%s:%s(%d):Read %d frames",__FILE__,__FUNCTION__,__LINE__,n_frames);
+			log_message(RL_DEBUGVVV,"%s:%s(%d):Read %d | %d frames (all | skip)",__FILE__,__FUNCTION__,__LINE__,n_frames_all,n_frames_skip);
+			int64_t b_all = get_packet_b_count((vdif_in_header_t *)local_buf_all);
+			int64_t b_skip = get_packet_b_count((vdif_in_header_t *)local_buf_skip);
+			log_message(RL_DEBUGVVV,"%s:%s(%d):B-count is %ld | %ld (all | skip)",__FILE__,__FUNCTION__,__LINE__,b_all,b_skip);
+			int n_skipped_frames = -1;
+			int skip_iter = 0;
+			int total_skipped_frames = 0;
+			while (b_skip + 1 < b_all) {
+				log_message(RL_DEBUGVVV,"%s:%s(%d):B-count in skip data is %ld < %ld-1",__FILE__,__FUNCTION__,__LINE__,b_skip,b_all);
+				n_skipped_frames++;
+				if (n_frames_skip == 0 || n_skipped_frames == n_frames_skip) {
+					if (local_buf_skip != NULL) {
+						free(local_buf_skip);
+						local_buf_skip = NULL;
+					}
+					n_frames_skip = read_next_block_vdif_frames(sgpln_skip, &local_buf_skip);
+					if (n_frames_skip < 0) {
+						set_thread_state(st,CS_ERROR,"%s:%s(%d):Reading from SGPlan failed, returned %d (skip) -- watch out for further errors",__FILE__,__FUNCTION__,__LINE__,n_frames_skip);
+						break;
+					} else if (n_frames_skip == 0) {
+						set_thread_state(st,CS_STOP,"%s:%s(%d):End of scatter-gather reached, returned %d (skip) -- watch out for further errors",__FILE__,__FUNCTION__,__LINE__,n_frames_skip);
+						break;
+					}
+					log_message(RL_DEBUGVVV,"%s:%s(%d):Read %d frames from skip data",__FILE__,__FUNCTION__,__LINE__,n_frames_skip);
+					n_skipped_frames = 0;
+					skip_iter++;
+				}
+				b_skip = get_packet_b_count(n_skipped_frames + (vdif_in_header_t *)local_buf_skip);
+				total_skipped_frames++;
+			}
+			log_message(RL_DEBUGVVV,"%s:%s(%d):B-count in skip data is %ld >= %ld-1 after %d iterations and %d skipped frames (%d in total)",__FILE__,__FUNCTION__,__LINE__,b_skip,b_all,skip_iter,n_skipped_frames,total_skipped_frames);
+			// now allocate memory and copy data into combined data buffer
+			int total_frames_combined = n_frames_all + n_frames_skip-n_skipped_frames;
+			local_buf = malloc(total_frames_combined*sizeof(vdif_in_packet_t));
+			memcpy((void *)local_buf,(void *)local_buf_all,n_frames_all*sizeof(vdif_in_packet_t));
+			memcpy((void *)local_buf+n_frames_all*sizeof(vdif_in_packet_t),(void *)local_buf_skip+n_skipped_frames*sizeof(vdif_in_packet_t),n_frames_skip-n_skipped_frames);
+			if (local_buf_all != NULL) {
+				free(local_buf_all);
+			}
+			if (local_buf_skip != NULL) {
+				free(local_buf_skip);
+			}
+			log_message(RL_DEBUGVVV,"%s:%s(%d):Read %d frames (combined)",__FILE__,__FUNCTION__,__LINE__,total_frames_combined);
 		}
 		
 		/* If there are frames to process, insert into shared buffer */

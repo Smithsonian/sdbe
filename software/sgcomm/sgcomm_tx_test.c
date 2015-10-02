@@ -63,6 +63,8 @@ int main(int argc, char **argv) {
 	if (argc > 4)
 		port = atoi(argv[4]);
 	
+	log_message(RL_NOTICE,"*** THIS IS THE DAY 085, 2015 SPECIFIC SGTX CODE ***");
+	
 	log_message(RL_NOTICE,"%s:Using input file '%s' matching pattern '%s'",__FUNCTION__,pattern_read,fmtstr);
 	log_message(RL_NOTICE,"%s:Transmitting to %s:%u",__FUNCTION__,host,port);
 	
