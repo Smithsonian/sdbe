@@ -20,7 +20,7 @@ typedef enum {
 // *********************************************************************
 // These definitions are used to do time realignment on day 85, 2015 data
 // bitfield that defines valid FIDs usable for b_first inference
-#define DAY085_FID_BFIRST (0xFC) // all but 0,1
+#define DAY085_FID_BFIRST (0xFF) // used to be all but 0,1, but now that we fixed the sgtx side, we can take B-count from anyone
 // bitfield that defines valid FIDs usable for VDIF template inference
 #define DAY085_FID_VDIF_TEMPLATE (0x03) // only 0,1
 // *********************************************************************

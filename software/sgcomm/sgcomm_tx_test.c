@@ -1,9 +1,14 @@
+#include <error.h>
+#include <execinfo.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <syslog.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <netinet/in.h>
@@ -11,6 +16,7 @@
 
 #include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h> 
 
@@ -21,6 +27,12 @@
 #define MAIN_WAIT_PERIOD_US 500000
 #define SHARED_BUFFER_SIZE_TX (264*1000*32)
 #define SHARED_BUFFER_SIZE_RX (264*1000*32)
+
+#define BT_BUFFER_SIZE 0x100
+#define BT_FILENAME "crashreport.bt"
+#define MAX_LEN_STR_TIMESTAMP 0x100
+#define MAX_LEN_STR_HDR 0x400
+#define STR_FMT_TIMESTAMP_LONG "%Y-%m-%d %H:%M:%S"
 
 /* Master thread */
 sgcomm_thread st_main = {
@@ -35,6 +47,14 @@ void handle_exit(void);
 
 /* Misc */
 void print_rusage(const char *tag,struct rusage *ru);
+
+// Signal handlers
+void handle_sigfpe(int sig);
+void handle_sigsegv(int sig);
+// backtrace utility
+static void print_backtrace_to_file(const char *filename, const char *hdr);
+// get nice time string
+static void get_timestamp_long(char *time_str);
 
 int main(int argc, char **argv) {
 	/* Slave threads */
@@ -199,6 +219,69 @@ void handle_sigint(int signum) {
 	set_thread_state(&st_main, CS_STOP, NULL);
 }
 
+void handle_sigfpe(int sig) {
+	fprintf(stderr,"SIGFPE received\n");
+
+	char tsstr[MAX_LEN_STR_TIMESTAMP];
+	char hdr[MAX_LEN_STR_HDR];
+	get_timestamp_long(tsstr);
+	snprintf(hdr, MAX_LEN_STR_HDR, "SIGFPE received at %s:\n", tsstr);
+	print_backtrace_to_file(BT_FILENAME, hdr);
+
+	exit(EXIT_FAILURE);
+}
+
+void handle_sigsegv(int sig) {
+	fprintf(stderr,"SIGSEGV received\n");
+
+	char tsstr[MAX_LEN_STR_TIMESTAMP];
+	char hdr[MAX_LEN_STR_HDR];
+	get_timestamp_long(tsstr);
+	snprintf(hdr, MAX_LEN_STR_HDR, "SIGSEGV received at %s:\n", tsstr);
+	print_backtrace_to_file(BT_FILENAME, hdr);
+
+	exit(EXIT_FAILURE);
+}
+
+static void print_backtrace_to_file(const char *filename, const char *hdr) {
+	int fd;
+	void *buffer[BT_BUFFER_SIZE];
+	int n_sym;
+	fd = open(filename,O_WRONLY|O_APPEND|O_CREAT,S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
+	if (fd == -1) {
+		perror("open");
+		return;
+	}
+	// write header
+	write(fd, hdr, strlen(hdr));
+	n_sym = backtrace(buffer,BT_BUFFER_SIZE);
+	backtrace_symbols_fd(buffer, n_sym, fd);
+	if (close(fd) == -1) {
+		fprintf(stderr,"WARNING, backtrace logging file '%s' may not be closed properly\n",filename);
+		perror("close");
+	}
+}
+static void get_timestamp_long(char *time_str) {
+	time_t t;
+	struct tm timestamp;
+	
+	time(&t);
+	localtime_r(&t,&timestamp);
+	strftime(time_str,MAX_LEN_STR_TIMESTAMP,STR_FMT_TIMESTAMP_LONG,&timestamp);
+}
+
+struct sigaction sa_sigfpe = {
+	.sa_handler = handle_sigfpe,
+	.sa_mask = 0,
+	.sa_flags = 0
+};
+
+struct sigaction sa_sigsegv = {
+	.sa_handler = handle_sigsegv,
+	.sa_mask = 0,
+	.sa_flags = 0
+};
+
 static __attribute__((constructor)) void initialize() {
 	/* Start logging */
 	open_logging(RL_DEBUGVVV,RLT_STDOUT,NULL);
@@ -209,6 +292,8 @@ static __attribute__((constructor)) void initialize() {
 	/* Set signal handlers */
 	if (signal(SIGINT, handle_sigint) == SIG_IGN)
 		signal(SIGINT, SIG_IGN);
+	sigaction(SIGFPE, &sa_sigfpe, NULL);
+	sigaction(SIGSEGV, &sa_sigsegv, NULL);
 	
 	/* Register exit method */
 	atexit(&handle_exit);

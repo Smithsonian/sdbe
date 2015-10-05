@@ -377,6 +377,8 @@ static void * _threaded_reader(void *arg) {
 	int n_frames_copied = 0; // number of frames copied from local to shared buffer
 	int n_frames_this_copy = 0; // number for frames copied per iteration
 	int wait_after_data = 0;
+	int done_skipping = 0;
+	int n_skipped_frames = -1;
 	
 	sgcomm_thread *st = (sgcomm_thread *)arg; // general thread message
 	reader_msg *msg = (reader_msg *)(st->type_msg); // type specific message
@@ -443,49 +445,63 @@ static void * _threaded_reader(void *arg) {
 				break;
 			}
 			log_message(RL_DEBUGVVV,"%s:%s(%d):Read %d | %d frames (all | skip)",__FILE__,__FUNCTION__,__LINE__,n_frames_all,n_frames_skip);
-			int64_t b_all = get_packet_b_count((vdif_in_header_t *)local_buf_all);
-			int64_t b_skip = get_packet_b_count((vdif_in_header_t *)local_buf_skip);
-			log_message(RL_DEBUGVVV,"%s:%s(%d):B-count is %ld | %ld (all | skip)",__FILE__,__FUNCTION__,__LINE__,b_all,b_skip);
-			int n_skipped_frames = -1;
-			int skip_iter = 0;
-			int total_skipped_frames = 0;
-			while (b_skip + 1 < b_all) {
-				log_message(RL_DEBUGVVV,"%s:%s(%d):B-count in skip data is %ld < %ld-1",__FILE__,__FUNCTION__,__LINE__,b_skip,b_all);
-				n_skipped_frames++;
-				if (n_frames_skip == 0 || n_skipped_frames == n_frames_skip) {
-					if (local_buf_skip != NULL) {
-						free(local_buf_skip);
-						local_buf_skip = NULL;
+			if (!done_skipping) {
+				log_message(RL_DEBUGVVV,"%s:%s(%d):Not done skipping",__FILE__,__FUNCTION__,__LINE__,n_frames_all,n_frames_skip);
+				int64_t b_all = get_packet_b_count((vdif_in_header_t *)local_buf_all);
+				int64_t b_skip = get_packet_b_count((vdif_in_header_t *)local_buf_skip);
+				log_message(RL_DEBUGVVV,"%s:%s(%d):B-count is %ld | %ld (all | skip)",__FILE__,__FUNCTION__,__LINE__,b_all,b_skip);
+				n_skipped_frames = -1;
+				int skip_iter = 0;
+				int total_skipped_frames = 0;
+				#define MAX_TRAIL 0
+				#define SKIP_STEP 512
+				while (b_skip + MAX_TRAIL < b_all) {
+					log_message(RL_DEBUGVVV,"%s:%s(%d):B-count in skip data is %ld < %ld-%d",__FILE__,__FUNCTION__,__LINE__,b_skip,b_all,MAX_TRAIL);
+					if (b_all - b_skip > 1) {
+						n_skipped_frames+=SKIP_STEP;
+					} else {
+						n_skipped_frames+=1;
 					}
-					n_frames_skip = read_next_block_vdif_frames(sgpln_skip, &local_buf_skip);
-					if (n_frames_skip < 0) {
-						set_thread_state(st,CS_ERROR,"%s:%s(%d):Reading from SGPlan failed, returned %d (skip) -- watch out for further errors",__FILE__,__FUNCTION__,__LINE__,n_frames_skip);
-						break;
-					} else if (n_frames_skip == 0) {
-						set_thread_state(st,CS_STOP,"%s:%s(%d):End of scatter-gather reached, returned %d (skip) -- watch out for further errors",__FILE__,__FUNCTION__,__LINE__,n_frames_skip);
-						break;
+					if (n_frames_skip == 0 || n_skipped_frames >= n_frames_skip) {
+						if (local_buf_skip != NULL) {
+							free(local_buf_skip);
+							local_buf_skip = NULL;
+						}
+						n_frames_skip = read_next_block_vdif_frames(sgpln_skip, &local_buf_skip);
+						if (n_frames_skip < 0) {
+							set_thread_state(st,CS_ERROR,"%s:%s(%d):Reading from SGPlan failed, returned %d (skip) -- watch out for further errors",__FILE__,__FUNCTION__,__LINE__,n_frames_skip);
+							break;
+						} else if (n_frames_skip == 0) {
+							set_thread_state(st,CS_STOP,"%s:%s(%d):End of scatter-gather reached, returned %d (skip) -- watch out for further errors",__FILE__,__FUNCTION__,__LINE__,n_frames_skip);
+							break;
+						}
+						log_message(RL_DEBUGVVV,"%s:%s(%d):Read %d frames from skip data",__FILE__,__FUNCTION__,__LINE__,n_frames_skip);
+						n_skipped_frames = 0;
+						skip_iter++;
 					}
-					log_message(RL_DEBUGVVV,"%s:%s(%d):Read %d frames from skip data",__FILE__,__FUNCTION__,__LINE__,n_frames_skip);
-					n_skipped_frames = 0;
-					skip_iter++;
+					b_skip = get_packet_b_count((vdif_in_header_t *)(n_skipped_frames + (vdif_in_packet_t *)local_buf_skip));
+					total_skipped_frames += SKIP_STEP;
 				}
-				b_skip = get_packet_b_count(n_skipped_frames + (vdif_in_header_t *)local_buf_skip);
-				total_skipped_frames++;
-			}
-			if (n_skipped_frames == -1) {
+				if (n_skipped_frames == -1) {
+					n_skipped_frames = 0;
+				}
+				log_message(RL_DEBUGVVV,"%s:%s(%d):B-count in skip data is %ld >= %ld-%d after %d iterations and %d skipped frames (%d in total)",__FILE__,__FUNCTION__,__LINE__,b_skip,b_all,MAX_TRAIL,skip_iter,n_skipped_frames,total_skipped_frames);
+				done_skipping = 1;
+			} else {
 				n_skipped_frames = 0;
 			}
-			log_message(RL_DEBUGVVV,"%s:%s(%d):B-count in skip data is %ld >= %ld-1 after %d iterations and %d skipped frames (%d in total)",__FILE__,__FUNCTION__,__LINE__,b_skip,b_all,skip_iter,n_skipped_frames,total_skipped_frames);
 			// now allocate memory and copy data into combined data buffer
 			int total_frames_combined = n_frames_all + n_frames_skip-n_skipped_frames;
 			local_buf = malloc(total_frames_combined*sizeof(vdif_in_packet_t));
-			memcpy((void *)local_buf,(void *)local_buf_all,n_frames_all*sizeof(vdif_in_packet_t));
-			memcpy((void *)local_buf+n_frames_all*sizeof(vdif_in_packet_t),(void *)local_buf_skip+n_skipped_frames*sizeof(vdif_in_packet_t),n_frames_skip-n_skipped_frames);
+			memcpy((void *)local_buf,(void *)local_buf_skip+n_skipped_frames*sizeof(vdif_in_packet_t),(n_frames_skip-n_skipped_frames)*sizeof(vdif_in_packet_t));
+			memcpy((void *)local_buf+(n_frames_skip-n_skipped_frames)*sizeof(vdif_in_packet_t),(void *)local_buf_all,n_frames_all*sizeof(vdif_in_packet_t));
 			if (local_buf_all != NULL) {
 				free(local_buf_all);
+				local_buf_all = NULL;
 			}
 			if (local_buf_skip != NULL) {
 				free(local_buf_skip);
+				local_buf_skip = NULL;
 			}
 			n_frames = total_frames_combined;
 			log_message(RL_DEBUGVVV,"%s:%s(%d):Read %d frames (combined)",__FILE__,__FUNCTION__,__LINE__,n_frames);

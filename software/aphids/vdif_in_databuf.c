@@ -187,18 +187,25 @@ int fill_vdif_header_template(vdif_in_header_t *vdif_hdr_copy, vdif_in_packet_t 
 	if (!((0x01<<vdif_pkt_ref->header.beng.f)&DAY085_FID_VDIF_TEMPLATE)) {
 		return -1;
 	}
-	offset_beng_fft_windows = MAGIC_OFFSET_IN_BENG_FFT_WINDOWS - 128*(VDIF_PER_BENG_FRAME-n_skipped)/VDIF_PER_BENG_FRAME;
-	offset_vdif_out_packets = (int)(MAGIC_BENG_FFT_WINDOW_IN_VDIF_OUT*offset_beng_fft_windows);
-	fprintf(stdout,"%s:%s(%d): n_skipped = %d, offset_beng_fft_windows = %d, offset_vdif_out_packets = %d\n",__FILE__,__FUNCTION__,__LINE__,n_skipped,offset_beng_fft_windows,offset_vdif_out_packets);
+	// The usual way of getting a better timestamp won't work in this case
+	//~ offset_beng_fft_windows = MAGIC_OFFSET_IN_BENG_FFT_WINDOWS - 128*(VDIF_PER_BENG_FRAME-n_skipped)/VDIF_PER_BENG_FRAME;
+	//~ offset_vdif_out_packets = (int)(MAGIC_BENG_FFT_WINDOW_IN_VDIF_OUT*offset_beng_fft_windows);
+	//~ fprintf(stdout,"%s:%s(%d): n_skipped = %d, offset_beng_fft_windows = %d, offset_vdif_out_packets = %d\n",__FILE__,__FUNCTION__,__LINE__,n_skipped,offset_beng_fft_windows,offset_vdif_out_packets);
+	fprintf(stdout,"%s:%s(%d): not doing accurate estimation of VDIF timestamp\n",__FILE__,__FUNCTION__,__LINE__);
 	// do basic copy
 	memcpy(vdif_hdr_copy, vdif_pkt_ref, sizeof(vdif_in_header_t));
-	// then set timestamp information that should change
-	if (offset_vdif_out_packets < 0) {
-		vdif_hdr_copy->w0.secs_inre--;
-		vdif_hdr_copy->w1.df_num_insec = 125000+offset_vdif_out_packets;
-	} else {
-		vdif_hdr_copy->w1.df_num_insec = offset_vdif_out_packets;
-	}
+	//~ // then set timestamp information that should change
+	//~ if (offset_vdif_out_packets < 0) {
+		//~ vdif_hdr_copy->w0.secs_inre--;
+		//~ vdif_hdr_copy->w1.df_num_insec = 125000+offset_vdif_out_packets;
+	//~ } else {
+		//~ vdif_hdr_copy->w1.df_num_insec = offset_vdif_out_packets;
+	//~ }
+	// for 6/11 SWARM rate there should be 304687.5 VDIF packets per second
+	// in each stream, so maximum df_num_insec would be 304688
+	int df_num_insec_proxy = (int)(125000.0 * (double)vdif_hdr_copy->w1.df_num_insec / 304688.0);
+	fprintf(stdout,"%s:%s(%d): translated SWARM 6/11 df_num_insec=%d --> df_num_insec=%d\n",__FILE__,__FUNCTION__,__LINE__,vdif_hdr_copy->w1.df_num_insec,df_num_insec_proxy);
+	vdif_hdr_copy->w1.df_num_insec = df_num_insec_proxy;
 	print_beng_over_vdif_header(vdif_hdr_copy,"TEMPLATE:");
 	// the rest of the header should be updated as needed at the output stage
 	return 0;

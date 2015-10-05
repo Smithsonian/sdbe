@@ -122,7 +122,7 @@ static void *run_method(
 	}
 #endif // STANDALONE_TEST
 	
-	fprintf(stdout,"*** THIS IS THE DAY 085, 2015 SPECIFIC APHIDS CODE ***");
+	fprintf(stdout,"*** THIS IS THE DAY 085, 2015 SPECIFIC APHIDS CODE ***\n");
 	
 	while (
 #ifndef STANDALONE_TEST
@@ -279,12 +279,12 @@ static void *run_method(
 					while (b_first == -1) {
 						b_first = get_packet_b_count(index_received_vdif_packets + (vdif_in_header_t *)received_vdif_packets);
 						// check FID
-						if (!((0x01<<(index_received_vdif_packets + (vdif_in_header_t *)received_vdif_packets)->beng.f)&DAY085_FID_BFIRST)) {
-							b_first = -1;
-							index_received_vdif_packets++;
-							continue;
-						}
-						printf("b_first = %ld\n",b_first);
+						//~ if (!((0x01<<(index_received_vdif_packets + (vdif_in_header_t *)received_vdif_packets)->beng.f)&DAY085_FID_BFIRST)) {
+							//~ b_first = -1;
+							//~ index_received_vdif_packets++;
+							//~ continue;
+						//~ }
+						printf("b_first = %ld (from f = %d)\n",b_first,(vdif_in_header_t *)received_vdif_packets->beng.f);
 						// from there on range starts with end value for previous range
 						for (ii=0; ii<BENG_GROUPS_IN_BUFFER; ii++) {
 							// initialize output databuffer blocks

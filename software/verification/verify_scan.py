@@ -165,7 +165,7 @@ if __name__ == "__main__":
 	else:
 		timedelta_offset = vdifa[0].datetime() - round_datetime_to_second(vdifa[0].datetime())
 	offset_sign = 1 if timedelta_offset.days == 0 else sign(timedelta_offset.days)
-	N_vdif_offset_r2dbe = offset_sign*abs(timedelta_offset).microseconds/sdbe_tpv
+	N_vdif_offset_r2dbe = offset_sign*(abs(timedelta_offset).microseconds/sdbe_tpv + abs(timedelta_offset).seconds*125000)
 	logger.debug("scan metadata {1}available, N_vdif_offset_r2dbe = {0}".format(N_vdif_offset_r2dbe,"" if meta else "un"))
 	if N_vdif_offset_r2dbe < 0:
 		N_vdif_offset_aphids = -N_vdif_offset_r2dbe
@@ -197,8 +197,8 @@ if __name__ == "__main__":
 	xr = irfft(Xr_sub,n=r2dbe_spv/2,axis=1).flatten()
 	
 	# cross-correlate
-	search_range = arange(-8,8)
-	search_avg = N_vdif_frames-2*abs(search_range).max()
+	search_range = arange(-256,256)
+	search_avg = 16#N_vdif_frames-2*abs(search_range).max()
 	logger.debug("search range [{0},{1}] and averaging over {2} windows".format(search_range.min(),search_range.max(),search_avg))
 	s_a0xr,S_a0xr,p_a0xr = corr_FXt(xa[0],xr,fft_window_size=sdbe_spv,search_avg=search_avg,search_range=search_range)
 	s_a1xr,S_a1xr,p_a1xr = corr_FXt(xa[1],xr,fft_window_size=sdbe_spv,search_avg=search_avg,search_range=search_range)
