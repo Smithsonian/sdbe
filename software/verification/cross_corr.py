@@ -95,18 +95,22 @@ def corr_Xt_search(X0,X1,fft_window_size=32768,search_range=None,search_avg=1):
 	X0,X1 are assumed to contain only positive-frequency half-spectra.
 	"""
 	
-	snapshots_center = X0.shape[0]/2 - search_avg/2
-	#~ print "snapshots_center = %d" % snapshots_center
 	if (search_range == None):
 		search_range = zeros(1)
+	
+	if search_range.min() < 0:
+		idx_0 = abs(search_range.min())
+	else:
+		idx_0 = 0
 	
 	s_peaks = zeros(len(search_range))
 	s_0x1 = zeros([len(search_range),fft_window_size],dtype=float64)
 	S_0x1 = zeros([len(search_range),fft_window_size/2],dtype=complex64)
 	ii = 0
 	for iwindow in search_range:
-		#~ print "X0(%d,%d) and X1(%d,%d)" % (snapshots_center,snapshots_center+search_avg,snapshots_center+iwindow,snapshots_center+iwindow+search_avg)
-		s_0x1[ii,:],S_0x1[ii,:] = corr_Xt(X0[(snapshots_center):(snapshots_center+search_avg),:],X1[(snapshots_center+iwindow):(snapshots_center+iwindow+search_avg),:],fft_window_size=fft_window_size)
+		idx_1 = idx_0+iwindow
+		#~ print "X0(%d,%d) and X1(%d,%d)" % (idx_0,idx_0+search_avg,idx_1,idx_1+search_avg)
+		s_0x1[ii,:],S_0x1[ii,:] = corr_Xt(X0[idx_0:idx_0+search_avg,:],X1[idx_1:idx_1+search_avg,:],fft_window_size=fft_window_size)
 		s_peaks[ii] = abs(s_0x1[ii,:]).max()
 		ii += 1
 	

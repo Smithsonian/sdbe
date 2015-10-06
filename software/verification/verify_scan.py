@@ -222,11 +222,14 @@ if __name__ == "__main__":
 	# try to correct delay
 	sample_offset = abs(s_a1xr[p_a1xr.argmax(),:]).argmax()
 	# first delay aphids data
-	s_tmp,S_tmp,p_tmp = corr_FXt(xa[1][sample_offset:],xr,fft_window_size=sdbe_spv,search_avg=search_avg-1,search_range=search_range)
+	tmp_search_avg = search_avg-1
+	if tmp_search_avg <= 0:
+		tmp_search_avg = search_avg
+	s_tmp,S_tmp,p_tmp = corr_FXt(xa[1][sample_offset:],xr,fft_window_size=sdbe_spv,search_avg=tmp_search_avg,search_range=search_range)
 	logger.debug("assuming APHIDS data leads: peak-to-std is {0} at offset {1} in window {2} (after delay correction)".format(peak/sigma,abs(s_tmp[p_tmp.argmax(),:]).argmax(),search_range[p_tmp.argmax()]))
 	if abs(s_tmp[p_tmp.argmax(),:]).argmax() != 0:
 		sample_offset = sample_offset-sdbe_spv
-		s_tmp,S_tmp,p_tmp = corr_FXt(xa[1],xr[-sample_offset:],fft_window_size=sdbe_spv,search_avg=search_avg-1,search_range=search_range)
+		s_tmp,S_tmp,p_tmp = corr_FXt(xa[1],xr[-sample_offset:],fft_window_size=sdbe_spv,search_avg=tmp_search_avg,search_range=search_range)
 		logger.debug("assuming R2DBE data leads: peak-to-std is {0} at offset {1} in window {2} (after delay correction)".format(peak/sigma,abs(s_tmp[p_tmp.argmax(),:]).argmax(),search_range[p_tmp.argmax()]))
 	
 	# correct delay if we're outside 0 offset window
@@ -235,10 +238,13 @@ if __name__ == "__main__":
 		sample_offset_whole_windows = -search_range[p_tmp.argmax()]*sdbe_spv
 		logger.debug("delay is multiple windows, applying whole-window sample offset of {0}".format(sample_offset_whole_windows))
 		sample_offset += sample_offset_whole_windows
+		tmp_search_avg = search_avg-1-abs(search_range[p_a1xr.argmax()])
+		if tmp_search_avg <= 0:
+			tmp_search_avg = search_avg
 		if sample_offset > 0:
-			s_tmp,S_tmp,p_tmp = corr_FXt(xa[1][sample_offset:],xr,fft_window_size=sdbe_spv,search_avg=search_avg-1-abs(search_range[p_a1xr.argmax()]),search_range=search_range)
+			s_tmp,S_tmp,p_tmp = corr_FXt(xa[1][sample_offset:],xr,fft_window_size=sdbe_spv,search_avg=tmp_search_avg,search_range=search_range)
 		else:
-			s_tmp,S_tmp,p_tmp = corr_FXt(xa[1],xr[-sample_offset:],fft_window_size=sdbe_spv,search_avg=search_avg-1-abs(search_range[p_a1xr.argmax()]),search_range=search_range)
+			s_tmp,S_tmp,p_tmp = corr_FXt(xa[1],xr[-sample_offset:],fft_window_size=sdbe_spv,search_avg=tmp_search_avg,search_range=search_range)
 	
 	aphids_clock_early = sample_offset / aphids_rate
 	logger.info("APHIDS clock is early by {0} microseconds".format(aphids_clock_early/1e-6))
