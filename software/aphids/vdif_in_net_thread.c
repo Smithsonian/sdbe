@@ -284,7 +284,7 @@ static void *run_method(
 							//~ index_received_vdif_packets++;
 							//~ continue;
 						//~ }
-						printf("b_first = %ld (from f = %d)\n",b_first,(vdif_in_header_t *)received_vdif_packets->beng.f);
+						printf("b_first = %ld (from f = %d)\n",b_first,((vdif_in_header_t *)received_vdif_packets)->beng.f);
 						// from there on range starts with end value for previous range
 						for (ii=0; ii<BENG_GROUPS_IN_BUFFER; ii++) {
 							// initialize output databuffer blocks
@@ -329,7 +329,7 @@ static void *run_method(
 					}
 					if (index_offset > MAX_INDEX_LOOK_AHEAD) {
 						// set transfer on non-filled unit
-						fprintf(stdout,"%s:%s(%d): about to copy non-filled unit (offset is %d)\n",__FILE__,__FUNCTION__,__LINE__,index_offset);
+						fprintf(stdout,"%s:%s(%d): about to copy non-filled unit (offset is %d after %d/%d packets in received batch)\n",__FILE__,__FUNCTION__,__LINE__,index_offset,index_received_vdif_packets,n_received_vdif_packets);
 						start_copy = 1;
 						//~ if (first_copy) {
 							//~ // on copy, fill the VDIF header template
