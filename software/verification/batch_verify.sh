@@ -14,7 +14,7 @@ OBS=$2
 SCAN=$3
 
 EXEC="./verify_scan.py"
-ARGS="-c 32 -v 1"
+ARGS="-c 1280 -v 2"
 BATCH_LOG="./out/batch_verify.log"
 
 echo "Batch started `date`" >> $BATCH_LOG

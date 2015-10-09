@@ -264,7 +264,7 @@ if __name__ == "__main__":
 				break
 	except IOError:
 		fh = open("{0}/{1}".format(path_out,filename_delay),"w")
-	fh.write("{0},{1},{2:10.6f}\r\n".format(meta.start_datetime.strftime("%Y-%m-%d %H:%M:%S"),meta.end_datetime.strftime("%Y-%m-%d %H:%M:%S"),aphids_clock_early/1e-6))
+	fh.write("{0},{1},{2:15.6f}\r\n".format(meta.start_datetime.strftime("%Y-%m-%d %H:%M:%S"),meta.end_datetime.strftime("%Y-%m-%d %H:%M:%S"),aphids_clock_early/1e-6))
 	fh.close()
 	
 	# check peak is in zero-window offset after delay correction
