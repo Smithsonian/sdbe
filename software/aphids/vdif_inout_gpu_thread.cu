@@ -148,7 +148,7 @@ typedef struct aphids_resampler {
     float quantizeOffset_0, quantizeOffset_1;
     summary_stats_data<float> ssd;
     cufftComplex *gpu_A_0, *gpu_A_1;
-    cufftComplex *gpu_B_0, *gpu_B_1;
+    cufftComplex *gpu_B_common;
     vdif_out_data_group_t *gpu_out_buf;
     int fft_size[3],batch[3],repeat[3];
     cufftHandle cufft_plan[3];
@@ -191,8 +191,7 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
   // allocate device memory
   cudaMalloc((void **)&(resampler->gpu_A_0), BENG_FRAMES_PER_GROUP*BENG_SNAPSHOTS*BENG_CHANNELS_*sizeof(cufftComplex));	// 671088640B
   cudaMalloc((void **)&(resampler->gpu_A_1), BENG_FRAMES_PER_GROUP*BENG_SNAPSHOTS*BENG_CHANNELS_*sizeof(cufftComplex));	// 671088640B
-  cudaMalloc((void **)&(resampler->gpu_B_0), (BENG_FRAMES_PER_GROUP-1)*BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS*sizeof(cufftComplex));	// 654950400B
-  cudaMalloc((void **)&(resampler->gpu_B_1), (BENG_FRAMES_PER_GROUP-1)*BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS*sizeof(cufftComplex));	// 654950400B
+  cudaMalloc((void **)&(resampler->gpu_B_common), (BENG_FRAMES_PER_GROUP-1)*BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS*sizeof(cufftComplex));	// 654950400B
   cudaMalloc((void **)&(resampler->gpu_out_buf), sizeof(vdif_out_data_group_t)); // 67108864B
 
  /*
@@ -512,8 +511,11 @@ __global__ void quantize2bit(const float *in, unsigned int *out, int N, float th
 }
 
 /** @brief Transform SWARM spectra into timeseries
+ * Note: add switch to use either A0 or A1 output, for B_common input.
  */
-int SwarmC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
+#define SWITCH_SWARMC2R_OUT_A0 0
+#define SWITCH_SWARMC2R_OUT_A1 1
+int SwarmC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx, int output_switch){
   int i;
   cufftResult cufft_status;
 #ifdef GPU_COMPUTE
@@ -524,12 +526,18 @@ int SwarmC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
 #endif // GPU_DEBUG
   // transform SWARM spectra into timeseries
   for (i = 0; i < resampler->repeat[0]; ++i) {
-	cufft_status = cufftExecC2R(resampler->cufft_plan[0],
-			resampler->gpu_B_0 + i*resampler->batch[0]*UNPACKED_BENG_CHANNELS, 
-			(cufftReal *)resampler->gpu_A_0 + i*resampler->batch[0]*(2*BENG_CHANNELS_));
-	cufft_status = cufftExecC2R(resampler->cufft_plan[0],
-			resampler->gpu_B_1 + i*resampler->batch[0]*UNPACKED_BENG_CHANNELS, 
-			(cufftReal *)resampler->gpu_A_1 + i*resampler->batch[0]*(2*BENG_CHANNELS_));
+	if (output_switch == SWITCH_SWARMC2R_OUT_A0) {
+		cufft_status = cufftExecC2R(resampler->cufft_plan[0],
+				resampler->gpu_B_common + i*resampler->batch[0]*UNPACKED_BENG_CHANNELS, 
+				(cufftReal *)resampler->gpu_A_0 + i*resampler->batch[0]*(2*BENG_CHANNELS_));
+	} else if (output_switch == SWITCH_SWARMC2R_OUT_A1) {
+		cufft_status = cufftExecC2R(resampler->cufft_plan[0],
+				resampler->gpu_B_common + i*resampler->batch[0]*UNPACKED_BENG_CHANNELS, 
+				(cufftReal *)resampler->gpu_A_1 + i*resampler->batch[0]*(2*BENG_CHANNELS_));
+	} else {
+		hashpipe_error(__FILE__,"Invalid output switch error: %d does not specify a valid output buffer for SwarmC2R.",output_switch);
+		return STATE_ERROR;
+	}
 #ifdef GPU_DEBUG
 		if (cufft_status != CUFFT_SUCCESS){
 		    hashpipe_error(__FILE__, "CUFFT error: plan 0 execution failed");
@@ -553,8 +561,11 @@ int SwarmC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
 }
 
 /** @brief Transform SWARM timeseries into R2DBE compatible spectrum
+ * Note: add switch to use either A0 or A1 input, for B_common output.
  */
-int SwarmR2C(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
+#define SWITCH_SWARMR2C_IN_A0 0
+#define SWITCH_SWARMR2C_IN_A1 1
+int SwarmR2C(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx, int input_switch){
   int i;
   cufftResult cufft_status;
 
@@ -566,12 +577,18 @@ int SwarmR2C(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
 #endif // GPU_DEBUG
   // transform timeseries into reconfigured spectra
   for (i = 0; i < resampler->repeat[1]; ++i) {
-	cufft_status = cufftExecR2C(resampler->cufft_plan[1],
-		(cufftReal *) resampler->gpu_A_0 + i*resampler->batch[1]*RESAMPLING_CHUNK_SIZE,
-		resampler->gpu_B_0 + i*resampler->batch[1]*(RESAMPLING_CHUNK_SIZE/2+1));
-	cufft_status = cufftExecR2C(resampler->cufft_plan[1],
-		(cufftReal *) resampler->gpu_A_1 + i*resampler->batch[1]*RESAMPLING_CHUNK_SIZE,
-		resampler->gpu_B_1 + i*resampler->batch[1]*(RESAMPLING_CHUNK_SIZE/2+1));
+	if (input_switch == SWITCH_SWARMR2C_IN_A0) {
+		cufft_status = cufftExecR2C(resampler->cufft_plan[1],
+			(cufftReal *) resampler->gpu_A_0 + i*resampler->batch[1]*RESAMPLING_CHUNK_SIZE,
+			resampler->gpu_B_common + i*resampler->batch[1]*(RESAMPLING_CHUNK_SIZE/2+1));
+	} else if (input_switch == SWITCH_SWARMR2C_IN_A1) {
+		cufft_status = cufftExecR2C(resampler->cufft_plan[1],
+			(cufftReal *) resampler->gpu_A_1 + i*resampler->batch[1]*RESAMPLING_CHUNK_SIZE,
+			resampler->gpu_B_common + i*resampler->batch[1]*(RESAMPLING_CHUNK_SIZE/2+1));
+	} else {
+		hashpipe_error(__FILE__,"Invalid input switch error: %d does not specify a valid input buffer for SwarmR2C.",input_switch);
+		return STATE_ERROR;
+	}
 #ifdef GPU_DEBUG
 	if (cufft_status != CUFFT_SUCCESS){
 	    hashpipe_error(__FILE__, "CUFFT error: plan 1 execution failed");
@@ -596,8 +613,11 @@ int SwarmR2C(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
 }
 
 /** @brief Transform half R2DBE spectrum into timeseries
+ * Note: add switch to use either A0 or A1 output, for B_common input.
  */
-int Hr2dbeC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
+#define SWITCH_HR2DBEC2R_OUT_A0 0
+#define SWITCH_HR2DBEC2R_OUT_A1 1
+int Hr2dbeC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx, int output_switch){
   int i;
   cufftResult cufft_status;
 #ifdef GPU_COMPUTE
@@ -608,12 +628,18 @@ int Hr2dbeC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
 #endif // GPU_DEBUG
 	// mask and transform reconfigured spectra into resampled timeseries 
   for (i = 0; i < resampler->repeat[2]; ++i) {
-	cufft_status = cufftExecC2R(resampler->cufft_plan[2],
-		resampler->gpu_B_0 + i*resampler->batch[2]*(RESAMPLING_CHUNK_SIZE/2+1) + resampler->skip_chan,
-		(cufftReal *) resampler->gpu_A_0 + i*resampler->batch[2]*(RESAMPLING_CHUNK_SIZE*EXPANSION_FACTOR/DECIMATION_FACTOR));
-	cufft_status = cufftExecC2R(resampler->cufft_plan[2],
-		resampler->gpu_B_1 + i*resampler->batch[2]*(RESAMPLING_CHUNK_SIZE/2+1) + resampler->skip_chan,
-		(cufftReal *) resampler->gpu_A_1 + i*resampler->batch[2]*(RESAMPLING_CHUNK_SIZE*EXPANSION_FACTOR/DECIMATION_FACTOR));
+	if (output_switch == SWITCH_HR2DBEC2R_OUT_A0) {
+		cufft_status = cufftExecC2R(resampler->cufft_plan[2],
+			resampler->gpu_B_common + i*resampler->batch[2]*(RESAMPLING_CHUNK_SIZE/2+1) + resampler->skip_chan,
+			(cufftReal *) resampler->gpu_A_0 + i*resampler->batch[2]*(RESAMPLING_CHUNK_SIZE*EXPANSION_FACTOR/DECIMATION_FACTOR));
+	} else if (output_switch == SWITCH_HR2DBEC2R_OUT_A1) {
+		cufft_status = cufftExecC2R(resampler->cufft_plan[2],
+			resampler->gpu_B_common + i*resampler->batch[2]*(RESAMPLING_CHUNK_SIZE/2+1) + resampler->skip_chan,
+			(cufftReal *) resampler->gpu_A_1 + i*resampler->batch[2]*(RESAMPLING_CHUNK_SIZE*EXPANSION_FACTOR/DECIMATION_FACTOR));
+	} else {
+		hashpipe_error(__FILE__,"Invalid output switch error: %d does not specify a valid output buffer for Hr2dbeC2R.",output_switch);
+		return STATE_ERROR;
+	}
 #ifdef GPU_DEBUG
 	if (cufft_status != CUFFT_SUCCESS){
 	    hashpipe_error(__FILE__, "CUFFT error: plan 2 execution failed");
@@ -643,9 +669,8 @@ int aphids_resampler_destroy(aphids_resampler_t *resampler) {
   cufftResult cufft_status;
   HANDLE_ERROR( cudaSetDevice(resampler->deviceId) );
   HANDLE_ERROR( cudaFree(resampler->gpu_A_0) );
-  HANDLE_ERROR( cudaFree(resampler->gpu_B_0) );
   HANDLE_ERROR( cudaFree(resampler->gpu_A_1) );
-  HANDLE_ERROR( cudaFree(resampler->gpu_B_1) );
+  HANDLE_ERROR( cudaFree(resampler->gpu_B_common) );
   HANDLE_ERROR( cudaFree(resampler->gpu_out_buf) );
   for (i=0; i < 3; ++i){
 	cufft_status = cufftDestroy(resampler->cufft_plan[i]);
@@ -836,17 +861,31 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	//~ already set device: cudaSetDevice(i);
         threads.x = 16; threads.y = 16; threads.z = 1;
         blocks.x = (BENG_CHANNELS_*BENG_SNAPSHOTS/(16*16)); blocks.y = 1; blocks.z = 1;
-	reorderTzp_smem<<<blocks,threads>>>(resampler[i].gpu_A_0, resampler[i].gpu_B_0, BENG_BUFFER_IN_COUNTS);
-	reorderTzp_smem<<<blocks,threads>>>(resampler[i].gpu_A_1, resampler[i].gpu_B_1, BENG_BUFFER_IN_COUNTS);
+	reorderTzp_smem<<<blocks,threads>>>(resampler[i].gpu_A_0, resampler[i].gpu_B_common, BENG_BUFFER_IN_COUNTS);
 
 	// transform SWARM spectra to time series
-	state = SwarmC2R(&(resampler[i]), &aphids_ctx);
+	state = SwarmC2R(&(resampler[i]), &aphids_ctx, SWITCH_SWARMC2R_OUT_A0);
 
 	// transform SWARM time series to R2DBE compatible spectra
-	state = SwarmR2C(&(resampler[i]), &aphids_ctx);
+	state = SwarmR2C(&(resampler[i]), &aphids_ctx, SWITCH_SWARMR2C_IN_A0);
 
 	// transform R2DBE spectra to trimmed and resampled time series
-	state = Hr2dbeC2R(&(resampler[i]), &aphids_ctx);
+	state = Hr2dbeC2R(&(resampler[i]), &aphids_ctx, SWITCH_HR2DBEC2R_OUT_A0);
+
+	// reorder BENG data
+	//~ already set device: cudaSetDevice(i);
+        threads.x = 16; threads.y = 16; threads.z = 1;
+        blocks.x = (BENG_CHANNELS_*BENG_SNAPSHOTS/(16*16)); blocks.y = 1; blocks.z = 1;
+	reorderTzp_smem<<<blocks,threads>>>(resampler[i].gpu_A_1, resampler[i].gpu_B_common, BENG_BUFFER_IN_COUNTS);
+
+	// transform SWARM spectra to time series
+	state = SwarmC2R(&(resampler[i]), &aphids_ctx, SWITCH_SWARMC2R_OUT_A1);
+
+	// transform SWARM time series to R2DBE compatible spectra
+	state = SwarmR2C(&(resampler[i]), &aphids_ctx, SWITCH_SWARMR2C_IN_A1);
+
+	// transform R2DBE spectra to trimmed and resampled time series
+	state = Hr2dbeC2R(&(resampler[i]), &aphids_ctx, SWITCH_HR2DBEC2R_OUT_A1);
 
 	// calculate threshold for quantization
 #ifdef QUANTIZE_THRESHOLD_COMPUTE
@@ -895,16 +934,17 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	//~ already set device: cudaSetDevice(i);
 	threads.x = 16; threads.y = 32; threads.z = 1;
 	blocks.x = 512; blocks.y = 1; blocks.z = 1;
-	quantize2bit<<<blocks,threads>>>((float *) resampler[i].gpu_A_0, (unsigned int*) resampler[i].gpu_B_0, 
+	quantize2bit<<<blocks,threads>>>((float *) resampler[i].gpu_A_0, (unsigned int*) resampler[i].gpu_B_common, 
 	(2*BENG_CHANNELS_*BENG_SNAPSHOTS*EXPANSION_FACTOR),
 	resampler[i].quantizeThreshold_0,resampler[i].quantizeOffset_0);
-	quantize2bit<<<blocks,threads>>>((float *) resampler[i].gpu_A_1, (unsigned int*) resampler[i].gpu_B_1, 
+	// copy data to output buffer
+	cudaMemcpy((void *)resampler[i].gpu_out_buf,(void *)resampler[i].gpu_B_common,sizeof(vdif_out_data_block_t),cudaMemcpyDeviceToDevice);
+
+	quantize2bit<<<blocks,threads>>>((float *) resampler[i].gpu_A_1, (unsigned int*) resampler[i].gpu_B_common, 
 	(2*BENG_CHANNELS_*BENG_SNAPSHOTS*EXPANSION_FACTOR),
 	resampler[i].quantizeThreshold_1,resampler[i].quantizeOffset_1);
-	
 	// copy data to output buffer
-	cudaMemcpy((void *)resampler[i].gpu_out_buf,(void *)resampler[i].gpu_B_0,sizeof(vdif_out_data_block_t),cudaMemcpyDeviceToDevice);
-	cudaMemcpy((void *)resampler[i].gpu_out_buf + sizeof(vdif_out_data_block_t),(void *)resampler[i].gpu_B_1,sizeof(vdif_out_data_block_t),cudaMemcpyDeviceToDevice);
+	cudaMemcpy((void *)resampler[i].gpu_out_buf + sizeof(vdif_out_data_block_t),(void *)resampler[i].gpu_B_common,sizeof(vdif_out_data_block_t),cudaMemcpyDeviceToDevice);
 
 	// Output to next thread to mirror the input?:
 	//   * update metadata that describes the amount of data available

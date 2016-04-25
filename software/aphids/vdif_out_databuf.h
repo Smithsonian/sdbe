@@ -51,7 +51,9 @@ typedef struct vdif_out_header {
 // makes the timespan a single packet equivalent to that for the R2DBE 
 // data stream, i.e. 8us per packet. For 2bit samples over half the 
 // bandwidth (2 SWARM channels), the packet size is 4096 bytes.
-#define VDIF_OUT_PKT_DATA_SIZE 4096 // size in bytes
+// For 2bit samples over full bandwidth, the packet size is 8192 bytes 
+// (valid for SWARM rates of 10/11 and higher).
+#define VDIF_OUT_PKT_DATA_SIZE 8192 // size in bytes
 typedef struct vdif_out_data {
 	char data[VDIF_OUT_PKT_DATA_SIZE];
 } vdif_out_data_t;
@@ -76,8 +78,13 @@ typedef struct vdif_out_packet {
 //   *  13 B-engine frames (8/11 rate), 4096Byte output packet size, 
 //      2bit output samples: 4096 VDIF packets per B-engine group.
 //      13 x 128 x 32768 = 54525952 samples at 8/11 SWARM rate
-//      54525952 * 2048 / 2496 = 33554432 samples at R2DBE rate
+//      54525952 * 2048 / 3328 = 33554432 samples at R2DBE rate
 //      33554432 / (4096Bytes / 0.25samples-per-Byte) = 2048 packets
+//   *  65 B-engine frames (10/11 rate), 8192Byte output packet size,
+//      2bit output samples: 16384 VDIF packets per B-engine group.
+//      65 x 128 x 32768 = 272629760 samples at 10/11 SWARM rate
+//      272629760 * 4096 / 4160 = 268435456 samples at R2DBE rate
+//      268435456 / (8192Bytes / 0.25samples-per-Byte) = 8192 packets
 // This holds VDIF for single SWARM channel, so typicall need two of 
 // these (in parallel) for all the data
 //~ #define VDIF_OUT_PKTS_PER_BLOCK 8192 <<--- moved to sample_rates.h
