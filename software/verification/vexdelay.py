@@ -71,7 +71,7 @@ class ClockDef():
 		return "clock_early={0} : {1:7.3f} usec : {2} : {3} ;\r\n".format(
 					self.datetime_to_vextime(self.start),
 					self.early,
-					self.datetime_to_vextime(self.stop),
+					self.datetime_to_vextime(self.start),#<<--- second timestamp is epoch (zero-point solution), which in this case is exactly the same as the solution starting time. self.datetime_to_vextime(self.stop),
 					self.rate)
 	
 	def add_delay(self,delay):
