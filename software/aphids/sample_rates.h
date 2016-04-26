@@ -10,7 +10,7 @@
 
 // choose correct sample rate here
 #ifndef SWARM_RATE_FRAC
-#define SWARM_RATE_FRAC SWARM_RATE_FRAC_8_11
+#define SWARM_RATE_FRAC SWARM_RATE_FRAC_10_11
 #endif
 
 // rates
