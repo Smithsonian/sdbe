@@ -37,7 +37,10 @@ typedef struct vdif_out_header {
 		uint32_t dt:1;
 	} w3;
 	struct word4_out {
-		uint32_t eud5:24;
+		uint32_t pol:1; // 0 = L/X, 1 = R/Y
+		uint32_t bdc_sideband:1; // 0 = LSB, 1 = USB
+		uint32_t rx_sideband:1; // 0 = LSB, 1 = USB
+		uint32_t eud5:21;
 		uint32_t edv5:8;
 	} w4;
 	struct word5_out {

@@ -180,8 +180,12 @@ static void *run_method(hashpipe_thread_args_t * args) {
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w0.secs_inre = secs_inre;
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w1.ref_epoch = ref_epoch;
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w1.df_num_insec = df_num_insec;
-						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w3.threadID = jj;
+						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w3.threadID = 0;
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w3.bps = qs_buf.blocks[index_db_in].bit_depth - 1; // VDIF bits-per-sample adds 1
+						// mark polarization / bdc sideband / receiver sideband
+						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w4.pol = jj; // <--- March2016, Quad2; March 2016, Quad1 --> vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w4.pol = 1-jj;
+						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w4.bdc_sideband = 0; // <--- March2016, Quad2; March 2016, Quad1 --> vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w4.bdc_sideband = 1;
+						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w4.rx_sideband = 0; // <--- March2016, Quad2; March 2016, Quad1 --> vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w4.rx_sideband = 0;
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.edh_psn = edh_psn;
 					}
 					df_num_insec++;
