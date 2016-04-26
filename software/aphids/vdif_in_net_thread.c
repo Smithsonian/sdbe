@@ -18,6 +18,7 @@
 #include "sgcomm_net.h"
 
 #include "vdif_in_databuf.h"
+#include "vdif_2pac.h"
 
 // compilation options, for testing and debugging only
 #define PLATFORM_CPU 0
@@ -102,6 +103,11 @@ static void *run_method(
 	ssize_t n_received_vdif_packets = 0;
 	ssize_t index_received_vdif_packets = 0;
 	ssize_t N_ALL_VDIF_PACKETS = 0, N_SKIPPED_VDIF_PACKETS = 0, N_USED_VDIF_PACKETS = 0, N_INVALID_VDIF_PACKETS = 0;
+	
+	// extras for unpacking the 2pac data
+	void *tupac_received_vdif_packets = NULL;
+	ssize_t tupac_n_received_vdif_packets = 0;
+	ssize_t tupac_size = 0;
 	
 	// B-engine bookkeeping
 	int64_t b_first = -1;
@@ -235,7 +241,14 @@ static void *run_method(
 					//   rv is the expected number of frames
 					//   n_received_vdif_packets is the actual number of frames received
 					//   size is the size of frames received
-					rv = rx_frames(sockfd_data, &received_vdif_packets, &n_received_vdif_packets, &size);
+					rv = rx_frames(sockfd_data, &tupac_received_vdif_packets, &tupac_n_received_vdif_packets, &tupac_size);
+					// Received packets are 2pac format, unpack and set appropriate size & count parameters
+					size = (tupac_size - VTP_BYTE_SIZE)/2;
+					n_received_vdif_packets = 2*tupac_n_received_vdif_packets;
+					received_vdif_packets = malloc(n_received_vdif_packets*size); // this is alread freed below
+					unpack_2pac(received_vdif_packets,tupac_received_vdif_packets,tupac+n_received_vdif_packets);
+					// free the buffer with 2pac packets
+					free(tupac_received_vdif_packets);
 					fprintf(stdout,"%s:%s(%d): received %d packets\n",__FILE__,__FUNCTION__,__LINE__,(int)n_received_vdif_packets);
 					if (rv < 0) {
 						if (rv == ERR_NET_TIMEOUT) {
