@@ -25,7 +25,7 @@ THREADS += vdif_in_net_thread.o vdif_out_net_thread.o
 
 # external dependencies
 SGCOMM_DIR = ../sgcomm
-DEPS = sgcomm_net.o
+DEPS = sgcomm_net.o vdif_2pac.o
 
 # all objects
 OBJS = $(APHIDS) $(DATABUFS) $(THREADS) $(DEPS)

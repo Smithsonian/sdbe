@@ -246,7 +246,7 @@ static void *run_method(
 					size = (tupac_size - VTP_BYTE_SIZE)/2;
 					n_received_vdif_packets = 2*tupac_n_received_vdif_packets;
 					received_vdif_packets = malloc(n_received_vdif_packets*size); // this is alread freed below
-					unpack_2pac(received_vdif_packets,tupac_received_vdif_packets,tupac+n_received_vdif_packets);
+					unpack_2pac(received_vdif_packets,tupac_received_vdif_packets,tupac_n_received_vdif_packets);
 					// free the buffer with 2pac packets
 					free(tupac_received_vdif_packets);
 					fprintf(stdout,"%s:%s(%d): received %d packets\n",__FILE__,__FUNCTION__,__LINE__,(int)n_received_vdif_packets);
