@@ -242,14 +242,6 @@ static void *run_method(
 					//   n_received_vdif_packets is the actual number of frames received
 					//   size is the size of frames received
 					rv = rx_frames(sockfd_data, &tupac_received_vdif_packets, &tupac_n_received_vdif_packets, &tupac_size);
-					// Received packets are 2pac format, unpack and set appropriate size & count parameters
-					size = (tupac_size - VTP_BYTE_SIZE)/2;
-					n_received_vdif_packets = 2*tupac_n_received_vdif_packets;
-					received_vdif_packets = malloc(n_received_vdif_packets*size); // this is alread freed below
-					unpack_2pac(received_vdif_packets,tupac_received_vdif_packets,tupac_n_received_vdif_packets);
-					// free the buffer with 2pac packets
-					free(tupac_received_vdif_packets);
-					fprintf(stdout,"%s:%s(%d): received %d packets\n",__FILE__,__FUNCTION__,__LINE__,(int)n_received_vdif_packets);
 					if (rv < 0) {
 						if (rv == ERR_NET_TIMEOUT) {
 #ifndef STANDALONE_TEST
@@ -274,6 +266,15 @@ static void *run_method(
 						state = STATE_DONE;
 						break; // switch(state)
 					}
+					// Received packets are 2pac format, unpack and set appropriate size & count parameters
+					size = (tupac_size - VTP_BYTE_SIZE)/2;
+					n_received_vdif_packets = 2*tupac_n_received_vdif_packets;
+					received_vdif_packets = malloc(n_received_vdif_packets*size); // this is alread freed below
+					unpack_2pac(received_vdif_packets,tupac_received_vdif_packets,tupac_n_received_vdif_packets);
+					// free the buffer with 2pac packets
+					free(tupac_received_vdif_packets);
+					fprintf(stdout,"%s:%s(%d): received %d packets\n",__FILE__,__FUNCTION__,__LINE__,(int)n_received_vdif_packets);
+
 					if (size != sizeof(vdif_in_packet_t)) {
 						// free buffer, it does not contain useful data
 						free(received_vdif_packets);
