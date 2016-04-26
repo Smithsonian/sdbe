@@ -4,7 +4,7 @@
 
 void reset_2pac_size(vdif_2pac_packet_t *pkt) {
 	pkt->pkt1.header.w2.df_len = (pkt->pkt1.header.w2.df_len-1)/2;
-	pkt->pkt2.header.w2.df_len = (pkt->pkt1.header.w2.df_len-1)/2;
+	pkt->pkt2.header.w2.df_len = (pkt->pkt2.header.w2.df_len-1)/2;
 }
 
 void unpack_2pac(vdif_in_packet_t *dest, vdif_2pac_packet_t *src, int n_src) {
