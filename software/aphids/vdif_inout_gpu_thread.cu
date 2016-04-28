@@ -194,6 +194,12 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
   cudaMalloc((void **)&(resampler->gpu_B_common), (BENG_FRAMES_PER_GROUP-1)*BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS*sizeof(cufftComplex));	// 654950400B
   cudaMalloc((void **)&(resampler->gpu_out_buf), sizeof(vdif_out_data_group_t)); // 67108864B
 
+  /*
+   * The number of skipped channels is needed before setting parameters 
+   * of the third transform, so define it at the start.
+   */
+  resampler->skip_chan = (int)(150e6 / (SWARM_RATE / RESAMPLING_CHUNK_SIZE));
+
  /*
  * http://docs.nvidia.com/cuda/cufft/index.html#cufft-setup
  * iFFT transforming complex SWARM spectra into real time series.
@@ -230,8 +236,11 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
  *  required iterations.
  */
   resampler->fft_size[1] = RESAMPLING_CHUNK_SIZE;
-  inembed[0]  = RESAMPLING_CHUNK_SIZE; 
-  onembed[0]  = RESAMPLING_CHUNK_SIZE/2+1;
+  inembed[0]  = RESAMPLING_CHUNK_SIZE;
+  /* Add additional space so that skipped channels in the front can be 
+   * replaced with zeros at the back.
+   */
+  onembed[0]  = RESAMPLING_CHUNK_SIZE/2+1 + resampler->skip_chan;
   resampler->batch[1]  = RESAMPLING_BATCH;
   resampler->repeat[1] = (BENG_FRAMES_PER_GROUP-1)*2*BENG_CHANNELS_*BENG_SNAPSHOTS/RESAMPLING_CHUNK_SIZE/RESAMPLING_BATCH;
   if( cufftPlanMany(&(resampler->cufft_plan[1]), 1, &(resampler->fft_size[1]),
@@ -251,12 +260,11 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
 
  /*
  * FFT transforming complex spectrum into resampled time series simultaneously
- * trimming the SWARM guard bands (150 MHz -- 1174 MHz).
+ * trimming the SWARM guard bands (150 MHz -- ... MHz).
  * Input data has dimension EXPANSIONS_FACTOR
  */
-  resampler->skip_chan = (int)(150e6 / (SWARM_RATE / RESAMPLING_CHUNK_SIZE));
   resampler->fft_size[2] = RESAMPLING_CHUNK_SIZE*EXPANSION_FACTOR/DECIMATION_FACTOR;
-  inembed[0]  = RESAMPLING_CHUNK_SIZE/2+1; 
+  inembed[0]  = RESAMPLING_CHUNK_SIZE/2+1 + resampler->skip_chan; 
   onembed[0]  = RESAMPLING_CHUNK_SIZE*EXPANSION_FACTOR/DECIMATION_FACTOR;
   resampler->batch[2]    = resampler->batch[1];
   resampler->repeat[2]   = resampler->repeat[1];
@@ -575,6 +583,8 @@ int SwarmR2C(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx, int in
   float elapsedTime;
   cudaEventRecord(resampler->tic,resampler->stream);
 #endif // GPU_DEBUG
+  // Initialize output to zero, we're padding the spectrum at the high end
+  cudaMemset(resampler[i].gpu_B_common, 0,(BENG_FRAMES_PER_GROUP-1)*BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS*sizeof(cufftComplex));
   // transform timeseries into reconfigured spectra
   for (i = 0; i < resampler->repeat[1]; ++i) {
 	if (input_switch == SWITCH_SWARMR2C_IN_A0) {
