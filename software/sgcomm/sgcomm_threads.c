@@ -381,9 +381,9 @@ static void * _threaded_reader(void *arg) {
 	set_thread_state(st, CS_START, "%s:%s(%d):Thread started",__FILE__,__FUNCTION__,__LINE__);
 	
 	/* Make scatter-gather plan */
-	for (ii=0; ii<4; ii++) {
+	for (ii=0; ii<1; ii++) {//undo?03May2016:for (ii=0; ii<4; ii++) {
 		// Make separate plan for each module: msg->n_mod replaced with 1, offset (int *)msg->mod_list by one per plan
-		n_sg[ii] = make_sg_read_plan(&sgpln[ii], msg->pattern, msg->fmtstr, msg->mod_list+ii, 1, msg->disk_list, msg->n_disk); // REDO: n_sg = 1;
+		n_sg[ii] = make_sg_read_plan(&sgpln[ii], msg->pattern, msg->fmtstr, msg->mod_list+ii, msg->n_mod, msg->disk_list, msg->n_disk);//undo?03May2016:n_sg[ii] = make_sg_read_plan(&sgpln[ii], msg->pattern, msg->fmtstr, msg->mod_list+ii, 1, msg->disk_list, msg->n_disk); // REDO: n_sg = 1; // REDO: n_sg = 1;
 		if (n_sg[ii] <= 0)
 			set_thread_state(st, CS_ERROR, "%s:%s(%d):Read-mode SGPlan[%d] failed, returned %d",__FILE__,__FUNCTION__,__LINE__,ii,n_sg[ii]);
 		else {
@@ -409,7 +409,7 @@ static void * _threaded_reader(void *arg) {
 	}
 	
 	// reset the SGplan counter to last, it will increment and wrap to zero before first read
-	ii=3;
+	ii=0;//undo?03May2016:ii=3;
 	/* Continue working until stop condition */
 	while (get_thread_state(st, &ctrl) == 0 && !(ctrl >= CS_STOP)) {
 		/* If this thread is in a wait state, sleep and repeat check */
@@ -426,7 +426,7 @@ static void * _threaded_reader(void *arg) {
 		 * data again to shared buffer. */
 		if (n_frames == 0) {
 			// each read should be from the next SGplan
-			ii = (ii+1) % 4;
+			//undo?03May2016:ii = (ii+1) % 4;
 			n_frames = read_next_block_vdif_frames(sgpln[ii], &local_buf); // REDO: n_frames = dest->buf_size/dest->frame_size; n_frames_copied = 0; local_buf = (uint32_t *)malloc(n_frames*dest->frame_size*sizeof(uint32_t)); for (int ii=0; ii<n_frames; ii++) local_buf[ii] = (uint32_t)ii;
 			/* If number of frames read is non-positive, cannot continue
 			 * running */
@@ -506,7 +506,7 @@ static void * _threaded_reader(void *arg) {
 		local_buf = NULL;
 	}
 	
-	for (ii=0; ii<4; ii++) {
+	for (ii=0; ii<1; ii++) {//undo?03May2016:for (ii=0; ii<4; ii++) {
 		close_sg_read_plan(sgpln[ii]);
 	}
 	
