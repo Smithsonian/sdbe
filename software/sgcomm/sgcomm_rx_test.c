@@ -26,8 +26,8 @@
 #include "sgcomm_threads.h"
 
 #define MAIN_WAIT_PERIOD_US 500000
-#define SHARED_BUFFER_SIZE_TX (264*9468*32)
-#define SHARED_BUFFER_SIZE_RX (1032*2422*32)
+#define SHARED_BUFFER_SIZE_TX (530*8192*32)
+#define SHARED_BUFFER_SIZE_RX (2056*1215*32)
 
 #define BT_BUFFER_SIZE 0x100
 #define BT_FILENAME "crashreport.bt"
