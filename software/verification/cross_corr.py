@@ -146,8 +146,9 @@ def corr_FXt(x0,x1,fft_window_size=32768,search_range=None,search_avg=1):
 	"""
 	
 	#~ print "search_avg = {0}".format(search_avg)
-	extend_search = search_avg + (0 if search_range == None else (search_range.max() - search_range.min() + 1))
-	N_samples = fft_window_size*extend_search #min((2**int(floor(log2(x0.size))),2**int(floor(log2(x1.size)))))
+	#~ extend_search = search_avg + (0 if search_range == None else (search_range.max() - search_range.min() + 1))
+	#~ N_samples = fft_window_size*extend_search #min((2**int(floor(log2(x0.size))),2**int(floor(log2(x1.size)))))
+	N_samples = fft_window_size * (min((x0.size,x1.size))/fft_window_size)
 	#~ print "extend_search x fft_window_size = N_samples: {0} x {1} = {2}".format(extend_search,fft_window_size,N_samples)
 	X0 = fft(x0[:N_samples].reshape((N_samples/fft_window_size,fft_window_size)),axis=1)[:,:fft_window_size/2]
 	X1 = fft(x1[:N_samples].reshape((N_samples/fft_window_size,fft_window_size)),axis=1)[:,:fft_window_size/2]

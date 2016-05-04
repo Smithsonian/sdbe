@@ -14,25 +14,26 @@ from read_r2dbe_vdif import read_from_file
 from vdif import UTC
 
 # set various constants
-filename_delay = "delays.csv"
-path_dat = "./dat"
-path_r2dbe = "/home/ayoung/Work/obs/July2015/single-dish-data"
-path_out = "./out"
-path_sched = "/home/ayoung/Work/obs/July2015/sched"
-aphids_rate = 2048e6
+path_root = "/home/ayoung/Work/obs/March2016/"
+filename_delay = path_root + "delays_q{0}.csv"
+path_dat = path_root + "aphids-data/q{0}"
+path_r2dbe = path_root + "single-dish-data/q{0}"
+path_out = path_root + "verify-out/q{0}"
+path_sched = path_root + "sched"
+aphids_tag_list = [[],["12","34"],["34","12"]] # <-- [invalid, Quadrant1-list, Quadrant 2-list]
+aphids_rate = 4096e6
 r2dbe_rate = 4096e6
-swarm_rate = 2496e6
-sdbe_spv = 16384 # samples-per-vdif
+swarm_rate = 4160e6
+sdbe_spv = 32768 # samples-per-vdif
 r2dbe_spv = 32768 # samples-per-vdif
 sdbe_tpv = 8 # time-per-vdif, in microseconds
 freq_start = 150e6 # r2dbe downconversion
-freq_stop = 1174e6 # r2dbe downconversion
+freq_stop = 2048e6 # r2dbe downconversion
 
 def get_scan_flat_files(args):
-	copy_scan_cmd = "./copy_scan.sh {0.exp} {0.obs} {0.scan} {2} {0.pkt_size} {1}"
-	# add some extra packets so that if we need to skip a few at the start we still have enough
-	print copy_scan_cmd.format(args,path_dat,args.pkt_count+256)
-	return call(copy_scan_cmd.format(args,path_dat,args.pkt_count+256).split())
+	copy_scan_cmd = "./copy_scan.sh {0.exp} {0.obs} {0.scan} {0.swarm_quadrant} {2} {0.pkt_size} {1}".format(args,path_dat.format(args.swarm_quadrant),args.pkt_count)
+	print copy_scan_cmd
+	return call(copy_scan_cmd.split())
 
 def scan_to_datetime(args):
 	try:
@@ -90,6 +91,12 @@ def get_scan_meta_info(args):
 def scan_to_name(args):
 	return "{0.exp}_{0.obs}_{0.scan}".format(args)
 
+def scan_to_single_dish_filename(args):
+	return "{0.exp}_{0.obs}_{0.scan}_r2dbe_q{0.swarm_quadrant}.vdif".format(args); 
+
+def scan_to_aphids_filename(args):
+	return "{0.exp}_{0.obs}_{0.scan}_aphids-{1}_q{0.swarm_quadrant}.vdif".format(args,"{0}"); 
+
 if __name__ == "__main__":
 	from argparse import ArgumentParser
 	
@@ -100,12 +107,14 @@ if __name__ == "__main__":
 		"This script uses copy_scan.sh (locally) and setup_scan.sh (remotely), see documentation for these scripts for more information. "
 		"Scan flat-file name are composed as ${EXP}_${OBS}_${SCAN} with a suffix '_aphids-12' or '_aphids-34' where appropriate, and an extension '.vdif'."
 	)
-	parser.add_argument("-b", "--pkt-size", metavar="PKTSIZE", type=int, default=4128,
+	parser.add_argument("-b", "--pkt-size", metavar="PKTSIZE", type=int, default=8224,
 						help="size of VDIF packet in bytes (default=4128)")
 	parser.add_argument("-c", "--pkt-count", metavar="PKTCOUNT", type=int, default=1024,
 						help="number of VDIF packets to slice in each dataset (default=1024)")
 	parser.add_argument("-v", "--verbose", metavar="VERBOSITY", type=int, default=0,
 						help="set verbosity level to VERBOSITY, 0 = WARNING and higher, 1 = INFO and higher, 2 = DEBUG and higher (default=0)")
+	parser.add_argument("-q", "--swarm-quadrant", metavar="QUAD", type=int, default=0,
+						help="dataset from SWARM quadrant QUAD, should be 0, 1 or 2 (default=0, means don't group into quadrant)")
 	parser.add_argument("exp", metavar="EXP", type=str,
 						help="experiment name")
 	parser.add_argument("obs", metavar="OBS", type=str,
@@ -113,6 +122,18 @@ if __name__ == "__main__":
 	parser.add_argument("scan", metavar="SCAN", type=str,
 						help="scan name")
 	args = parser.parse_args()
+	
+	if args.swarm_quadrant == 0:
+		raise ValueError("This script now requires the SWARM quadrant to be specified, either '1' or '2'.")
+	
+	# set all quadrant-dependent values
+	path_dat = path_dat.format(args.swarm_quadrant)
+	path_r2dbe = path_r2dbe.format(args.swarm_quadrant)
+	filename_r2dbe = path_r2dbe + "/" + scan_to_single_dish_filename(args)
+	path_out = path_out.format(args.swarm_quadrant)
+	filename_delay = filename_delay.format(args.swarm_quadrant)
+	aphids_tag_list = aphids_tag_list[args.swarm_quadrant]
+	filename_aphids = path_dat + "/" + scan_to_aphids_filename(args)
 	
 	# global logger
 	logger = getLogger(__name__)
@@ -131,7 +152,6 @@ if __name__ == "__main__":
 	# set all constants
 	N_vdif_frames = args.pkt_count
 	sdbe_bpv = args.pkt_size
-	N_samples_po2 = int(log2(N_vdif_frames*r2dbe_spv))
 	logger.info("reading {0} VDIF frames".format(N_vdif_frames))
 	
 	# copy processed scan flat files
@@ -150,12 +170,12 @@ if __name__ == "__main__":
 	
 	# read APHIDS data
 	xa,vdifa = [None,None],[None,None]
-	tag_list = ["12","34"]
+	tag_list = aphids_tag_list
 	for tag in tag_list:
 		idx = tag_list.index(tag)
-		filename_aphids = "{2}/{0}_aphids-{1}.vdif".format(scan_to_name(args),tag,path_dat)
-		logger.debug("read APHIDS data from {0}".format(filename_aphids))
-		xa[idx],vdifa[idx] = read_from_file(filename_aphids,N_vdif_frames,0,
+		this_filename = filename_aphids.format(tag)
+		logger.debug("read APHIDS data from {0}".format(this_filename))
+		xa[idx],vdifa[idx] = read_from_file(this_filename,N_vdif_frames,0,
 									samples_per_window=sdbe_spv,frame_size_bytes=sdbe_bpv)
 		# fix sample rate
 		vdifa[idx].sample_rate = aphids_rate
@@ -173,9 +193,9 @@ if __name__ == "__main__":
 		# re-read APHIDS data
 		for tag in tag_list:
 			idx = tag_list.index(tag)
-			filename_aphids = "{2}/{0}_aphids-{1}.vdif".format(scan_to_name(args),tag,path_dat)
-			logger.debug("read APHIDS data from {0}".format(filename_aphids))
-			xa[idx],vdifa[idx] = read_from_file(filename_aphids,N_vdif_frames,N_vdif_offset_aphids,
+			this_filename = filename_aphids.format(tag)
+			logger.debug("read APHIDS data from {0}".format(this_filename))
+			xa[idx],vdifa[idx] = read_from_file(this_filename,N_vdif_frames,N_vdif_offset_aphids,
 										samples_per_window=sdbe_spv,frame_size_bytes=sdbe_bpv)
 			# fix sample rate
 			vdifa[idx].sample_rate = aphids_rate
@@ -184,17 +204,16 @@ if __name__ == "__main__":
 		logger.debug("negative offset, correct N_vdif_offset_r2dbe <-- {0}".format(N_vdif_offset_r2dbe))
 	
 	# read single dish data
-	filename_r2dbe = "{0}.vdif".format(scan_to_name(args).replace("Sm","Sn"),path_r2dbe)
-	xr,vdifr = read_from_file("{0}/{1}".format(path_r2dbe,filename_r2dbe),N_vdif_frames,N_vdif_offset_r2dbe)
+	logger.debug("read R2DBE data from {0}".format(filename_r2dbe))
+	xr,vdifr = read_from_file(filename_r2dbe,N_vdif_frames,N_vdif_offset_r2dbe)
 	logger.info("R2DBE VDIF timestamp is {0}".format(str(vdifr.datetime())))
 	
 	# do digital downconversion of single dish data
-	Xr = fft(xr[:2**N_samples_po2].reshape((2**N_samples_po2/r2dbe_spv,r2dbe_spv)))[:,:r2dbe_spv/2]
+	Xr = fft(xr.reshape((N_vdif_frames,r2dbe_spv)))[:,:r2dbe_spv/2]
 	fr = arange(0,r2dbe_rate/2,r2dbe_rate/r2dbe_spv)
 	idx_start = nonzero(fr >= freq_start)[0][0]
-	idx_stop = nonzero(fr >= freq_stop)[0][0]
-	Xr_sub = Xr[:,idx_start:idx_stop]
-	xr = irfft(Xr_sub,n=r2dbe_spv/2,axis=1).flatten()
+	Xr_sub = Xr[:,idx_start:]
+	xr = irfft(Xr_sub,n=sdbe_spv,axis=1).flatten()
 	
 	# cross-correlate
 	search_range = arange(-8,8)
@@ -245,7 +264,7 @@ if __name__ == "__main__":
 	
 	# write entry into delays file
 	try:
-		fh = open("{0}/{1}".format(path_out,filename_delay),"r+")
+		fh = open(filename_delay,"r+")
 		while True:
 			pos = fh.tell()
 			line = fh.readline()
@@ -257,7 +276,7 @@ if __name__ == "__main__":
 				fh.seek(pos,0)
 				break
 	except IOError:
-		fh = open("{0}/{1}".format(path_out,filename_delay),"w")
+		fh = open(filename_delay,"w")
 	fh.write("{0},{1},{2:10.6f}\r\n".format(meta.start_datetime.strftime("%Y-%m-%d %H:%M:%S"),meta.end_datetime.strftime("%Y-%m-%d %H:%M:%S"),aphids_clock_early/1e-6))
 	fh.close()
 	
