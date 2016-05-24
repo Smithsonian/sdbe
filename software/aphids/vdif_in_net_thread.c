@@ -45,6 +45,28 @@ vdif_in_databuf_t local_db_out;
 beng_group_vdif_buffer_t *bgv_buf_cpu[BENG_GROUPS_IN_BUFFER];
 beng_group_vdif_buffer_t *bgv_buf_gpu[BENG_GROUPS_IN_BUFFER];
 
+int compar_beng(const void *a, const void *b) {
+	#define COMPAR_INVA_NINVB -2147483647
+	#define COMPAR_NINVA_INVB 2147483647
+	#define COMPAR_INVA_INVB 0
+	vdif_in_packet_t *pkt_a = (vdif_in_packet_t *)a;
+	vdif_in_packet_t *pkt_b = (vdif_in_packet_t *)b;
+	// first check invalid flag
+	if (pkt_a->header.w0.invalid) {
+		if (!pkt_b->header.w0.invalid) {
+			return COMPAR_INVA_NINVB;
+		} else {
+			return COMPAR_INVA_INVB;
+		}
+	} else if (pkt_b->header.w0.invalid) {
+		return COMPAR_NINVA_INVB;
+	}
+	// then compare B-engine
+	int64_t beng_a = get_packet_b_count(&pkt_a->header);
+	int64_t beng_b = get_packet_b_count(&pkt_b->header);
+	return beng_a - beng_b;
+}
+
 static int init_method(
 #ifndef STANDALONE_TEST
 hashpipe_thread_args_t *args
@@ -102,7 +124,7 @@ static void *run_method(
 	void *received_vdif_packets = NULL;
 	ssize_t n_received_vdif_packets = 0;
 	ssize_t index_received_vdif_packets = 0;
-	ssize_t N_ALL_VDIF_PACKETS = 0, N_SKIPPED_VDIF_PACKETS = 0, N_USED_VDIF_PACKETS = 0, N_INVALID_VDIF_PACKETS = 0;
+	ssize_t N_ALL_VDIF_PACKETS = 0, N_SKIPPED_VDIF_PACKETS = 0, N_USED_VDIF_PACKETS = 0, N_INVALID_VDIF_PACKETS = 0, N_TOO_FAR_AHEAD_VDIF_PACKETS = 0;
 	
 	// extras for unpacking the 2pac data
 	void *tupac_received_vdif_packets = NULL;
@@ -258,7 +280,7 @@ static void *run_method(
 						state = STATE_ERROR;
 						break; // switch(state)
 					} else if (rv == 0) {
-						fprintf(stdout,"%s:%s(%d): VDIF done, received %ld packets in total (%ld skipped, %ld invalid, %ld used)\n",__FILE__,__FUNCTION__,__LINE__,(long int)N_ALL_VDIF_PACKETS,(long int)N_SKIPPED_VDIF_PACKETS,(long int)N_INVALID_VDIF_PACKETS,(long int)N_USED_VDIF_PACKETS);
+						fprintf(stdout,"%s:%s(%d): VDIF done, received %ld packets in total (%ld skipped, %ld invalid, %ld too-far-ahead, %ld used)\n",__FILE__,__FUNCTION__,__LINE__,(long int)N_ALL_VDIF_PACKETS,(long int)N_SKIPPED_VDIF_PACKETS,(long int)N_INVALID_VDIF_PACKETS,(long int)N_TOO_FAR_AHEAD_VDIF_PACKETS,(long int)N_USED_VDIF_PACKETS);
 						// this means end-of-transmission, reset state 
 						b_first = -1;
 						// should probably go to STATE_IDLE, but for now
@@ -274,6 +296,9 @@ static void *run_method(
 					// free the buffer with 2pac packets
 					free(tupac_received_vdif_packets);
 					fprintf(stdout,"%s:%s(%d): received %d packets\n",__FILE__,__FUNCTION__,__LINE__,(int)n_received_vdif_packets);
+					fprintf(stdout,"%s:%s(%d): sorting according to b-count...\n",__FILE__,__FUNCTION__,__LINE__);
+					qsort(received_vdif_packets,n_received_vdif_packets,sizeof(vdif_in_packet_t),compar_beng);
+					fprintf(stdout,"%s:%s(%d): ...sorting done.\n",__FILE__,__FUNCTION__,__LINE__);
 
 					if (size != sizeof(vdif_in_packet_t)) {
 						// free buffer, it does not contain useful data
@@ -284,19 +309,30 @@ static void *run_method(
 						break; // switch(state)
 					}
 					
+					// B-engine bookkeeping ////////////////////////////////////////////
+					// reset index into received packets
+					index_received_vdif_packets = 0;
 					// On first frame received, initialize all completion buffers
 					if (b_first == -1) {
-						b_first = get_packet_b_count((vdif_in_header_t *)received_vdif_packets);
-						//~ printf("b_first = %ld\n",b_first);
+						while (index_received_vdif_packets < n_received_vdif_packets) {
+							b_first = get_packet_b_count((vdif_in_header_t *)((vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets));
+							if (b_first < 0) {
+								index_received_vdif_packets++;
+							} else {
+								break;
+							}
+						}
+						if (b_first < 0) {
+							// if we're here and still no valid B-count then we've used up all packets, receive again before trying
+							continue; // main loop in run_method(...)
+						}
+						fprintf(stdout,"%s:%s(%d): b_first = %ld\n",__FILE__,__FUNCTION__,__LINE__,b_first);
 						// from there on range starts with end value for previous range
 						for (ii=0; ii<BENG_GROUPS_IN_BUFFER; ii++) {
 							// initialize output databuffer blocks
 							init_beng_group(local_db_out.bgc+ii, bgv_buf_cpu[ii], bgv_buf_gpu[ii], b_first+1 + (BENG_FRAMES_PER_GROUP-1)*ii);
 						}
 					}
-					// B-engine bookkeeping ////////////////////////////////////////////
-					// reset index into received packets
-					index_received_vdif_packets = 0;
 					//~ fprintf(stderr,"%s:%d: done receiving\n",__FILE__,__LINE__);
 					N_ALL_VDIF_PACKETS += n_received_vdif_packets;
 				}
@@ -318,6 +354,21 @@ static void *run_method(
 				 * we can continue locally to transfer data to shared 
 				 * buffer */
 				fprintf(stdout,"%s:%s(%d): index=%d <?< n_received=%d\n",__FILE__,__FUNCTION__,__LINE__,(int)index_received_vdif_packets,(int)n_received_vdif_packets);
+				int64_t abc_b_min = 0x3FFFFFFFFFFFFFFF;
+				int64_t abc_b_max = -1;
+				int64_t abc_b_tmp = 0;
+				for (int abc_=(int)index_received_vdif_packets; abc_ < (int)n_received_vdif_packets; abc_++) {
+					vdif_in_packet_t *abc_pkt = (vdif_in_packet_t *)received_vdif_packets + abc_;
+					abc_b_tmp = get_packet_b_count(&abc_pkt->header);
+					if (abc_b_tmp < abc_b_min) {
+						abc_b_min = abc_b_tmp;
+					}
+					if (abc_b_tmp > abc_b_max) {
+						abc_b_max = abc_b_tmp;
+					}
+				}
+				fprintf(stdout,"%s:%s(%d): b-count in range [%ld,%ld]\n",__FILE__,__FUNCTION__,__LINE__,abc_b_min,abc_b_max);
+				int abc_local_skip = 0;
 				while (index_received_vdif_packets < n_received_vdif_packets) {
 					// get index offset
 					index_offset = get_beng_group_index_offset(&local_db_out, index_db_out, (vdif_in_packet_t *)received_vdif_packets + index_received_vdif_packets);
@@ -327,6 +378,10 @@ static void *run_method(
 						}
 						if (index_offset == vidErrorPacketBeforeStartTime) {
 							N_SKIPPED_VDIF_PACKETS++;
+							abc_local_skip++;
+						}
+						if (index_offset == vidErrorPacketTooFarAheadToCare) {
+							N_TOO_FAR_AHEAD_VDIF_PACKETS++;
 						}
 						// throw away these frames, they are from before
 						// the range we're interested in
@@ -369,6 +424,7 @@ static void *run_method(
 						break; // while(index_received_vdif_packets < n_received_vdif_packets)
 					}
 				}
+				fprintf(stdout,"%s:%s(%d): local skip in b-count range [%ld,%ld] is %d\n",__FILE__,__FUNCTION__,__LINE__,abc_b_min,abc_b_max,abc_local_skip);
 				// check if we're done with received data
 				if (index_received_vdif_packets == n_received_vdif_packets) {
 					free(received_vdif_packets);

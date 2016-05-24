@@ -62,6 +62,9 @@ hashpipe_databuf_t *vdif_in_databuf_create(int instance_id, int databuf_id)
 
 int64_t get_packet_b_count(vdif_in_header_t *vdif_pkt_hdr) {
 	int64_t b = 0;
+	if (vdif_pkt_hdr->w0.invalid) {
+		return -1;
+	}
 	b |= ((int64_t)(vdif_pkt_hdr->beng.b_upper)&(int64_t)0x00000000FFFFFFFF) << 8;
 	b |= (int64_t)(vdif_pkt_hdr->beng.b_lower)&(int64_t)0x00000000000000FF;
 	return b;
@@ -110,6 +113,10 @@ int get_beng_group_index_offset(vdif_in_databuf_t *bgc_buf, int index_ref, vdif_
 		lu += BENG_FRAMES_PER_GROUP-1;
 	}
 	fprintf(stdout,"%s:%s(%d): b=%lu is outside search range [%lu,%lu]\n",__FILE__,__FUNCTION__,__LINE__,b,ll,lu);
+	#define BENG_OFFSET_TOO_LARGE_TO_CARE (BENG_FRAMES_PER_GROUP*1)
+	if (b > lu + BENG_OFFSET_TOO_LARGE_TO_CARE) {
+		return vidErrorPacketTooFarAheadToCare;
+	}
 	print_beng_over_vdif_header(&vdif_pkt->header, "BENG OFFSET TOO LARGE:");
 	return offset;
 }
