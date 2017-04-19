@@ -1,3 +1,4 @@
+# typically use: make clean all NET_HAMSTER=1 GPU_MULTI=1
 ifdef NET_HAMSTER
 NET_HAMSTER_ = -D NET_HAMSTER
 endif
