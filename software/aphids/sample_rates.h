@@ -43,6 +43,18 @@
 	// number of VDIF frames produced in output stream for one block of
 	// B-engine frame at input (see vdif_out_databuf.h for more info)
 	#define VDIF_OUT_PKTS_PER_BLOCK 8192
+#elif SWARM_RATE_FRAC == SWARM_RATE_FRAC_11_11
+	// THIS SET OF PARAMETERS WILL LIKELY OVERFLOW THE MEMORY ON THE GPU UNTIL SOME 
+	// CHANGES ARE MADE TO THE BATCH SIZES / BUFFER ARCHITECTURE.
+	// resampling factors
+	#define DECIMATION_FACTOR 143
+	#define EXPANSION_FACTOR 128
+	// time alignment, value still unconfirmed!!!!!
+	#define MAGIC_OFFSET_IN_BENG_FFT_WINDOWS (52) // see vdif_in_databuf.c for details
+	// number of VDIF frames produced in output stream for one block of
+	// B-engine frame at input (see vdif_out_databuf.h for more info)
+	// (DECIMATION_FACTOR*BENG_SNAPSHOTS*(2*BENG_CHANNELS_) * (EXPANSION_FACTOR/DECIMATION_FACTOR) / <samples-per-packet-out>
+	#define VDIF_OUT_PKTS_PER_BLOCK 16384
 #else
 	// invalid SWARM rate, error
 	#error "Invalid SWARM rate, aborting compilation"
