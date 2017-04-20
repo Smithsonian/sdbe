@@ -293,6 +293,8 @@ static void *run_method(
 					n_received_vdif_packets = 8*aightpac_n_received_vdif_packets;
 					received_vdif_packets = malloc(n_received_vdif_packets*size); // this is alread freed below
 					unpack_8pac(received_vdif_packets,aightpac_received_vdif_packets,aightpac_n_received_vdif_packets);
+					// rewrite headers according to old format
+					beng_reform_headers(received_vdif_packets,n_received_vdif_packets);
 					// free the buffer with 8pac packets
 					free(aightpac_received_vdif_packets);
 					fprintf(stdout,"%s:%s(%d): received %d packets\n",__FILE__,__FUNCTION__,__LINE__,(int)n_received_vdif_packets);
