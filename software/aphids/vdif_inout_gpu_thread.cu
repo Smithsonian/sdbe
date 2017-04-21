@@ -327,6 +327,16 @@ __device__ cufftComplex read_complex_sample(int32_t *samples_int)
  return make_cuFloatComplex(sample_real, sample_imag);
 }
 
+/*
+ * Read 2-bit value as int8_t and shift input data accordingly inplace.
+ */
+__device__ int8_t read_2bit_sample(int32_t *samples_int) {
+  int8_t sample;
+  sample = (*samples_int & 0x03) - 2;
+  *samples_int = (*samples_int) >> 2;
+  return sample;
+}
+
 /** @brief Parse VDIF frame and store B-engine frames in buffer
 Parses SWARM SDBE VDIF frames and stores de-quantized B-engine frames
 in two buffers (one for each time-stream).  Before use, the data
@@ -342,8 +352,8 @@ __global__ void vdif_to_beng(
 // int32_t *fid_out,
 // int32_t *cid_out,
 // int32_t *bcount_out,
- cufftComplex *beng_data_out_0,
- cufftComplex *beng_data_out_1,
+ int8_t *beng_data_out_0,
+ int8_t *beng_data_out_1,
 // int32_t *beng_frame_completion,
  int32_t num_vdif_frames,
  uint64_t b_zero){
@@ -378,6 +388,10 @@ __global__ void vdif_to_beng(
     idx_beng_data_out = ((cid>>1)*(2*SWARM_XENG_PARALLEL_CHAN) + (cid%2) + fid*2)*SWARM_N_FIDS;
     idx_beng_data_out += threadIdx.x*BENG_CHANNELS_;
     idx_beng_data_out += (bcount % BENG_BUFFER_IN_COUNTS)*BENG_SNAPSHOTS*BENG_CHANNELS_;
+    /* Output buffers reference int8_t data, and data for each channel 
+     * will occupy two fields, re+im.
+     */
+    idx_beng_data_out *= 2;
     /* idata increases by the number of int32_t handled simultaneously
      * by all x-threads. Each thread handles B-engine packet data 
      * for a single snapshot per iteration.
@@ -391,11 +405,28 @@ __global__ void vdif_to_beng(
        */
       samples_per_snapshot_half_0 = *(vdif_frame_start + VDIF_INT_SIZE_HEADER + idata + BENG_VDIF_INT_PER_SNAPSHOT*threadIdx.x);
       samples_per_snapshot_half_1 = *(vdif_frame_start + VDIF_INT_SIZE_HEADER + idata + BENG_VDIF_INT_PER_SNAPSHOT*threadIdx.x + 1);
+      /* 2-bit samples are stored in order:
+       *   byte0: d1_im d1_re d0_im d0_re
+       *   byte1: c1_im c1_re c0_im c0_re
+       *   byte2: b1_im b1_re b0_im b0_re
+       *   byte3: a1_im a1_re a0_im a0_re
+       *   byte4: h1_im h1_re h0_im h0_re
+       *   byte5: g1_im g1_re g0_im g0_re
+       *   byte6: f1_im f1_re f0_im f0_re
+       *   byte7: e1_im e1_re e0_im e0_re
+       * and each group of SWARM_XENG_PARALLEL_CHAN is [a b c d e f g h]
+       */
       for (isample=0; isample<SWARM_XENG_PARALLEL_CHAN/2; ++isample){
-        beng_data_out_1[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1))*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS] = read_complex_sample(&samples_per_snapshot_half_0);
-        beng_data_out_0[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1))*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS] = read_complex_sample(&samples_per_snapshot_half_0);
-        beng_data_out_1[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2)*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS] = read_complex_sample(&samples_per_snapshot_half_1);
-        beng_data_out_0[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2)*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS] = read_complex_sample(&samples_per_snapshot_half_1);
+        //    (pol X/Y)  (fid,cid,bcount)                       ( ordering {d..a}) (im/re)
+        beng_data_out_1[idx_beng_data_out + SWARM_XENG_PARALLEL_CHAN/2-(isample+1)    + 0] = read_2bit_sample(&samples_per_snapshot_half_0); // imaginary
+        beng_data_out_1[idx_beng_data_out + SWARM_XENG_PARALLEL_CHAN/2-(isample+1)    + 1] = read_2bit_sample(&samples_per_snapshot_half_0); // real
+        beng_data_out_0[idx_beng_data_out + SWARM_XENG_PARALLEL_CHAN/2-(isample+1)    + 0] = read_2bit_sample(&samples_per_snapshot_half_0); // imaginary
+        beng_data_out_0[idx_beng_data_out + SWARM_XENG_PARALLEL_CHAN/2-(isample+1)    + 1] = read_2bit_sample(&samples_per_snapshot_half_0); // real
+        //    (pol X/Y)  (fid,cid,bcount)                       ( ordering {h..e}) (im/re)
+        beng_data_out_1[idx_beng_data_out +   SWARM_XENG_PARALLEL_CHAN-(isample+1)    + 0] = read_2bit_sample(&samples_per_snapshot_half_1); // imaginary
+        beng_data_out_1[idx_beng_data_out +   SWARM_XENG_PARALLEL_CHAN-(isample+1)    + 1] = read_2bit_sample(&samples_per_snapshot_half_1); // real
+        beng_data_out_0[idx_beng_data_out +   SWARM_XENG_PARALLEL_CHAN-(isample+1)    + 0] = read_2bit_sample(&samples_per_snapshot_half_1); // imaginary
+        beng_data_out_0[idx_beng_data_out +   SWARM_XENG_PARALLEL_CHAN-(isample+1)    + 1] = read_2bit_sample(&samples_per_snapshot_half_1); // real
       }
       /* The next snapshot handled by this thread will increment
       * by the number of x-threads, so index into B-engine data
@@ -403,7 +434,7 @@ __global__ void vdif_to_beng(
       * consecutive snapshots:
       *   BENG_CHANNELS_ * sizeof(<buffer_type>)
       */
-      idx_beng_data_out += blockDim.x*BENG_CHANNELS_;
+      idx_beng_data_out += blockDim.x*2*BENG_CHANNELS_;
     } // for (idata=0; ...)
     // increment completion counter for this B-engine frame
     //old = atomicAdd(beng_frame_completion + ((bcount-bcount_offset) % BENG_BUFFER_IN_COUNTS), 1);
