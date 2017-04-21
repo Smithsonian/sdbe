@@ -371,17 +371,13 @@ __global__ void vdif_to_beng(
     cid = get_cid_from_vdif(vdif_frame_start);
     fid = get_fid_from_vdif(vdif_frame_start);
     bcount = (int32_t)(get_bcount_from_vdif(vdif_frame_start) - b_zero);
-    //cid_out[iframe + threadIdx.y + blockIdx.x*blockDim.y] = cid;
-    //fid_out[iframe + threadIdx.y + blockIdx.x*blockDim.y] = fid;
-    //bcount_out[iframe + threadIdx.y + blockIdx.x*blockDim.y] = bcount;
-    /* Reorder to have snapshots contiguous and consecutive channels
-     * separated by 128 snapshots times the number of B-engine frames
-     * in buffer. This means consecutive x-threads will handle consecutive snapshots.
+    /* Reorder to have consecutive channels for a single FFT window 
+     * adjacent in memory. No transpose is therefore needed to have the 
+     * IFFT operate on contiguous memory.
      */
-    idx_beng_data_out = SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid)*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS;
-    //idx_beng_data_out += ((bcount-bcount_offset) % BENG_BUFFER_IN_COUNTS)*BENG_SNAPSHOTS;
-    idx_beng_data_out += (bcount % BENG_BUFFER_IN_COUNTS)*BENG_SNAPSHOTS; // bcount_offset = 0
-    idx_beng_data_out += threadIdx.x;
+    idx_beng_data_out = ((cid>>1)*(2*SWARM_XENG_PARALLEL_CHAN) + (cid%2) + fid*2)*SWARM_N_FIDS;
+    idx_beng_data_out += threadIdx.x*BENG_CHANNELS_;
+    idx_beng_data_out += (bcount % BENG_BUFFER_IN_COUNTS)*BENG_SNAPSHOTS*BENG_CHANNELS_;
     /* idata increases by the number of int32_t handled simultaneously
      * by all x-threads. Each thread handles B-engine packet data 
      * for a single snapshot per iteration.
@@ -403,9 +399,11 @@ __global__ void vdif_to_beng(
       }
       /* The next snapshot handled by this thread will increment
       * by the number of x-threads, so index into B-engine data
-      * should increment by that number.
+      * should increment by that number multiplied by spacing between 
+      * consecutive snapshots:
+      *   BENG_CHANNELS_ * sizeof(<buffer_type>)
       */
-      idx_beng_data_out += blockDim.x;
+      idx_beng_data_out += blockDim.x*BENG_CHANNELS_;
     } // for (idata=0; ...)
     // increment completion counter for this B-engine frame
     //old = atomicAdd(beng_frame_completion + ((bcount-bcount_offset) % BENG_BUFFER_IN_COUNTS), 1);
