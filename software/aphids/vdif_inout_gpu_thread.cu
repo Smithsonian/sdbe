@@ -386,7 +386,6 @@ __global__ void vdif_to_beng(
      * IFFT operate on contiguous memory.
      */
     idx_beng_data_out = ((cid>>1)*(2*SWARM_XENG_PARALLEL_CHAN) + (cid%2) + fid*2)*SWARM_N_FIDS;
-    idx_beng_data_out += threadIdx.x*BENG_CHANNELS_;
     idx_beng_data_out += (bcount % BENG_BUFFER_IN_COUNTS)*BENG_SNAPSHOTS*BENG_CHANNELS_;
     /* Output buffers reference int8_t data, and data for each channel 
      * will occupy two fields, re+im.
@@ -397,9 +396,14 @@ __global__ void vdif_to_beng(
      * for a single snapshot per iteration.
      */
     for (idata=0; idata<VDIF_INT_SIZE_DATA; idata+=BENG_VDIF_INT_PER_SNAPSHOT*blockDim.x){
+      int this_snapshot;
+      // Calculate the snapshot number within the B-frame...
+      this_snapshot = idata/BENG_VDIF_INT_PER_SNAPSHOT + threadIdx.x;
+      // ...and add the [ 0..69 |--> 70..127 ] correction
+      this_snapshot = (this_snapshot + 58) % BENG_SNAPSHOTS;
       // add offset to snapshot for channels a-to-d
       int offset_snapshot_index_by;
-      offset_snapshot_index_by = -2 * (int)((idata + BENG_VDIF_INT_PER_SNAPSHOT*threadIdx.x) >= BENG_VDIF_INT_PER_SNAPSHOT*2);
+      offset_snapshot_index_by = -2 * (int)(this_snapshot > 1);
       /* Get sample data out of global memory. Offset from the 
        * VDIF frame start by the header, the number of snapshots
        * processed by the group of x-threads (idata), and the
@@ -431,6 +435,8 @@ __global__ void vdif_to_beng(
          */
         //          (a-to-d shift)
         this_idx += offset_snapshot_index_by*2*BENG_CHANNELS_;
+        // Adjust the index according to the snapshot number.
+        this_idx += this_snapshot*2*BENG_CHANNELS_;
         //    (pol X/Y)      (im/re)
         beng_data_out_1[this_idx + 0] = read_2bit_sample(&samples_per_snapshot_half_0); // imaginary
         beng_data_out_1[this_idx + 1] = read_2bit_sample(&samples_per_snapshot_half_0); // real
@@ -446,13 +452,6 @@ __global__ void vdif_to_beng(
         beng_data_out_0[this_idx + 0] = read_2bit_sample(&samples_per_snapshot_half_1); // imaginary
         beng_data_out_0[this_idx + 1] = read_2bit_sample(&samples_per_snapshot_half_1); // real
       }
-      /* The next snapshot handled by this thread will increment
-      * by the number of x-threads, so index into B-engine data
-      * should increment by that number multiplied by spacing between 
-      * consecutive snapshots:
-      *   BENG_CHANNELS_ * sizeof(<buffer_type>)
-      */
-      idx_beng_data_out += blockDim.x*2*BENG_CHANNELS_;
     } // for (idata=0; ...)
     // increment completion counter for this B-engine frame
     //old = atomicAdd(beng_frame_completion + ((bcount-bcount_offset) % BENG_BUFFER_IN_COUNTS), 1);
