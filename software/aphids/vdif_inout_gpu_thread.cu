@@ -397,6 +397,9 @@ __global__ void vdif_to_beng(
      * for a single snapshot per iteration.
      */
     for (idata=0; idata<VDIF_INT_SIZE_DATA; idata+=BENG_VDIF_INT_PER_SNAPSHOT*blockDim.x){
+      // add offset to snapshot for channels a-to-d
+      int offset_snapshot_index_by;
+      offset_snapshot_index_by = -2 * (int)((idata + BENG_VDIF_INT_PER_SNAPSHOT*threadIdx.x) >= BENG_VDIF_INT_PER_SNAPSHOT*2);
       /* Get sample data out of global memory. Offset from the 
        * VDIF frame start by the header, the number of snapshots
        * processed by the group of x-threads (idata), and the
@@ -417,16 +420,31 @@ __global__ void vdif_to_beng(
        * and each group of SWARM_XENG_PARALLEL_CHAN is [a b c d e f g h]
        */
       for (isample=0; isample<SWARM_XENG_PARALLEL_CHAN/2; ++isample){
-        //    (pol X/Y)  (fid,cid,bcount)                       ( ordering {d..a}) (im/re)
-        beng_data_out_1[idx_beng_data_out + SWARM_XENG_PARALLEL_CHAN/2-(isample+1)    + 0] = read_2bit_sample(&samples_per_snapshot_half_0); // imaginary
-        beng_data_out_1[idx_beng_data_out + SWARM_XENG_PARALLEL_CHAN/2-(isample+1)    + 1] = read_2bit_sample(&samples_per_snapshot_half_0); // real
-        beng_data_out_0[idx_beng_data_out + SWARM_XENG_PARALLEL_CHAN/2-(isample+1)    + 0] = read_2bit_sample(&samples_per_snapshot_half_0); // imaginary
-        beng_data_out_0[idx_beng_data_out + SWARM_XENG_PARALLEL_CHAN/2-(isample+1)    + 1] = read_2bit_sample(&samples_per_snapshot_half_0); // real
-        //    (pol X/Y)  (fid,cid,bcount)                       ( ordering {h..e}) (im/re)
-        beng_data_out_1[idx_beng_data_out +   SWARM_XENG_PARALLEL_CHAN-(isample+1)    + 0] = read_2bit_sample(&samples_per_snapshot_half_1); // imaginary
-        beng_data_out_1[idx_beng_data_out +   SWARM_XENG_PARALLEL_CHAN-(isample+1)    + 1] = read_2bit_sample(&samples_per_snapshot_half_1); // real
-        beng_data_out_0[idx_beng_data_out +   SWARM_XENG_PARALLEL_CHAN-(isample+1)    + 0] = read_2bit_sample(&samples_per_snapshot_half_1); // imaginary
-        beng_data_out_0[idx_beng_data_out +   SWARM_XENG_PARALLEL_CHAN-(isample+1)    + 1] = read_2bit_sample(&samples_per_snapshot_half_1); // real
+        int this_idx;
+        //          (fid,cid,bcount)                       ( ordering {d..a})
+        this_idx = idx_beng_data_out + SWARM_XENG_PARALLEL_CHAN/2-(isample+1);
+        /* Apply the a-to-d channel shift, the offset is given in
+         * snapshots, so the native shift size in the output buffer is
+         * by:
+         *   offset_snapshot_index_by*BENG_CHANNELS_ * sizeof(<buffer_type>)
+         * and for re+im int8_t, the final factor equals 2.
+         */
+        //          (a-to-d shift)
+        this_idx += offset_snapshot_index_by*2*BENG_CHANNELS_;
+        //    (pol X/Y)      (im/re)
+        beng_data_out_1[this_idx + 0] = read_2bit_sample(&samples_per_snapshot_half_0); // imaginary
+        beng_data_out_1[this_idx + 1] = read_2bit_sample(&samples_per_snapshot_half_0); // real
+        beng_data_out_0[this_idx + 0] = read_2bit_sample(&samples_per_snapshot_half_0); // imaginary
+        beng_data_out_0[this_idx + 1] = read_2bit_sample(&samples_per_snapshot_half_0); // real
+        //          (fid,cid,bcount)                     ( ordering {h..e})
+        this_idx = idx_beng_data_out + SWARM_XENG_PARALLEL_CHAN-(isample+1);
+        // no e-to-h shift
+        this_idx += 0;
+        //    (pol X/Y)       (im/re)
+        beng_data_out_1[this_idx + 0] = read_2bit_sample(&samples_per_snapshot_half_1); // imaginary
+        beng_data_out_1[this_idx + 1] = read_2bit_sample(&samples_per_snapshot_half_1); // real
+        beng_data_out_0[this_idx + 0] = read_2bit_sample(&samples_per_snapshot_half_1); // imaginary
+        beng_data_out_0[this_idx + 1] = read_2bit_sample(&samples_per_snapshot_half_1); // real
       }
       /* The next snapshot handled by this thread will increment
       * by the number of x-threads, so index into B-engine data
