@@ -10,7 +10,7 @@
 
 // choose correct sample rate here
 #ifndef SWARM_RATE_FRAC
-#define SWARM_RATE_FRAC SWARM_RATE_FRAC_10_11
+#define SWARM_RATE_FRAC SWARM_RATE_FRAC_11_11
 #endif
 
 // rates
@@ -60,12 +60,12 @@
 	#error "Invalid SWARM rate, aborting compilation"
 #endif
 
-// This defines how many B-eng frames' VDIF data we need to fill a 
-// complete DECIMATION_FACTOR. For uncorrupted SDBE data this will be
-// exactly equal to DECIMATION_FACTOR, but as of 18 Sept 2015 we still
-// need VDIF for one more B-engine frame in order to do the reordering.
-#define BENG_BUFFER_IN_COUNTS (DECIMATION_FACTOR+1) // will likey be replaced by BENG_FRAMES_PER_GROUP
-#define BENG_FRAMES_PER_GROUP BENG_BUFFER_IN_COUNTS // a copy of BENG_BUFFER_IN_COUNTS
+/* This defines how many B-frames are needed to fill a complete 
+ * DECIMATION_FACTOR. Since the data reordering can be described as a 
+ * circular shift of data within a single B-frame, the number of frames 
+ * is now exactly equal to the value of DECIMATION_FACTOR.
+ */
+#define BENG_FRAMES_PER_GROUP DECIMATION_FACTOR
 
 // Number of VDIF frames per second in output stream (not yet dependent
 // on the SWARM x/11 rate)
