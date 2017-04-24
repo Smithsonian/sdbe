@@ -519,6 +519,54 @@ __global__ void vdif_to_beng(
   } // for (iframe=0; ...)
 }
 
+/* Convert int8_t,int8_t spectral data to cufftComplex spectral data.
+ * Arguments:
+ * ----------
+ *   in_spec_start -- pointer to first sample of first spectrum in input
+ *   out_spec_start -- pointer to first sample of first spectrum in output
+ *   nspectra -- number of spectra in input to process
+ * Returns:
+ * --------
+ *   <void>
+ * Notes:
+ * ------
+ *   The input spectra are assumed to be written as imag,real,imag,real...
+ *   with each imag,real pair representing a single complex-valued spectral
+ *   sample written as two consecutive int8_t values.
+ *
+ *   An additional zero-valued channel is inserted in the output for each
+ *   spectrum at the half-sample-rate position as is required for the subsequent
+ *   C2R transform.
+ *
+ *   Call with 32 x-threads, 32 y-threads, 16 x-blocks = 16384 channels
+ *   = 1 spectrum per pass. So the loop is only over the number of spectra
+ *   to be processed.
+ */
+__global__ void beng_int8_to_cufftComplex(const int8_t * __restrict__ in_spec_start, cufftComplex *out_spec_start, int nspectra)
+{
+	// write single channel cufftComplex pair per thread
+	int idx_out = threadIdx.x + blockDim.x*threadIdx.y + blockIdx.x*blockDim.x*blockDim.y;
+	// read single channel int8_t,int8_t pair per thread
+	int idx_in = 2*(idx_out);
+	int ii;
+	int8_t im_in, re_in;
+	cufftComplex zz_out;
+	for (ii=0; ii<nspectra; ii++) {
+		// read imag,real and write cufftComplex
+		im_in = *(in_spec_start + idx_in);
+		re_in = *(in_spec_start + idx_in + 1);
+		zz_out = make_cuFloatComplex(re_in, im_in);
+		*(out_spec_start+idx_out) = zz_out;
+		/* Advance input pointer by a single spectrum, BENG_CHANNELS_ number
+		 * of channels at 2 x sizeof(int8_t) each
+		 */
+		idx_in += 2*BENG_CHANNELS_;
+		/* Advance output poniter by a single spectrum, BENG_CHANNELS number
+		 * of channels at 1 x sizeof(cufftComplex) each
+		 */
+		idx_out += BENG_CHANNELS;
+	}
+}
 
 /** @brief 2-bit quantization kernel
 
@@ -877,10 +925,19 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	//     processing state for each GPU
 	
 	for (iter=0; iter<RESAMPLE_BATCH_ITERATIONS; iter++) {
-		/* TODO: fully fluff data
-		 *   + update pointer to start of input data for this iter
-		 *   + call the __device__ method to fetch, fluff, fill
-		 */
+		// first zero output buffers
+		cudaMemset((void *)resampler[i].beng_fluffed_0, 0, RESAMPLE_BATCH_SNAPSHOTS*BENG_CHANNELS*sizeof(cufftComplex));
+		cudaMemset((void *)resampler[i].beng_fluffed_1, 0, RESAMPLE_BATCH_SNAPSHOTS*BENG_CHANNELS*sizeof(cufftComplex));
+		
+		// then inflate batch to cufftComplex
+		threads.x = 32; threads.y = 32; threads.z = 1;
+		blocks.x = 16, blocks.y = 1; blocks.z = 1;
+		beng_int8_to_cufftComplex<<<blocks,threads>>>(
+			resampler[i].beng_0 + iter*2*RESAMPLE_BATCH_SNAPSHOTS*BENG_CHANNELS_,
+			resampler[i].beng_fluffed_0, RESAMPLE_BATCH_SNAPSHOTS);
+		beng_int8_to_cufftComplex<<<blocks,threads>>>(
+			resampler[i].beng_1 + iter*2*RESAMPLE_BATCH_SNAPSHOTS*BENG_CHANNELS_,
+			resampler[i].beng_fluffed_1, RESAMPLE_BATCH_SNAPSHOTS);
 		
 		// transform SWARM spectra to time series
 		state = SwarmC2R(&(resampler[i]), &aphids_ctx);
