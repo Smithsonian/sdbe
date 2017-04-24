@@ -227,12 +227,12 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
   /* swarm_c2r_ifft_out_[01] will hold the output of the SwarmC2R
    * inverse Fourier transform. The total size requirement is:
    *     32768 -- number of real-valued samples [2*BENG_CHANNELS_]
-   *   x   143 -- snapshots per batch [RESAMPLE_BATCH_SNAPSHOTS]
+   *   x   143 -- snapshots per batch [FFT_BATCHES_SWARM_C2R]
    *   x     4 -- sizeof(cufftReal)
    *   = 18743296 bytes per polarization
    */
-  cudaMalloc((void **)&(resampler->swarm_c2r_ifft_out_0), RESAMPLE_BATCH_SNAPSHOTS*2*BENG_CHANNELS_*sizeof(cufftReal));
-  cudaMalloc((void **)&(resampler->swarm_c2r_ifft_out_1), RESAMPLE_BATCH_SNAPSHOTS*2*BENG_CHANNELS_*sizeof(cufftReal));
+  cudaMalloc((void **)&(resampler->swarm_c2r_ifft_out_0), FFT_BATCHES_SWARM_C2R*2*BENG_CHANNELS_*sizeof(cufftReal));
+  cudaMalloc((void **)&(resampler->swarm_c2r_ifft_out_1), FFT_BATCHES_SWARM_C2R*2*BENG_CHANNELS_*sizeof(cufftReal));
   /* swarm_r2c_fft_out_[01] will hold the output of the SwarmR2C
    * Fourier transform. The total size requirement is:
    *     18305 -- number of channels output [FFT_SIZE_SWARM_R2C/2 + 1]
