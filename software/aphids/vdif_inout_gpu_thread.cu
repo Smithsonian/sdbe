@@ -987,20 +987,16 @@ static void *run_method(hashpipe_thread_args_t * args) {
 		// quantize to 2-bits
 		threads.x = 16; threads.y = 32; threads.z = 1;
 		blocks.x = 512; blocks.y = 1; blocks.z = 1;
-		/* TODO: fix the gpu_out_buf pointer
-		 *   + calculate an offset into gpu_out_buf
-		 *   + do it for pol 0 and pol 1
-		 */
 		quantize2bit<<<blocks,threads>>>(
 			(float *) resampler[i].r2dbe_c2r_ifft_out_0, // input
-			(unsigned int*) resampler[i].gpu_out_buf,    // output
+			(unsigned int*) &(resampler[i].gpu_out_buf->chan[0].datas[iter*VDIF_OUT_PKTS_PER_BLOCK/RESAMPLE_BATCH_ITERATIONS]),    // output
 			FFT_BATCHES_R2DBE_C2R*FFT_SIZE_R2DBE_C2R,    // number of samples
 			resampler[i].quantizeThreshold_0,            // threshold
 			resampler[i].quantizeOffset_0                // offset
 		);
 		quantize2bit<<<blocks,threads>>>(
 			(float *) resampler[i].r2dbe_c2r_ifft_out_1, // input
-			(unsigned int*) resampler[i].gpu_out_buf,    // output
+			(unsigned int*) &(resampler[i].gpu_out_buf->chan[1].datas[iter*VDIF_OUT_PKTS_PER_BLOCK/RESAMPLE_BATCH_ITERATIONS]),    // output
 			FFT_BATCHES_R2DBE_C2R*FFT_SIZE_R2DBE_C2R,    // number of samples
 			resampler[i].quantizeThreshold_0,            // threshold
 			resampler[i].quantizeOffset_0                // offset
