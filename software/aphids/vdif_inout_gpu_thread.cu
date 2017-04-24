@@ -549,12 +549,12 @@ __global__ void beng_int8_to_cufftComplex(const int8_t * __restrict__ in_spec_st
 	// read single channel int8_t,int8_t pair per thread
 	int idx_in = 2*(idx_out);
 	int ii;
-	int8_t im_in, re_in;
+	float im_in, re_in;
 	cufftComplex zz_out;
 	for (ii=0; ii<nspectra; ii++) {
 		// read imag,real and write cufftComplex
-		im_in = *(in_spec_start + idx_in);
-		re_in = *(in_spec_start + idx_in + 1);
+		im_in = __int2float_rd(*(in_spec_start + idx_in));
+		re_in = __int2float_rd(*(in_spec_start + idx_in + 1));
 		zz_out = make_cuFloatComplex(re_in, im_in);
 		*(out_spec_start+idx_out) = zz_out;
 		/* Advance input pointer by a single spectrum, BENG_CHANNELS_ number
