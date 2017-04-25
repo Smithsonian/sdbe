@@ -209,7 +209,7 @@ void fill_vdif_header_template(vdif_in_header_t *vdif_hdr_copy, vdif_in_packet_t
 
 // Print human-readable representation of B-engine group completion
 void print_beng_group_completion(beng_group_completion_t *bgc, const char *tag) {
-	printf("%s{B-engine group: beng_group_vdif_packet_count=%d, bgv_buf_cpu=%p, bgv_buf_gpu=%p, .bfc[0..39].b = %ld .. %ld\n",
+	printf("%s{B-engine group: beng_group_vdif_packet_count=%d, bgv_buf_cpu=%p, bgv_buf_gpu=%p, .bfc[0..142].b = %ld .. %ld\n",
 			tag,bgc->beng_group_vdif_packet_count,bgc->bgv_buf_cpu,
 			bgc->bgv_buf_gpu, bgc->bfc[0].b, bgc->bfc[BENG_FRAMES_PER_GROUP-1].b);
 	//~ if (bgc->beng_group_vdif_packet_count < VDIF_PER_BENG_FRAME*BENG_FRAMES_PER_GROUP) {
