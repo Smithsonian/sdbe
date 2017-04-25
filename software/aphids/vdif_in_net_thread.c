@@ -289,7 +289,7 @@ static void *run_method(
 						break; // switch(state)
 					}
 					// Received packets are 8pac format, unpack and set appropriate size & count parameters
-					size = (aightpac_size - VTP_BYTE_SIZE)/8;
+					size = (aightpac_size - 7*VTP_BYTE_SIZE)/8;
 					n_received_vdif_packets = 8*aightpac_n_received_vdif_packets;
 					received_vdif_packets = malloc(n_received_vdif_packets*size); // this is alread freed below
 					unpack_8pac(received_vdif_packets,aightpac_received_vdif_packets,aightpac_n_received_vdif_packets);
