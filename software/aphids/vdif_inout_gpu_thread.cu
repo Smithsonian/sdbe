@@ -908,6 +908,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	vdif_to_beng<<<blocks,threads>>>((int32_t*) this_bgc.bgv_buf_gpu, 
 		resampler[i].beng_0, resampler[i].beng_1,
 		this_bgc.beng_group_vdif_packet_count,b_zero);
+	cudaDeviceSynchronize();
 	
 	// ... set the input buffer block free ...
 	hashpipe_databuf_set_free((hashpipe_databuf_t *)db_in, index_in);
@@ -935,18 +936,23 @@ static void *run_method(hashpipe_thread_args_t * args) {
 		beng_int8_to_cufftComplex<<<blocks,threads>>>(
 			resampler[i].beng_0 + iter*2*RESAMPLE_BATCH_SNAPSHOTS*BENG_CHANNELS_,
 			resampler[i].beng_fluffed_0, RESAMPLE_BATCH_SNAPSHOTS);
+		cudaDeviceSynchronize();
 		beng_int8_to_cufftComplex<<<blocks,threads>>>(
 			resampler[i].beng_1 + iter*2*RESAMPLE_BATCH_SNAPSHOTS*BENG_CHANNELS_,
 			resampler[i].beng_fluffed_1, RESAMPLE_BATCH_SNAPSHOTS);
+		cudaDeviceSynchronize();
 		
 		// transform SWARM spectra to time series
 		state = SwarmC2R(&(resampler[i]), &aphids_ctx);
+		cudaDeviceSynchronize();
 		
 		// transform SWARM time series to R2DBE compatible spectra
 		state = SwarmR2C(&(resampler[i]), &aphids_ctx);
+		cudaDeviceSynchronize();
 		
 		// transform R2DBE spectra to trimmed and resampled time series
 		state = R2dbeC2R(&(resampler[i]), &aphids_ctx);
+		cudaDeviceSynchronize();
 		
 		// calculate threshold for quantization
 #ifdef QUANTIZE_THRESHOLD_COMPUTE
@@ -983,6 +989,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 			}
 			fprintf(stdout,"%s:%s(%d): Quantization parameters set to {0:(%f,%f),1:(%f,%f)}\n",__FILE__,__FUNCTION__,__LINE__,resampler[i].quantizeOffset_0,resampler[i].quantizeThreshold_0,resampler[i].quantizeOffset_1,resampler[i].quantizeThreshold_1);
 		}
+		cudaDeviceSynchronize();
 #endif
 		// quantize to 2-bits
 		threads.x = 16; threads.y = 32; threads.z = 1;
@@ -994,6 +1001,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 			resampler[i].quantizeThreshold_0,            // threshold
 			resampler[i].quantizeOffset_0                // offset
 		);
+		cudaDeviceSynchronize();
 		quantize2bit<<<blocks,threads>>>(
 			(float *) resampler[i].r2dbe_c2r_ifft_out_1, // input
 			(unsigned int*) &(resampler[i].gpu_out_buf->chan[1].datas[iter*VDIF_OUT_PKTS_PER_BLOCK/RESAMPLE_BATCH_ITERATIONS]),    // output
@@ -1001,6 +1009,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 			resampler[i].quantizeThreshold_0,            // threshold
 			resampler[i].quantizeOffset_0                // offset
 		);
+		cudaDeviceSynchronize();
 	}
 
 	// Output to next thread to mirror the input?:
