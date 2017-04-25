@@ -157,7 +157,7 @@ void beng_reform_headers(vdif_in_packet_t *pkts, int npkts) {
 		pkt->header.beng.f = f;
 		pkt->header.beng.c = c;
 		pkt->header.beng.b_lower =  bframe_offset & 0x000000FF;
-		pkt->header.beng.b_upper = (bframe_offset & 0x7FFFFF00);
+		pkt->header.beng.b_upper = (bframe_offset & 0x7FFFFF00)>>8;
 		// update the previous timestamp and B-frame offset values
 		TPREV.sec = t_now.sec;
 		TPREV.clk = t_now.clk;
