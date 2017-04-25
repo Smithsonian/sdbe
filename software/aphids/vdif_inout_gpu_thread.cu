@@ -302,7 +302,7 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
     &(resampler->fft_size[1]),   // FFT size
     inembed,1,inembed[0],        // input: dims,dim0 stride,batch stride
     onembed,1,onembed[0],        // output: dims,dim0 stride,batch stride
-    CUFFT_C2R,                   // type of transform
+    CUFFT_R2C,                   // type of transform
     resampler->batch[1]);        // batches
   if (cufft_status != CUFFT_SUCCESS) {
     hashpipe_error(__FILE__, "CUFFT error: plan 1 creation failed");
