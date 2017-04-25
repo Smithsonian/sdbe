@@ -27,14 +27,6 @@ void _read_beng_timestamp(const newbeng_hdr_t *hdr, beng_timestamp_t *t) {
 #define SWARM_BFRAME_CLK 262144
 // FPGA clock count difference less than this will be considered negligible
 #define BFRAME_CLK_TOL 1024
-// Increment timestamp by a single B-engine frame
-void _beng_timestamp_increment(beng_timestamp_t *t) {
-	t->clk += SWARM_BFRAME_CLK;
-	if (t->clk > SWARM_CLK_PER_SEC) {
-		t->sec += 1;
-		t->clk = t->clk % SWARM_CLK_PER_SEC;
-	}
-}
 
 // Compare timestamps and return a value less than, equal to, or 
 // greater than zero corresponding to whether then is considered to be 
@@ -102,7 +94,7 @@ int64_t _beng_timestamp_offset_then_now(beng_timestamp_t *then, beng_timestamp_t
 	}
 	// increment start by SWARM_BFRAME_CLK until it is equivalent to end
 	while (_beng_timestamp_compare_then_now(&t_start,&t_end) < 0) {
-		_beng_timestamp_increment(&t_start);
+		beng_timestamp_increment(&t_start);
 		offset += (int64_t)step;
 		if (offset > MAX_COUNTABLE_BFRAME_OFFSET || -offset > MAX_COUNTABLE_BFRAME_OFFSET) {
 			break;
@@ -111,9 +103,26 @@ int64_t _beng_timestamp_offset_then_now(beng_timestamp_t *then, beng_timestamp_t
 	return offset;
 }
 
+/* This constant determines by how many B-engine frames the timestamp in
+ * B-engine data is off from real-time. A positive value means the
+ * corrected timestamp is achived with _beng_timestamp_increment;
+ * conversely, a negative value means the corrected timestamp is
+ * achieved with _beng_timestamp_decrement.
+ */
+#define SWARM_TIMESTAMP_OFF_BY_BENG -1
 void get_beng_t0(beng_timestamp_t *t) {
+	int ii;
 	t->sec = T0.sec;
 	t->clk = T0.clk;
+	if (SWARM_TIMESTAMP_OFF_BY_BENG < 0) {
+		for (ii=0; ii>SWARM_TIMESTAMP_OFF_BY_BENG; ii--) {
+			beng_timestamp_decrement(t);
+		}
+	} else if (SWARM_TIMESTAMP_OFF_BY_BENG > 0) {
+		for (ii=0; ii<SWARM_TIMESTAMP_OFF_BY_BENG; ii++) {
+			beng_timestamp_increment(t);
+		}
+	}
 }
 
 void get_beng_tprev(beng_timestamp_t *t) {
@@ -162,5 +171,25 @@ void beng_reform_headers(vdif_in_packet_t *pkts, int npkts) {
 		TPREV.sec = t_now.sec;
 		TPREV.clk = t_now.clk;
 		BPREV = bframe_offset;
+	}
+}
+
+float beng_timestamp_clk_to_float(beng_timestamp_t *t) {
+	return (float)(t->clk) / (float)SWARM_CLK_PER_SEC;
+}
+
+void beng_timestamp_increment(beng_timestamp_t *t) {
+	t->clk += SWARM_BFRAME_CLK;
+	if (t->clk > SWARM_CLK_PER_SEC) {
+		t->sec += 1;
+		t->clk = t->clk % SWARM_CLK_PER_SEC;
+	}
+}
+
+void beng_timestamp_decrement(beng_timestamp_t *t) {
+	t->clk -= SWARM_BFRAME_CLK;
+	if (t->clk < 0) {
+		t->sec -= 1;
+		t->clk = t->clk + SWARM_CLK_PER_SEC;
 	}
 }

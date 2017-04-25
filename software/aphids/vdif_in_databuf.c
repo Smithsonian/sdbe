@@ -1,8 +1,11 @@
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "hashpipe.h"
 #include "hashpipe_databuf.h"
+
+#include "beng_reform.h"
 
 #include "vdif_in_databuf.h"
 #include "vdif_in_databuf_cuda.h"
@@ -196,13 +199,16 @@ void fill_vdif_header_template(vdif_in_header_t *vdif_hdr_copy, vdif_in_packet_t
 	fprintf(stdout,"%s:%s(%d): n_skipped = %d, offset_beng_fft_windows = %d, offset_vdif_out_packets = %d\n",__FILE__,__FUNCTION__,__LINE__,n_skipped,offset_beng_fft_windows,offset_vdif_out_packets);
 	// do basic copy
 	memcpy(vdif_hdr_copy, vdif_pkt_ref, sizeof(vdif_in_header_t));
-	// then set timestamp information that should change
-	if (offset_vdif_out_packets < 0) {
-		vdif_hdr_copy->w0.secs_inre--;
-		vdif_hdr_copy->w1.df_num_insec = 125000+offset_vdif_out_packets;
-	} else {
-		vdif_hdr_copy->w1.df_num_insec = offset_vdif_out_packets;
-	}
+	beng_timestamp_t t0;
+	/* This is the timestamp in the first B-engine packet from disk.
+	 */
+	get_beng_t0(&t0);
+	/* The first /used/ B-engine packet will have a timestamp larger by
+	 * exactly one B-engine frame, so increment it.
+	 */
+	beng_timestamp_increment(&t0);
+	vdif_hdr_copy->w0.secs_inre = t0.sec;
+	vdif_hdr_copy->w1.df_num_insec = (int)round(125000.0*beng_timestamp_clk_to_float(&t0));
 	print_beng_over_vdif_header(vdif_hdr_copy,"TEMPLATE:");
 	// the rest of the header should be updated as needed at the output stage
 }
