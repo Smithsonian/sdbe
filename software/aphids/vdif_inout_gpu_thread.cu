@@ -500,6 +500,8 @@ __global__ void vdif_to_beng(
         this_idx = idx_beng_data_out + 2*(SWARM_XENG_PARALLEL_CHAN-(isample+1));
         // no e-to-h shift
         this_idx += 0;
+        // Adjust the index according to the snapshot number.
+        this_idx += this_snapshot*2*BENG_CHANNELS_;
         //    (pol X/Y)       (im/re)
         beng_data_out_1[this_idx + 0] = read_2bit_sample(&samples_per_snapshot_half_1); // imaginary
         beng_data_out_1[this_idx + 1] = read_2bit_sample(&samples_per_snapshot_half_1); // real
