@@ -480,7 +480,7 @@ __global__ void vdif_to_beng(
       for (isample=0; isample<SWARM_XENG_PARALLEL_CHAN/2; ++isample){
         int this_idx;
         //          (fid,cid,bcount)                       ( ordering {d..a})
-        this_idx = idx_beng_data_out + SWARM_XENG_PARALLEL_CHAN/2-(isample+1);
+        this_idx = idx_beng_data_out + 2*(SWARM_XENG_PARALLEL_CHAN/2-(isample+1));
         /* Apply the a-to-d channel shift, the offset is given in
          * snapshots, so the native shift size in the output buffer is
          * by:
@@ -497,7 +497,7 @@ __global__ void vdif_to_beng(
         beng_data_out_0[this_idx + 0] = read_2bit_sample(&samples_per_snapshot_half_0); // imaginary
         beng_data_out_0[this_idx + 1] = read_2bit_sample(&samples_per_snapshot_half_0); // real
         //          (fid,cid,bcount)                     ( ordering {h..e})
-        this_idx = idx_beng_data_out + SWARM_XENG_PARALLEL_CHAN-(isample+1);
+        this_idx = idx_beng_data_out + 2*(SWARM_XENG_PARALLEL_CHAN-(isample+1));
         // no e-to-h shift
         this_idx += 0;
         //    (pol X/Y)       (im/re)
