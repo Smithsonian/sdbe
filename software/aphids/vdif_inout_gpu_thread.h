@@ -6,10 +6,6 @@
 
 #include "sample_rates.h"
 
-// rates
-//~ #define SWARM_RATE 2496e6 <<--- definition moved to sample_rates.h
-#define R2DBE_RATE 4096e6
-
 // VDIF constants
 #define VDIF_BYTE_SIZE 1056 // VDIF frame size in bytes
 #define VDIF_BYTE_SIZE_HEADER 32 // VDIF header size in bytes
