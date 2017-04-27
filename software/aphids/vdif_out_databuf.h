@@ -8,6 +8,8 @@
 
 #include "sample_rates.h"
 
+#define SWARM_ZERO_DELAY_OFFSET_PICOSECONDS 3715791
+
 ////////////////////////////////////////////////////////////////////////
 // This set of structures are used for memory storage of normal VDIF on
 // the output side before transmitting.

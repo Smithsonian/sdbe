@@ -179,7 +179,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 					secs_inre = qs_buf.blocks[index_db_in].vdif_header_template.w0.secs_inre;
 					df_num_insec = qs_buf.blocks[index_db_in].vdif_header_template.w1.df_num_insec;
 					ref_epoch = qs_buf.blocks[index_db_in].vdif_header_template.w1.ref_epoch;
-					uint64_t skip_picoseconds = qs_buf.blocks[index_db_in].vdif_header_template.edh_psn + 3715791;
+					uint64_t skip_picoseconds = qs_buf.blocks[index_db_in].vdif_header_template.edh_psn + SWARM_ZERO_DELAY_OFFSET_PICOSECONDS;
 					int skip_samples = (int)floor((double)skip_picoseconds * R2DBE_RATE / 1e12);
 					/* Skip samples with int32_t resolution, calculation
 					 * is:
