@@ -197,7 +197,7 @@ void fill_vdif_header_template(vdif_in_header_t *vdif_hdr_copy, vdif_in_packet_t
 	offset_beng_fft_windows = MAGIC_OFFSET_IN_BENG_FFT_WINDOWS - 128*(VDIF_PER_BENG_FRAME-n_skipped)/VDIF_PER_BENG_FRAME;
 	offset_vdif_out_packets = (int)(MAGIC_BENG_FFT_WINDOW_IN_VDIF_OUT*offset_beng_fft_windows);
 	fprintf(stdout,"%s:%s(%d): n_skipped = %d, offset_beng_fft_windows = %d, offset_vdif_out_packets = %d\n",__FILE__,__FUNCTION__,__LINE__,n_skipped,offset_beng_fft_windows,offset_vdif_out_packets);
-	// do basic copy
+	// do basic copy, this also sets .invalid to 0 to flag valid template
 	memcpy(vdif_hdr_copy, vdif_pkt_ref, sizeof(vdif_in_header_t));
 	beng_timestamp_t t0;
 	/* This is the timestamp in the first B-engine packet from disk.
