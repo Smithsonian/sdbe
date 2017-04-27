@@ -193,10 +193,16 @@ static void *run_method(hashpipe_thread_args_t * args) {
 					 *   samples / bytes-per-sample / bytes-per-int32_t
 					 */
 					skip_int32_t = (int)floor((double)skip_samples / (8.0/(double)qs_buf.blocks[index_db_in].bit_depth) / (double)sizeof(int32_t));
+					/* Number of frames that can be filled with the data
+					 * left after skipping skip_int32_t worth of samples...
+					 */
+					num_usable_packets = (qs_buf.blocks[index_db_in].N_32bit_words_per_chan - skip_int32_t) / (VDIF_OUT_PKT_DATA_SIZE/4);
+					/* ...and after skipping skip_frames worth of frames
+					 */
+					num_usable_packets = num_usable_packets - skip_frames;
 					/* This is the number of int32_t which needs to be
 					 * carried over to the next pass per channel.
 					 */
-					num_usable_packets = (qs_buf.blocks[index_db_in].N_32bit_words_per_chan - skip_int32_t) / (VDIF_OUT_PKT_DATA_SIZE/4);
 					leftover_int32_t = qs_buf.blocks[index_db_in].N_32bit_words_per_chan - skip_int32_t - num_usable_packets*(VDIF_OUT_PKT_DATA_SIZE/4);
 					fprintf(stdout,"%s:%s(%d): Skip %d x int32_t (%d samples, %lu ps), carry over %d x int32_t\n",__FILE__,__FUNCTION__,__LINE__,skip_int32_t,skip_samples,skip_picoseconds,leftover_int32_t);
 					edh_psn = 0x01;
