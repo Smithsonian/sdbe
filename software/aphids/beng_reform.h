@@ -43,7 +43,7 @@ void get_beng_bprev(int64_t *b);
 void beng_reform_headers(vdif_in_packet_t *pkts, int npkts);
 
 // return fraction of second equivalent to clock value
-float beng_timestamp_clk_to_float(beng_timestamp_t *t);
+double beng_timestamp_clk_to_float(beng_timestamp_t *t);
 
 // Increment timestamp by a single B-engine frame
 void beng_timestamp_increment(beng_timestamp_t *t);

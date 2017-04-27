@@ -174,8 +174,8 @@ void beng_reform_headers(vdif_in_packet_t *pkts, int npkts) {
 	}
 }
 
-float beng_timestamp_clk_to_float(beng_timestamp_t *t) {
-	return (float)(t->clk) / (float)SWARM_CLK_PER_SEC;
+double beng_timestamp_clk_to_float(beng_timestamp_t *t) {
+	return (double)(t->clk) / (double)SWARM_CLK_PER_SEC;
 }
 
 void beng_timestamp_increment(beng_timestamp_t *t) {
