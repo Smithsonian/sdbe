@@ -174,10 +174,17 @@ static void *run_method(hashpipe_thread_args_t * args) {
 				qs_buf.blocks[index_db_in].vdg_buf_cpu = vdg_buf_cpu[qs_buf.blocks[index_db_in].gpu_id];
 				// update timestamp information if needed
 				int skip_int32_t = 0;
+				int skip_frames = 0;
 				int num_usable_packets = qs_buf.blocks[index_db_in].N_32bit_words_per_chan / (VDIF_OUT_PKT_DATA_SIZE/4);
 				if (!qs_buf.blocks[index_db_in].vdif_header_template.w0.invalid) {
 					secs_inre = qs_buf.blocks[index_db_in].vdif_header_template.w0.secs_inre;
 					df_num_insec = qs_buf.blocks[index_db_in].vdif_header_template.w1.df_num_insec;
+					if (df_num_insec > (VDIF_OUT_FRAMES_PER_SECOND-num_usable_packets)) {
+						skip_frames = VDIF_OUT_FRAMES_PER_SECOND-df_num_insec;
+						fprintf(stdout,"%s:%s(%d): Skip %d x frames to move %d+%d to %d+%d\n",__FILE__,__FUNCTION__,__LINE__,skip_frames,secs_inre,df_num_insec,secs_inre+1,0);
+						df_num_insec = 0;
+						secs_inre++;
+					}
 					ref_epoch = qs_buf.blocks[index_db_in].vdif_header_template.w1.ref_epoch;
 					uint64_t skip_picoseconds = qs_buf.blocks[index_db_in].vdif_header_template.edh_psn + SWARM_ZERO_DELAY_OFFSET_PICOSECONDS;
 					int skip_samples = (int)floor((double)skip_picoseconds * R2DBE_RATE / 1e12);
@@ -218,7 +225,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 					 * skip_int32_t is updated with each iteration, and
 					 * always zero after first iteration.
 					 */
-					void *src = (void *)vdg_buf_cpu[index_db_in]->chan[jj].datas + sizeof(int32_t)*skip_int32_t;
+					void *src = (void *)vdg_buf_cpu[index_db_in]->chan[jj].datas + sizeof(int32_t)*skip_int32_t + VDIF_OUT_PKT_DATA_SIZE*skip_frames;
 					/* If there is data left over from previous pass,
 					 * copy that into the time-aligned vdg buffer.
 					 */
