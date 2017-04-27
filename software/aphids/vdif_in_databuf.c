@@ -208,12 +208,14 @@ void fill_vdif_header_template(vdif_in_header_t *vdif_hdr_copy, vdif_in_packet_t
 	 */
 	beng_timestamp_increment(&t0);
 	vdif_hdr_copy->w0.secs_inre = t0.sec;
-	double frame_full, frame_floor, frame_frac;
+	double frame_full, frame_ceil, frame_frac;
 	frame_full = (VDIF_OUT_FRAMES_PER_SECOND * 1.0)*beng_timestamp_clk_to_float(&t0);
-	frame_floor = floor(frame_full);
-	frame_frac = frame_full - frame_floor;
-	fprintf(stdout,"%s:%s(%d): timestamp is late by %.6f us\n",__FILE__,__FUNCTION__,__LINE__,frame_frac*8.0);
-	vdif_hdr_copy->w1.df_num_insec = (int)frame_floor;
+	frame_ceil = ceil(frame_full);
+	frame_frac = frame_ceil - frame_full;
+	fprintf(stdout,"%s:%s(%d): timestamp is early by %.6f us\n",__FILE__,__FUNCTION__,__LINE__,frame_frac/VDIF_OUT_FRAMES_PER_SECOND*1e6);
+	vdif_hdr_copy->w1.df_num_insec = (int)frame_ceil;
+	// hide the number of picoseconds to skip at the start of data in this field
+	vdif_hdr_copy->edh_psn = (uint64_t)floor(frame_frac*(1e12/VDIF_OUT_FRAMES_PER_SECOND));
 	print_beng_over_vdif_header(vdif_hdr_copy,"TEMPLATE:");
 	// the rest of the header should be updated as needed at the output stage
 }
