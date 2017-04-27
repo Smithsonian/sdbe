@@ -231,7 +231,6 @@ static void *run_method(hashpipe_thread_args_t * args) {
 					 */
 					if (leftover_buffer[jj] != NULL) {
 						memcpy(dst,(void *)leftover_buffer[jj],leftover_int32_t*sizeof(int32_t));
-						fprintf(stdout,"%s:%s(%d): [TA] memcpy%da: %p -> %p x %lu\n",__FILE__,__FUNCTION__,__LINE__,jj,(void *)leftover_buffer[jj],dst,leftover_int32_t*sizeof(int32_t));
 						/* Offset destination to account for leftovers
 						 * from previous iteration already copied in.
 						 */
@@ -243,7 +242,6 @@ static void *run_method(hashpipe_thread_args_t * args) {
 					 * buffer for use in next iteration).
 					 */
 					memcpy(dst,src,(qs_buf.blocks[index_db_in].N_32bit_words_per_chan - skip_int32_t - leftover_int32_t)*sizeof(int32_t));
-					fprintf(stdout,"%s:%s(%d): [TA] memcpy%db: %p -> %p x %lu\n",__FILE__,__FUNCTION__,__LINE__,jj,src,dst,(qs_buf.blocks[index_db_in].N_32bit_words_per_chan - skip_int32_t - leftover_int32_t)*sizeof(int32_t));
 					/* Copy leftover data into buffer */
 					if (leftover_int32_t > 0) {
 						// allocate memory if none yet
@@ -256,7 +254,6 @@ static void *run_method(hashpipe_thread_args_t * args) {
 						 */
 						src = (void *)vdg_buf_cpu[index_db_in]->chan[jj].datas + (qs_buf.blocks[index_db_in].N_32bit_words_per_chan - leftover_int32_t)*sizeof(int32_t);
 						memcpy((void *)leftover_buffer[jj],src,leftover_int32_t*sizeof(int32_t));
-						fprintf(stdout,"%s:%s(%d): [TA] memcpy%dc: %p -> %p x %lu\n",__FILE__,__FUNCTION__,__LINE__,jj,src,(void *)leftover_buffer[jj],leftover_int32_t*sizeof(int32_t));
 					}
 				}
 				
