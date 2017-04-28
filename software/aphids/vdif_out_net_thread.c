@@ -5,6 +5,7 @@
 #include <syslog.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <time.h>
 
 #ifndef STANDALONE_TEST
 #include "aphids.h"
@@ -38,6 +39,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	int ii = 0;
 	int jj = 0;
 	int rv = 0;
+	time_t current_time;
 	
 	// aphids-on-hashpipe stuff
 	int index_db_in = 0;
@@ -287,7 +289,8 @@ static void *run_method(hashpipe_thread_args_t * args) {
 					edh_psn++;
 					// TODO: check for psn wrapping?
 				}
-				fprintf(stdout,"%s:%s(%d): VDIF time is %u.%u\n",__FILE__,__FUNCTION__,__LINE__,secs_inre,df_num_insec);
+				current_time = time(NULL);
+				fprintf(stdout,"%s:%s(%d): VDIF time is %u.%u ; current Epoch time is %d\n",__FILE__,__FUNCTION__,__LINE__,secs_inre,df_num_insec,(int)current_time);
 				
 				// TODO: send data over network to sgrx
 				//~ tx_tries = MAX_TX_TRIES;
