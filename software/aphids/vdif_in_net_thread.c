@@ -332,7 +332,7 @@ static void *run_method(
 						// from there on range starts with end value for previous range
 						for (ii=0; ii<BENG_GROUPS_IN_BUFFER; ii++) {
 							// initialize output databuffer blocks
-							init_beng_group(local_db_out.bgc+ii, bgv_buf_cpu[ii], bgv_buf_gpu[ii], b_first+1 + (BENG_FRAMES_PER_GROUP-1)*ii);
+							init_beng_group(local_db_out.bgc+ii, bgv_buf_cpu[ii], bgv_buf_gpu[ii], b_first+1 + BENG_FRAMES_PER_GROUP*ii);
 						}
 					}
 					//~ fprintf(stderr,"%s:%d: done receiving\n",__FILE__,__LINE__);
@@ -488,7 +488,7 @@ static void *run_method(
 							// update aphids statistics
 							aphids_update(&aphids_ctx);
 #endif // STANDALONE_TEST
-							init_beng_group(local_db_out.bgc+ii, bgv_buf_cpu[ii], bgv_buf_gpu[ii], local_db_out.bgc[(ii + BENG_GROUPS_IN_BUFFER - 1) % BENG_GROUPS_IN_BUFFER].bfc[BENG_FRAMES_PER_GROUP-1].b);
+							init_beng_group(local_db_out.bgc+ii, bgv_buf_cpu[ii], bgv_buf_gpu[ii], local_db_out.bgc[(ii + BENG_GROUPS_IN_BUFFER - 1) % BENG_GROUPS_IN_BUFFER].bfc[BENG_FRAMES_PER_GROUP-1].b + 1);
 							//~ print_beng_group_completion(local_db_out.bgc+ii, "");
 						}
 					} // for
