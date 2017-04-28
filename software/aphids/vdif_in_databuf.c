@@ -111,9 +111,8 @@ int get_beng_group_index_offset(vdif_in_databuf_t *bgc_buf, int index_ref, vdif_
 		if (b >= ll && b <= lu) {
 			return offset;
 		}
-		// due to overlap the increment is one less than frames/block
-		ll += BENG_FRAMES_PER_GROUP-1;
-		lu += BENG_FRAMES_PER_GROUP-1;
+		ll += BENG_FRAMES_PER_GROUP;
+		lu += BENG_FRAMES_PER_GROUP;
 	}
 	fprintf(stdout,"%s:%s(%d): b=%lu is outside search range [%lu,%lu]\n",__FILE__,__FUNCTION__,__LINE__,b,ll,lu);
 	#define BENG_OFFSET_TOO_LARGE_TO_CARE (BENG_FRAMES_PER_GROUP*1)
