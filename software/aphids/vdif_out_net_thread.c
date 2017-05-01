@@ -73,6 +73,11 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	int32_t leftover_int32_t = 0;
 	vdif_out_data_group_t *vdg_buf_cpu_time_aligned[VDIF_CHAN];
 	
+	// some time-alignment parameters
+	int skip_int32_t;
+	int skip_frames;
+	int num_usable_packets;
+	
 	// data transfer bookkeeping
 	int start_copy = 0;
 	char copy_in_progress_flag = 0;
@@ -175,9 +180,9 @@ static void *run_method(hashpipe_thread_args_t * args) {
 				// set local parameters in qs_buf.blocks, mainly local buffer
 				qs_buf.blocks[index_db_in].vdg_buf_cpu = vdg_buf_cpu[qs_buf.blocks[index_db_in].gpu_id];
 				// update timestamp information if needed
-				int skip_int32_t = 0;
-				int skip_frames = 0;
-				int num_usable_packets = qs_buf.blocks[index_db_in].N_32bit_words_per_chan / (VDIF_OUT_PKT_DATA_SIZE/4);
+				skip_int32_t = 0;
+				skip_frames = 0;
+				num_usable_packets = qs_buf.blocks[index_db_in].N_32bit_words_per_chan / (VDIF_OUT_PKT_DATA_SIZE/4);
 				if (!qs_buf.blocks[index_db_in].vdif_header_template.w0.invalid) {
 					secs_inre = qs_buf.blocks[index_db_in].vdif_header_template.w0.secs_inre;
 					df_num_insec = qs_buf.blocks[index_db_in].vdif_header_template.w1.df_num_insec;
