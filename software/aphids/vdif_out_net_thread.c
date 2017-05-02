@@ -210,7 +210,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 					/* This is the number of int32_t which needs to be
 					 * carried over to the next pass per channel.
 					 */
-					leftover_int32_t = qs_buf.blocks[index_db_in].N_32bit_words_per_chan - skip_int32_t - num_usable_packets*(VDIF_OUT_PKT_DATA_SIZE/4);
+					leftover_int32_t = qs_buf.blocks[index_db_in].N_32bit_words_per_chan - skip_int32_t - num_usable_packets*(VDIF_OUT_PKT_DATA_SIZE/4) - skip_frames*(VDIF_OUT_PKT_DATA_SIZE/4);
 					fprintf(stdout,"%s:%s(%d): Skip %d x int32_t (%d samples, %lu ps), carry over %d x int32_t\n",__FILE__,__FUNCTION__,__LINE__,skip_int32_t,skip_samples,skip_picoseconds,leftover_int32_t);
 					edh_psn = 0x01;
 					fprintf(stdout,"%s:%s(%d): initial timestamp is %u@%u.%u (psn = %lu)\n",__FILE__,__FUNCTION__,__LINE__,ref_epoch,secs_inre,df_num_insec,edh_psn);
