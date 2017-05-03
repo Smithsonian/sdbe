@@ -151,14 +151,28 @@ void beng_reform_headers(vdif_in_packet_t *pkts, int npkts) {
 	for (ii=0; ii<npkts; ii++) {
 		// point to next packet
 		pkt = pkts+ii;
+		// ignore invalid packets
+		if (pkt->header.w0.invalid) {
+			continue;
+		}
 		// get pointer to header, as new format
 		hdr = (newbeng_hdr_t *)&(pkt->header.beng);
 		// read the timestamp
 		_read_beng_timestamp(hdr,&t_now);
 		// count B-frame offset since previous packet...
 		bframe_offset = _beng_timestamp_offset_then_now(&TPREV,&t_now);
-		// ...and add it to B-frame offset of previous packet
-		bframe_offset += BPREV;
+		if (bframe_offset > MAX_COUNTABLE_BFRAME_OFFSET || bframe_offset < -MAX_COUNTABLE_BFRAME_OFFSET) {
+			// ...if beyond maximum countable, just mark packet invalid
+			pkt->header.w0.invalid = 1;
+			bframe_offset = -1;
+		} else {
+			// ...and add it to B-frame offset of previous packet
+			bframe_offset += BPREV;
+			// update the previous timestamp and B-frame offset values
+			TPREV.sec = t_now.sec;
+			TPREV.clk = t_now.clk;
+			BPREV = bframe_offset;
+		}
 		// read FID, CID
 		c = hdr->c;
 		f = hdr->f;
@@ -167,10 +181,6 @@ void beng_reform_headers(vdif_in_packet_t *pkts, int npkts) {
 		pkt->header.beng.c = c;
 		pkt->header.beng.b_lower =  bframe_offset & 0x000000FF;
 		pkt->header.beng.b_upper = (bframe_offset & 0x7FFFFF00)>>8;
-		// update the previous timestamp and B-frame offset values
-		TPREV.sec = t_now.sec;
-		TPREV.clk = t_now.clk;
-		BPREV = bframe_offset;
 	}
 }
 
