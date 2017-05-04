@@ -363,8 +363,9 @@ int _destroy_writer_msg(void *type_msg) {
 }
 
 static void * _threaded_reader(void *arg) {
-	int n_sg; // number of scatter gather files
-	SGPlan *sgpln; // SGPlan for reading data
+	int ii; // general counter
+	int n_sg[4]; // number of scatter gather files
+	SGPlan *sgpln[4]; // SGPlan for reading data
 	uint32_t *local_buf = NULL; // local reader buffer
 	int n_frames = 0; // number of frames available in buffer
 	int n_frames_copied = 0; // number of frames copied from local to shared buffer
@@ -380,21 +381,24 @@ static void * _threaded_reader(void *arg) {
 	set_thread_state(st, CS_START, "%s:%s(%d):Thread started",__FILE__,__FUNCTION__,__LINE__);
 	
 	/* Make scatter-gather plan */
-	n_sg = make_sg_read_plan(&sgpln, msg->pattern, msg->fmtstr, msg->mod_list, msg->n_mod, msg->disk_list, msg->n_disk); // REDO: n_sg = 1;
-	if (n_sg <= 0)
-		set_thread_state(st, CS_ERROR, "%s:%s(%d):Read-mode SGPlan failed, returned %d",__FILE__,__FUNCTION__,__LINE__,n_sg);
-	else {
-		log_message(RL_INFO,"%s:%s(%d):Read-mode SGPlan created from %d files",__FILE__,__FUNCTION__,__LINE__,n_sg);
-		
-		/* From scatter-gather plan we can set frame size */
-		if (obtain_data_lock(dest) == 0) {
-			dest->frame_size = sgpln->sgprt[0].sgi->pkt_size/sizeof(uint32_t); // REDO: dest->frame_size = 1;
-			if (release_data_lock(dest) != 0)
-				set_thread_state(st, CS_ERROR, "%s:%s(%d):Cannot release shared buffer",__FILE__,__FUNCTION__,__LINE__);
-		} else
-			set_thread_state(st, CS_ERROR, "%s:%s(%d):Cannot access shared buffer",__FILE__,__FUNCTION__,__LINE__);
-		
-		log_message(RL_INFO,"%s:%s(%d):Frame size set to %u x sizeof(uint32_t)",__FILE__,__FUNCTION__,__LINE__,dest->frame_size);
+	for (ii=0; ii<1; ii++) {//undo?03May2016:for (ii=0; ii<4; ii++) {
+		// Make separate plan for each module: msg->n_mod replaced with 1, offset (int *)msg->mod_list by one per plan
+		n_sg[ii] = make_sg_read_plan(&sgpln[ii], msg->pattern, msg->fmtstr, msg->mod_list+ii, msg->n_mod, msg->disk_list, msg->n_disk);//undo?03May2016:n_sg[ii] = make_sg_read_plan(&sgpln[ii], msg->pattern, msg->fmtstr, msg->mod_list+ii, 1, msg->disk_list, msg->n_disk); // REDO: n_sg = 1; // REDO: n_sg = 1;
+		if (n_sg[ii] <= 0)
+			set_thread_state(st, CS_ERROR, "%s:%s(%d):Read-mode SGPlan[%d] failed, returned %d",__FILE__,__FUNCTION__,__LINE__,ii,n_sg[ii]);
+		else {
+			log_message(RL_INFO,"%s:%s(%d):Read-mode SGPlan[%d] created from %d files",__FILE__,__FUNCTION__,__LINE__,ii,n_sg[ii]);
+			
+			/* From scatter-gather plan we can set frame size */
+			if (obtain_data_lock(dest) == 0) {
+				dest->frame_size = sgpln[ii]->sgprt[0].sgi->pkt_size/sizeof(uint32_t); // REDO: dest->frame_size = 1;
+				if (release_data_lock(dest) != 0)
+					set_thread_state(st, CS_ERROR, "%s:%s(%d):Cannot release shared buffer",__FILE__,__FUNCTION__,__LINE__);
+			} else
+				set_thread_state(st, CS_ERROR, "%s:%s(%d):Cannot access shared buffer",__FILE__,__FUNCTION__,__LINE__);
+			
+			log_message(RL_INFO,"%s:%s(%d):Frame size set to %u x sizeof(uint32_t)",__FILE__,__FUNCTION__,__LINE__,dest->frame_size);
+		}
 	}
 	
 	/* Set this thread entering infinite loop section */
@@ -404,6 +408,8 @@ static void * _threaded_reader(void *arg) {
 		log_message(RL_DEBUG,"%s:%s(%d):Thread set to enter loop",__FILE__,__FUNCTION__,__LINE__);
 	}
 	
+	// reset the SGplan counter to last, it will increment and wrap to zero before first read
+	ii=0;//undo?03May2016:ii=3;
 	/* Continue working until stop condition */
 	while (get_thread_state(st, &ctrl) == 0 && !(ctrl >= CS_STOP)) {
 		/* If this thread is in a wait state, sleep and repeat check */
@@ -419,7 +425,9 @@ static void * _threaded_reader(void *arg) {
 		 * once-off sleep for one wait period before attempting to pass
 		 * data again to shared buffer. */
 		if (n_frames == 0) {
-			n_frames = read_next_block_vdif_frames(sgpln, &local_buf); // REDO: n_frames = dest->buf_size/dest->frame_size; n_frames_copied = 0; local_buf = (uint32_t *)malloc(n_frames*dest->frame_size*sizeof(uint32_t)); for (int ii=0; ii<n_frames; ii++) local_buf[ii] = (uint32_t)ii;
+			// each read should be from the next SGplan
+			//undo?03May2016:ii = (ii+1) % 4;
+			n_frames = read_next_block_vdif_frames(sgpln[ii], &local_buf); // REDO: n_frames = dest->buf_size/dest->frame_size; n_frames_copied = 0; local_buf = (uint32_t *)malloc(n_frames*dest->frame_size*sizeof(uint32_t)); for (int ii=0; ii<n_frames; ii++) local_buf[ii] = (uint32_t)ii;
 			/* If number of frames read is non-positive, cannot continue
 			 * running */
 			if (n_frames < 0) {
@@ -498,7 +506,9 @@ static void * _threaded_reader(void *arg) {
 		local_buf = NULL;
 	}
 	
-	close_sg_read_plan(sgpln);
+	for (ii=0; ii<1; ii++) {//undo?03May2016:for (ii=0; ii<4; ii++) {
+		close_sg_read_plan(sgpln[ii]);
+	}
 	
 	set_thread_state(st, CS_DONE,"%s:%s(%d):Thread is done",__FILE__,__FUNCTION__,__LINE__);
 	return NULL;

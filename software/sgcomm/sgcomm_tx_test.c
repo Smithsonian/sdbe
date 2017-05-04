@@ -19,8 +19,8 @@
 #include "sgcomm_threads.h"
 
 #define MAIN_WAIT_PERIOD_US 500000
-#define SHARED_BUFFER_SIZE_TX (264*1000*32)
-#define SHARED_BUFFER_SIZE_RX (264*1000*32)
+#define SHARED_BUFFER_SIZE_TX (530*8192*32)
+#define SHARED_BUFFER_SIZE_RX (530*8192*32)
 
 /* Master thread */
 sgcomm_thread st_main = {

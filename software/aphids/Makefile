@@ -1,3 +1,4 @@
+# typically use: make clean all NET_HAMSTER=1 GPU_MULTI=1
 ifdef NET_HAMSTER
 NET_HAMSTER_ = -D NET_HAMSTER
 endif
@@ -25,7 +26,7 @@ THREADS += vdif_in_net_thread.o vdif_out_net_thread.o
 
 # external dependencies
 SGCOMM_DIR = ../sgcomm
-DEPS = sgcomm_net.o
+DEPS = sgcomm_net.o vdif_8pac.o beng_reform.o
 
 # all objects
 OBJS = $(APHIDS) $(DATABUFS) $(THREADS) $(DEPS)

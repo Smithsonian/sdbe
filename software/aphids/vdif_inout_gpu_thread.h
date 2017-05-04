@@ -6,10 +6,6 @@
 
 #include "sample_rates.h"
 
-// rates
-//~ #define SWARM_RATE 2496e6 <<--- definition moved to sample_rates.h
-#define R2DBE_RATE 4096e6
-
 // VDIF constants
 #define VDIF_BYTE_SIZE 1056 // VDIF frame size in bytes
 #define VDIF_BYTE_SIZE_HEADER 32 // VDIF header size in bytes
@@ -24,21 +20,40 @@
 #define BENG_CHANNELS_ 16384
 #define BENG_CHANNELS (BENG_CHANNELS_+1) // number of channels PLUS added sample-rate/2 component for the complex-to-real inverse transform
 #define BENG_SNAPSHOTS 128
-//~ #define BENG_BUFFER_IN_COUNTS 40 // will likey be replaced by BENG_FRAMES_PER_GROUP <<--- definition moved to sample_rates.h
 #define SWARM_N_FIDS 8
 #define SWARM_XENG_PARALLEL_CHAN 8
 
-#define UNPACKED_BENG_CHANNELS 16400
+//////////////////////// Resampling ////////////////////////////////////
+/* Number of snapshots to batch process at a time, should be an integer
+ * multiple of DECIMATION_FACTOR and smaller than
+ * BENG_SNAPSHOTS*BENG_FRAMES_PER_GROUP.
+ */
+#define RESAMPLE_BATCH_SNAPSHOTS DECIMATION_FACTOR
+// number of iterations needed to process entire B
+#define RESAMPLE_BATCH_ITERATIONS (BENG_FRAMES_PER_GROUP * BENG_SNAPSHOTS / RESAMPLE_BATCH_SNAPSHOTS)
+// SWARM_C2R FFT size
+#define FFT_SIZE_SWARM_C2R 2*BENG_CHANNELS_
+// SWARM_C2R FFT batches
+#define FFT_BATCHES_SWARM_C2R RESAMPLE_BATCH_SNAPSHOTS
+/* The resampling FFT+IFFT pair should do at least a DECIMATION_FACTOR-
+ * sized FFT and EXPANSION_FACTOR-sized IFFT. Increase the FFT sizes by
+ * the factor FFT_SIZE_SCALE. This value has to be a multiple of 32,
+ * since that will ensure that an integer number of MHz channels can be
+ * peeled off on either sides to reduce the SWARM full rate to the R2DBE
+ * full rate.
+ */
+#define FFT_SIZE_SWARM_R2C_R2DBE_C2R_SCALE 256
+// SWARM_R2C FFT size
+#define FFT_SIZE_SWARM_R2C (DECIMATION_FACTOR*FFT_SIZE_SWARM_R2C_R2DBE_C2R_SCALE)
+// SWARM_R2C FFT batches
+#define FFT_BATCHES_SWARM_R2C (RESAMPLE_BATCH_SNAPSHOTS * (2*BENG_CHANNELS_) / FFT_SIZE_SWARM_R2C)
+// R2DBE_C2R IFFT size
+#define FFT_SIZE_R2DBE_C2R (EXPANSION_FACTOR*FFT_SIZE_SWARM_R2C_R2DBE_C2R_SCALE)
+// R2DBE_C2R IFFT batches, should be equal to FFT_BATCHES_SWARM_R2C
+#define FFT_BATCHES_R2DBE_C2R FFT_BATCHES_SWARM_R2C
 
 //output
 #define OUTPUT_MAX_VALUE_MASK 3 // ((int)pow((double) 2,OUTPUT_BITS_PER_SAMPLE) - 1)
-
-// Resampling factors
-// Note that you need to check this plan.
-//~ #define DECIMATION_FACTOR 39  <<--- definition moved to sample_rates.h
-//~ #define EXPANSION_FACTOR 32  <<--- definition moved to sample_rates.h
-#define RESAMPLING_CHUNK_SIZE (DECIMATION_FACTOR * 512)
-#define RESAMPLING_BATCH 512
 
 // VDIF packed B-engine packet
 #define BENG_VDIF_HDR_0_OFFSET_INT 4 // b1 b2 b3 b4

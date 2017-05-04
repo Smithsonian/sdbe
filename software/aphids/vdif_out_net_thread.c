@@ -1,7 +1,11 @@
+#include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <syslog.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <time.h>
 
 #ifndef STANDALONE_TEST
 #include "aphids.h"
@@ -35,6 +39,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	int ii = 0;
 	int jj = 0;
 	int rv = 0;
+	time_t current_time;
 	
 	// aphids-on-hashpipe stuff
 	int index_db_in = 0;
@@ -62,6 +67,16 @@ static void *run_method(hashpipe_thread_args_t * args) {
 		ref_epoch, // fixed value
 		secs_inre; // incrementing counter
 	uint64_t edh_psn;
+	
+	// buffer leftover data for sub-VDIF-packet time-alignment
+	int32_t *leftover_buffer[VDIF_CHAN];
+	int32_t leftover_int32_t = 0;
+	vdif_out_data_group_t *vdg_buf_cpu_time_aligned[VDIF_CHAN];
+	
+	// some time-alignment parameters
+	int skip_int32_t;
+	int skip_frames;
+	int num_usable_packets;
 	
 	// data transfer bookkeeping
 	int start_copy = 0;
@@ -125,6 +140,17 @@ static void *run_method(hashpipe_thread_args_t * args) {
 				secs_inre = 0;
 				edh_psn = (uint64_t)0xffffffffffffffff;
 				
+				// initialize time-alignment  buffers
+				for (jj=0; jj<VDIF_CHAN; jj++) {
+					leftover_buffer[jj] = NULL;
+					vdg_buf_cpu_time_aligned[jj] = (vdif_out_data_group_t *)malloc(sizeof(vdif_out_data_group_t));
+					if (vdg_buf_cpu_time_aligned[jj] == NULL) {
+						fprintf(stdout,"[TA] cannot allocate vdg_buf_cpu_time_aligned\n");
+					} else {
+						fprintf(stdout,"[TA] vdg_buf_cpu_time_aligned[%d] = %p\n",jj,vdg_buf_cpu_time_aligned[jj]);
+					}
+				}
+				
 				// and set our next state
 				state = STATE_PROCESS;
 			} // case STATE_IDLE
@@ -154,10 +180,38 @@ static void *run_method(hashpipe_thread_args_t * args) {
 				// set local parameters in qs_buf.blocks, mainly local buffer
 				qs_buf.blocks[index_db_in].vdg_buf_cpu = vdg_buf_cpu[qs_buf.blocks[index_db_in].gpu_id];
 				// update timestamp information if needed
+				skip_int32_t = 0;
+				skip_frames = 0;
+				num_usable_packets = qs_buf.blocks[index_db_in].N_32bit_words_per_chan / (VDIF_OUT_PKT_DATA_SIZE/4);
 				if (!qs_buf.blocks[index_db_in].vdif_header_template.w0.invalid) {
 					secs_inre = qs_buf.blocks[index_db_in].vdif_header_template.w0.secs_inre;
 					df_num_insec = qs_buf.blocks[index_db_in].vdif_header_template.w1.df_num_insec;
+					if (df_num_insec > (VDIF_OUT_FRAMES_PER_SECOND-num_usable_packets)) {
+						skip_frames = VDIF_OUT_FRAMES_PER_SECOND-df_num_insec;
+						fprintf(stdout,"%s:%s(%d): Skip %d x frames to move %d+%d to %d+%d\n",__FILE__,__FUNCTION__,__LINE__,skip_frames,secs_inre,df_num_insec,secs_inre+1,0);
+						df_num_insec = 0;
+						secs_inre++;
+					}
 					ref_epoch = qs_buf.blocks[index_db_in].vdif_header_template.w1.ref_epoch;
+					uint64_t skip_picoseconds = qs_buf.blocks[index_db_in].vdif_header_template.edh_psn + SWARM_ZERO_DELAY_OFFSET_PICOSECONDS;
+					int skip_samples = (int)floor((double)skip_picoseconds * R2DBE_RATE / 1e12);
+					/* Skip samples with int32_t resolution, calculation
+					 * is:
+					 *   samples / bytes-per-sample / bytes-per-int32_t
+					 */
+					skip_int32_t = (int)floor((double)skip_samples / (8.0/(double)qs_buf.blocks[index_db_in].bit_depth) / (double)sizeof(int32_t));
+					/* Number of frames that can be filled with the data
+					 * left after skipping skip_int32_t worth of samples...
+					 */
+					num_usable_packets = (qs_buf.blocks[index_db_in].N_32bit_words_per_chan - skip_int32_t) / (VDIF_OUT_PKT_DATA_SIZE/4);
+					/* ...and after skipping skip_frames worth of frames
+					 */
+					num_usable_packets = num_usable_packets - skip_frames;
+					/* This is the number of int32_t which needs to be
+					 * carried over to the next pass per channel.
+					 */
+					leftover_int32_t = qs_buf.blocks[index_db_in].N_32bit_words_per_chan - skip_int32_t - num_usable_packets*(VDIF_OUT_PKT_DATA_SIZE/4) - skip_frames*(VDIF_OUT_PKT_DATA_SIZE/4);
+					fprintf(stdout,"%s:%s(%d): Skip %d x int32_t (%d samples, %lu ps), carry over %d x int32_t\n",__FILE__,__FUNCTION__,__LINE__,skip_int32_t,skip_samples,skip_picoseconds,leftover_int32_t);
 					edh_psn = 0x01;
 					fprintf(stdout,"%s:%s(%d): initial timestamp is %u@%u.%u (psn = %lu)\n",__FILE__,__FUNCTION__,__LINE__,ref_epoch,secs_inre,df_num_insec,edh_psn);
 				}
@@ -173,15 +227,63 @@ static void *run_method(hashpipe_thread_args_t * args) {
 				
 				fprintf(stdout,"%s:%s(%d): input buffer %d free\n",__FILE__,__FUNCTION__,__LINE__,index_db_in);
 				
+				// copy data to time-aligned vdg buffer
+				for (jj=0; jj<VDIF_CHAN; jj++) {
+					/* Destination is usually the start of the time-
+					 * aligned vdg buffer.
+					 */
+					void *dst = (void *)(vdg_buf_cpu_time_aligned[jj]->chan[jj].datas);
+					/* Source is the newly received vdg data offset by
+					 * skip_int32_t x sizeof(int32_t). Note that
+					 * skip_int32_t is updated with each iteration, and
+					 * always zero after first iteration.
+					 */
+					void *src = (void *)vdg_buf_cpu[index_db_in]->chan[jj].datas + sizeof(int32_t)*skip_int32_t + VDIF_OUT_PKT_DATA_SIZE*skip_frames;
+					/* If there is data left over from previous pass,
+					 * copy that into the time-aligned vdg buffer.
+					 */
+					if (leftover_buffer[jj] != NULL) {
+						memcpy(dst,(void *)leftover_buffer[jj],leftover_int32_t*sizeof(int32_t));
+						/* Offset destination to account for leftovers
+						 * from previous iteration already copied in.
+						 */
+						dst += leftover_int32_t*sizeof(int32_t);
+					}
+					/* Now copy newly received data, the copy size is
+					 * total received int32_t minus skipped (discarded
+					 * at start of input) minus leftover (copied to
+					 * buffer for use in next iteration).
+					 */
+					memcpy(dst,src,(qs_buf.blocks[index_db_in].N_32bit_words_per_chan - skip_int32_t - leftover_int32_t)*sizeof(int32_t));
+					/* Copy leftover data into buffer */
+					if (leftover_int32_t > 0) {
+						// allocate memory if none yet
+						if (leftover_buffer[jj] == NULL) {
+							leftover_buffer[jj] = (int32_t *)malloc(leftover_int32_t*sizeof(int32_t));
+						}
+						/* Source for the copy is leftover number of
+						 * int32_t less than the total number of int32_t
+						 * at the input.
+						 */
+						src = (void *)vdg_buf_cpu[index_db_in]->chan[jj].datas + (qs_buf.blocks[index_db_in].N_32bit_words_per_chan - leftover_int32_t)*sizeof(int32_t);
+						memcpy((void *)leftover_buffer[jj],src,leftover_int32_t*sizeof(int32_t));
+					}
+				}
+				
+				fprintf(stdout,"%s:%s(%d): [TA]: %d / %d usable packets\n",__FILE__,__FUNCTION__,__LINE__,num_usable_packets,qs_buf.blocks[index_db_in].N_32bit_words_per_chan / (VDIF_OUT_PKT_DATA_SIZE/4));
 				// copy VDIF data to VDIF packet memory, update headers
-				for (ii=0; (ii+1)*(VDIF_OUT_PKT_DATA_SIZE/4)<=qs_buf.blocks[index_db_in].N_32bit_words_per_chan; ii++) {
+				for (ii=0; ii<num_usable_packets; ii++) {
 					for (jj=0; jj<VDIF_CHAN; jj++) {
-						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].data = vdg_buf_cpu[index_db_in]->chan[jj].datas[ii];
+						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].data = vdg_buf_cpu_time_aligned[jj]->chan[jj].datas[ii];
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w0.secs_inre = secs_inre;
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w1.ref_epoch = ref_epoch;
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w1.df_num_insec = df_num_insec;
-						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w3.threadID = jj;
+						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w3.threadID = 0;
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w3.bps = qs_buf.blocks[index_db_in].bit_depth - 1; // VDIF bits-per-sample adds 1
+						// mark polarization / bdc sideband / receiver sideband
+						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w4.pol = jj;
+						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w4.bdc_sideband = 0; // <--- Apr2017, Quad2; Apr2017, Quad3 --> vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w4.bdc_sideband = 1;
+						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w4.rx_sideband = 1;
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.edh_psn = edh_psn;
 					}
 					df_num_insec++;
@@ -192,7 +294,8 @@ static void *run_method(hashpipe_thread_args_t * args) {
 					edh_psn++;
 					// TODO: check for psn wrapping?
 				}
-				fprintf(stdout,"VDIF time is %u.%u\n",secs_inre,df_num_insec);
+				current_time = time(NULL);
+				fprintf(stdout,"%s:%s(%d): VDIF time is %u.%u ; current Epoch time is %d\n",__FILE__,__FUNCTION__,__LINE__,secs_inre,df_num_insec,(int)current_time);
 				
 				// TODO: send data over network to sgrx
 				//~ tx_tries = MAX_TX_TRIES;
@@ -200,7 +303,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 					// TODO: check number of frames received at other end
 					// against the total number of frames to be sent.
 				for (ii=0; ii<VDIF_CHAN; ii++) {
-					frames_sent[ii] = tx_frames(sockfd[ii], (void *)&(vpg_buf_cpu[index_db_in]->chan[ii]), VDIF_OUT_PKTS_PER_BLOCK, sizeof(vdif_out_packet_t));
+					frames_sent[ii] = tx_frames(sockfd[ii], (void *)&(vpg_buf_cpu[index_db_in]->chan[ii]), num_usable_packets, sizeof(vdif_out_packet_t));
 					fprintf(stdout,"%s:%s(%d): tx_frames on sockfd[%d] returned %d\n",__FILE__,__FUNCTION__,__LINE__,ii,frames_sent[ii]);
 					if (frames_sent[ii] < 0) {
 						frames_sent[ii] = 0;
@@ -246,6 +349,16 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	aphids_set(&aphids_ctx,"status:net","connection closed");
 	// destroy aphids context and exit
 	aphids_destroy(&aphids_ctx);
+	
+	// clean up time-alignment buffers
+	for (jj=0; jj<VDIF_CHAN; jj++){
+		if (leftover_buffer[jj] != NULL) {
+			free(leftover_buffer[jj]);
+		}
+		if (vdg_buf_cpu_time_aligned[jj] != NULL) {
+			free(vdg_buf_cpu_time_aligned[jj]);
+		}
+	}
 	
 	return NULL;
 }

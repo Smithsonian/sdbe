@@ -14,7 +14,8 @@
 
 typedef enum {
 	vidErrorPacketInvalid = -1,
-	vidErrorPacketBeforeStartTime = -2
+	vidErrorPacketBeforeStartTime = -2,
+	vidErrorPacketTooFarAheadToCare = -3
 } vdif_in_databuf_error_t;
 
 ////////////////////////////////////////////////////////////////////////
@@ -161,7 +162,8 @@ hashpipe_databuf_t *vdif_in_databuf_create(int instance_id, int databuf_id);
 //   vdif_pkt_hdr -- Pointer to memory where VDIF header is located
 // Return:
 // -------
-//   The B-engine counter value embedded in the VDIF header
+//   The B-engine counter value embedded in the VDIF header, or -1 if
+//   the packet is flagged as containing invalid data.
 // Notes:
 // ------
 //   The returned value is int64_t, which is large enough to store

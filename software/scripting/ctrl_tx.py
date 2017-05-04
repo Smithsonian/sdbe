@@ -5,17 +5,19 @@ from glob import glob
 from os import environ
 from os.path import basename, splitext
 from redis import StrictRedis
-from signal import SIGINT
+from signal import signal, SIGINT
 from subprocess import Popen
 from threading import Event, Lock, Thread
 from time import sleep
 
 from ctrl_shared import *
 
+PATH_LAST_DIR="data"
+
 class ListenerTX(Thread):
 	chan_list = [CHAN_GLOBAL, CHAN_TX]
 	SGTX_CMD = "./sgtx {0}.vdif {1} {2} {3}"
-	SGTX_FMT_STR = "/mnt/disks/%u/%u/swarm/%s"
+	SGTX_FMT_STR = "/mnt/disks/%u/%u/{0}/%s".format(PATH_LAST_DIR)
 	SGTX_IP_ADDR = "192.168.10.10"
 	SGTX_PORT = "12345"
 	
@@ -95,8 +97,10 @@ class ListenerTX(Thread):
 			with open("stderr.log_tx.{0}".format(sgtx_pattern), "w") as stderr:
 				self._process = Popen(self.SGTX_CMD.format(sgtx_pattern, self.SGTX_FMT_STR, self.SGTX_IP_ADDR, self.SGTX_PORT).split(), stdout=stdout, stderr=stderr, env=self.env)
 	
-	def process_stop(self):
+	def process_stop(self,signal=None,frame=None):
 		try:
+			if signal is not None:
+				print "Handling signal={0}".format(signal)
 			self.process.send_signal(SIGINT)
 		except AttributeError:
 			None
@@ -152,7 +156,7 @@ class ListenerTX(Thread):
 		return self._stop.isSet()
 
 def make_dataset_list(filters):
-	SEARCH_PATH="/mnt/disks/1/0/swarm/"
+	SEARCH_PATH="/mnt/disks/1/0/{0}/".format(PATH_LAST_DIR)
 	dataset_list = []
 	for f in filters:
 		ls_list = glob(SEARCH_PATH+f)
@@ -181,6 +185,9 @@ if __name__ == "__main__":
 	
 	# publish global start
 	r.publish(CHAN_GLOBAL,MSG_START)
+	
+	# register SIGINT to stop current process instance
+	signal(SIGINT, listen_tx.process_stop)
 	
 	# iterate over each dataset
 	for dataset in dataset_list:

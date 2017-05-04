@@ -1,8 +1,11 @@
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "hashpipe.h"
 #include "hashpipe_databuf.h"
+
+#include "beng_reform.h"
 
 #include "vdif_in_databuf.h"
 #include "vdif_in_databuf_cuda.h"
@@ -62,6 +65,9 @@ hashpipe_databuf_t *vdif_in_databuf_create(int instance_id, int databuf_id)
 
 int64_t get_packet_b_count(vdif_in_header_t *vdif_pkt_hdr) {
 	int64_t b = 0;
+	if (vdif_pkt_hdr->w0.invalid) {
+		return -1;
+	}
 	b |= ((int64_t)(vdif_pkt_hdr->beng.b_upper)&(int64_t)0x00000000FFFFFFFF) << 8;
 	b |= (int64_t)(vdif_pkt_hdr->beng.b_lower)&(int64_t)0x00000000000000FF;
 	return b;
@@ -105,11 +111,14 @@ int get_beng_group_index_offset(vdif_in_databuf_t *bgc_buf, int index_ref, vdif_
 		if (b >= ll && b <= lu) {
 			return offset;
 		}
-		// due to overlap the increment is one less than frames/block
-		ll += BENG_FRAMES_PER_GROUP-1;
-		lu += BENG_FRAMES_PER_GROUP-1;
+		ll += BENG_FRAMES_PER_GROUP;
+		lu += BENG_FRAMES_PER_GROUP;
 	}
 	fprintf(stdout,"%s:%s(%d): b=%lu is outside search range [%lu,%lu]\n",__FILE__,__FUNCTION__,__LINE__,b,ll,lu);
+	#define BENG_OFFSET_TOO_LARGE_TO_CARE (BENG_GROUPS_IN_BUFFER*BENG_FRAMES_PER_GROUP)
+	if (b > lu + BENG_OFFSET_TOO_LARGE_TO_CARE) {
+		return vidErrorPacketTooFarAheadToCare;
+	}
 	print_beng_over_vdif_header(&vdif_pkt->header, "BENG OFFSET TOO LARGE:");
 	return offset;
 }
@@ -187,22 +196,32 @@ void fill_vdif_header_template(vdif_in_header_t *vdif_hdr_copy, vdif_in_packet_t
 	offset_beng_fft_windows = MAGIC_OFFSET_IN_BENG_FFT_WINDOWS - 128*(VDIF_PER_BENG_FRAME-n_skipped)/VDIF_PER_BENG_FRAME;
 	offset_vdif_out_packets = (int)(MAGIC_BENG_FFT_WINDOW_IN_VDIF_OUT*offset_beng_fft_windows);
 	fprintf(stdout,"%s:%s(%d): n_skipped = %d, offset_beng_fft_windows = %d, offset_vdif_out_packets = %d\n",__FILE__,__FUNCTION__,__LINE__,n_skipped,offset_beng_fft_windows,offset_vdif_out_packets);
-	// do basic copy
+	// do basic copy, this also sets .invalid to 0 to flag valid template
 	memcpy(vdif_hdr_copy, vdif_pkt_ref, sizeof(vdif_in_header_t));
-	// then set timestamp information that should change
-	if (offset_vdif_out_packets < 0) {
-		vdif_hdr_copy->w0.secs_inre--;
-		vdif_hdr_copy->w1.df_num_insec = 125000+offset_vdif_out_packets;
-	} else {
-		vdif_hdr_copy->w1.df_num_insec = offset_vdif_out_packets;
-	}
+	beng_timestamp_t t0;
+	/* This is the timestamp in the first B-engine packet from disk.
+	 */
+	get_beng_t0(&t0);
+	/* The first /used/ B-engine packet will have a timestamp larger by
+	 * exactly one B-engine frame, so increment it.
+	 */
+	beng_timestamp_increment(&t0);
+	vdif_hdr_copy->w0.secs_inre = t0.sec;
+	double frame_full, frame_ceil, frame_frac;
+	frame_full = (VDIF_OUT_FRAMES_PER_SECOND * 1.0)*beng_timestamp_clk_to_float(&t0);
+	frame_ceil = ceil(frame_full);
+	frame_frac = frame_ceil - frame_full;
+	fprintf(stdout,"%s:%s(%d): timestamp is early by %.6f us\n",__FILE__,__FUNCTION__,__LINE__,frame_frac/VDIF_OUT_FRAMES_PER_SECOND*1e6);
+	vdif_hdr_copy->w1.df_num_insec = (int)frame_ceil;
+	// hide the number of picoseconds to skip at the start of data in this field
+	vdif_hdr_copy->edh_psn = (uint64_t)floor(frame_frac*(1e12/VDIF_OUT_FRAMES_PER_SECOND));
 	print_beng_over_vdif_header(vdif_hdr_copy,"TEMPLATE:");
 	// the rest of the header should be updated as needed at the output stage
 }
 
 // Print human-readable representation of B-engine group completion
 void print_beng_group_completion(beng_group_completion_t *bgc, const char *tag) {
-	printf("%s{B-engine group: beng_group_vdif_packet_count=%d, bgv_buf_cpu=%p, bgv_buf_gpu=%p, .bfc[0..39].b = %ld .. %ld\n",
+	printf("%s{B-engine group: beng_group_vdif_packet_count=%d, bgv_buf_cpu=%p, bgv_buf_gpu=%p, .bfc[0..142].b = %ld .. %ld\n",
 			tag,bgc->beng_group_vdif_packet_count,bgc->bgv_buf_cpu,
 			bgc->bgv_buf_gpu, bgc->bfc[0].b, bgc->bfc[BENG_FRAMES_PER_GROUP-1].b);
 	//~ if (bgc->beng_group_vdif_packet_count < VDIF_PER_BENG_FRAME*BENG_FRAMES_PER_GROUP) {

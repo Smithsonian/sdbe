@@ -16,9 +16,9 @@ from vdif import UTC
 # set various constants
 filename_delay = "delays.csv"
 path_dat = "./dat"
-path_r2dbe = "/home/ayoung/Work/obs/March2015/single-dish-data"
+path_r2dbe = "/home/ayoung/Work/obs/July2015/single-dish-data"
 path_out = "./out"
-path_sched = "/home/ayoung/Work/obs/March2015/sched"
+path_sched = "/home/ayoung/Work/obs/July2015/sched"
 aphids_rate = 2048e6
 r2dbe_rate = 4096e6
 swarm_rate = 2496e6

@@ -142,17 +142,37 @@ struct summary_stats_binary_op
  * */
 
 typedef struct aphids_resampler {
+    // Misc
+    // GPU device ID associated with this resampler
     int deviceId;
+    // number of channels to skip at start of SwarmC2R (2nd stage)
     int skip_chan;
+    // Requantization
     float quantizeThreshold_0, quantizeThreshold_1;
     float quantizeOffset_0, quantizeOffset_1;
     summary_stats_data<float> ssd;
-    cufftComplex *gpu_A_0, *gpu_A_1;
-    cufftComplex *gpu_B_0, *gpu_B_1;
+    // Data buffers
+    // hold all half-fluffed B-engine data
+    int8_t *beng_0, *beng_1;
+    // hold batch fully-fluffed B-engine data
+    cufftComplex *beng_fluffed_0, *beng_fluffed_1;
+    // hold batch 1st stage IFFT output
+    cufftReal *swarm_c2r_ifft_out_0, *swarm_c2r_ifft_out_1;
+    // hold batch 2nd stage FFT output
+    cufftComplex *swarm_r2c_fft_out_0, *swarm_r2c_fft_out_1;
+    // hold batch 3rd stage IFFT output
+    cufftReal *r2dbe_c2r_ifft_out_0, *r2dbe_c2r_ifft_out_1;
+    // hold all requantized output
     vdif_out_data_group_t *gpu_out_buf;
-    int fft_size[3],batch[3],repeat[3];
+    // FFT parameters
+    // sizes for stages 1, 2, 3
+    int fft_size[3];
+    // batches for stages 1, 2, 3
+    int batch[3];
+    // CUFFT plans for stages 1, 2, 3
     cufftHandle cufft_plan[3];
 #ifdef GPU_DEBUG
+    // Debugging
     cudaStream_t stream;
     cudaEvent_t tic,toc;
 #endif
@@ -162,24 +182,19 @@ typedef struct aphids_resampler {
 /** @brief Initialize resampler structure (including device memory).
  */
 int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
-
   // create FFT plans
   int inembed[3], onembed[3];
   cufftResult cufft_status = CUFFT_SUCCESS;
-
   // device ID
   resampler->deviceId = _deviceId;
-
   // quantization thresholds:
   resampler->quantizeThreshold_0 = 0;
   resampler->quantizeThreshold_1 = 0;
   // quantization offsets:
   resampler->quantizeOffset_0 = 0;
   resampler->quantizeOffset_1 = 0;
-
   // switch to device
   cudaSetDevice(resampler->deviceId);
-
 #ifdef GPU_DEBUG
   int i;
   size_t workSize[1];
@@ -187,101 +202,147 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
   cudaEventCreate(&(resampler->tic));
   cudaEventCreate(&(resampler->toc));
 #endif // GPU_DEBUG
-
-  // allocate device memory
-  cudaMalloc((void **)&(resampler->gpu_A_0), BENG_FRAMES_PER_GROUP*BENG_SNAPSHOTS*BENG_CHANNELS_*sizeof(cufftComplex));	// 671088640B
-  cudaMalloc((void **)&(resampler->gpu_A_1), BENG_FRAMES_PER_GROUP*BENG_SNAPSHOTS*BENG_CHANNELS_*sizeof(cufftComplex));	// 671088640B
-  cudaMalloc((void **)&(resampler->gpu_B_0), (BENG_FRAMES_PER_GROUP-1)*BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS*sizeof(cufftComplex));	// 654950400B
-  cudaMalloc((void **)&(resampler->gpu_B_1), (BENG_FRAMES_PER_GROUP-1)*BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS*sizeof(cufftComplex));	// 654950400B
-  cudaMalloc((void **)&(resampler->gpu_out_buf), sizeof(vdif_out_data_group_t)); // 67108864B
-
- /*
- * http://docs.nvidia.com/cuda/cufft/index.html#cufft-setup
- * iFFT transforming complex SWARM spectra into real time series.
- * Input data is padded according to UNPACKED_BENG_CHANNELS >= BENG_CHANNELS.
- * Single batch size is BENG_SNAPHOTS and so to cover the entire databuf
- * this must repeated BENG_FRAMES_PER_GROUP-1 times (saves 14.8% memory)
- */
-  resampler->fft_size[0] = 2*BENG_CHANNELS_;
-  inembed[0]  = UNPACKED_BENG_CHANNELS; 
-  onembed[0]  = 2*BENG_CHANNELS_;
-  resampler->batch[0]    = BENG_SNAPSHOTS;
-  resampler->repeat[0]   = BENG_FRAMES_PER_GROUP - 1;
-  cufft_status = cufftPlanMany(&(resampler->cufft_plan[0]), 1, &(resampler->fft_size[0]),
-		inembed,1,inembed[0],
-		onembed,1,onembed[0],
-		CUFFT_C2R,resampler->batch[0]);
-  if (cufft_status != CUFFT_SUCCESS)
-  {
+  
+  ///////////////// Allocate device memory /////////////////////////////
+  /* beng_[01] each stores a single 2-bit sample in each byte. Total
+   * size requirement is:
+   *     16384 -- number of channels [BENG_CHANNELS_]
+   *   x   128 -- number of snapshots per frame [BENG_SNAPSHOTS]
+   *   x   143 -- number of frames [BENG_FRAMES_PER_GROUP]
+   *   x     2 -- one real, one imaginary
+   *   = 599785472 bytes per polarization
+   */
+  cudaMalloc((void **)&(resampler->beng_0), BENG_FRAMES_PER_GROUP*BENG_SNAPSHOTS*BENG_CHANNELS_*2*sizeof(int8_t));
+  cudaMalloc((void **)&(resampler->beng_1), BENG_FRAMES_PER_GROUP*BENG_SNAPSHOTS*BENG_CHANNELS_*2*sizeof(int8_t));
+  /* beng_fluffed_[01] will hold RESAMPLE_BATCH_SNAPSHOTS number of
+   * B-engine snapshots as full cufftComplex values. The total size
+   * requirement is:
+   *     16385 -- number of channels in C2R [BENG_CHANNELS]
+   *   x   143 -- snapshots per batch [RESAMPLE_BATCH_SNAPSHOTS]
+   *   x     8 -- sizeof(cufftComplex)
+   *   = 18744440 bytes per polarization
+   */
+  cudaMalloc((void **)&(resampler->beng_fluffed_0), RESAMPLE_BATCH_SNAPSHOTS*BENG_CHANNELS*sizeof(cufftComplex));
+  cudaMalloc((void **)&(resampler->beng_fluffed_1), RESAMPLE_BATCH_SNAPSHOTS*BENG_CHANNELS*sizeof(cufftComplex));
+  /* swarm_c2r_ifft_out_[01] will hold the output of the SwarmC2R
+   * inverse Fourier transform. The total size requirement is:
+   *     32768 -- number of real-valued samples [2*BENG_CHANNELS_]
+   *   x   143 -- snapshots per batch [FFT_BATCHES_SWARM_C2R]
+   *   x     4 -- sizeof(cufftReal)
+   *   = 18743296 bytes per polarization
+   */
+  cudaMalloc((void **)&(resampler->swarm_c2r_ifft_out_0), FFT_BATCHES_SWARM_C2R*2*BENG_CHANNELS_*sizeof(cufftReal));
+  cudaMalloc((void **)&(resampler->swarm_c2r_ifft_out_1), FFT_BATCHES_SWARM_C2R*2*BENG_CHANNELS_*sizeof(cufftReal));
+  /* swarm_r2c_fft_out_[01] will hold the output of the SwarmR2C
+   * Fourier transform. The total size requirement is:
+   *     18305 -- number of channels output [FFT_SIZE_SWARM_R2C/2 + 1]
+   *   x   128 -- number FFT windows in batch [FFT_BATCHES_SWARM_R2C]
+   *   x     8 -- sizeof(cufftComplex)
+   *   = 18744320 bytes per polarization
+   */
+  cudaMalloc((void **)&(resampler->swarm_r2c_fft_out_0), FFT_BATCHES_SWARM_R2C*(FFT_SIZE_SWARM_R2C/2 + 1)*sizeof(cufftComplex));
+  cudaMalloc((void **)&(resampler->swarm_r2c_fft_out_1), FFT_BATCHES_SWARM_R2C*(FFT_SIZE_SWARM_R2C/2 + 1)*sizeof(cufftComplex));
+  /* r2dbe_c2r_ifft_out_[01] will hold the output of the R2dbeC2R
+   * inverse Fourier transform. The total size requirement is:
+   *     32768 -- number of real-valued samples [FFT_SIZE_R2DBE_C2R]
+   *   x   128 -- number of FFT windows in batch [FFT_BATCHES_R2DBE_C2R]
+   *   x     4 -- sizeof(cufftReal)
+   *   = 16777216 bytes per polarization
+   */
+  cudaMalloc((void **)&(resampler->r2dbe_c2r_ifft_out_0), FFT_BATCHES_R2DBE_C2R*FFT_SIZE_R2DBE_C2R*sizeof(cufftReal));
+  cudaMalloc((void **)&(resampler->r2dbe_c2r_ifft_out_1), FFT_BATCHES_R2DBE_C2R*FFT_SIZE_R2DBE_C2R*sizeof(cufftReal));
+  /* Holds the requantized 2-bit output data for entire group of
+   * B-frames processed. Total size requirement is:
+   *     sizeof(vdif_out_group_t) -- this is everything
+   *   =     2 -- number of polarizations [VDIF_CHAN]
+   *   x 16384 -- number of VDIF packets per group [VDIF_OUT_PKTS_PER_BLOCK]
+   *   x  8192 -- number of bytes per VDIF packet data [VDIF_OUT_PKT_DATA_SIZE]
+   *   = 268435456 bytes total (single structure for both polarizations)
+   */
+  cudaMalloc((void **)&(resampler->gpu_out_buf), sizeof(vdif_out_data_group_t));
+  //////// Total allocated memory in this batch: 1614024944 bytes //////
+  
+  /*
+   * The number of skipped channels is needed before setting parameters 
+   * of the third transform, so define it at the start.
+   */
+  resampler->skip_chan = (int)(150e6 / (SWARM_RATE / FFT_SIZE_SWARM_R2C));
+  
+  // 1st stage: SwarmC2R IFFT
+  resampler->fft_size[0] = FFT_SIZE_SWARM_C2R;
+  inembed[0] = FFT_SIZE_SWARM_C2R/2 + 1; 
+  onembed[0] = FFT_SIZE_SWARM_C2R;
+  resampler->batch[0] = FFT_BATCHES_SWARM_C2R;
+  cufft_status = cufftPlanMany(
+    &(resampler->cufft_plan[0]), // plan handle
+    1,                           // rank
+    &(resampler->fft_size[0]),   // FFT size
+    inembed,1,inembed[0],        // input: dims,dim0 stride,batch stride
+    onembed,1,onembed[0],        // output: dims,dim0 stride,batch stride
+    CUFFT_C2R,                   // type of transform
+    resampler->batch[0]);        // batches
+  if (cufft_status != CUFFT_SUCCESS) {
     hashpipe_error(__FILE__, "CUFFT error: plan 0 creation failed");
-    //state = STATE_ERROR;
   }
 #ifdef GPU_DEBUG
   cufftGetSize(resampler->cufft_plan[0],workSize);
-  fprintf(stdout,"GPU_DEBUG : plan 0 is %dx%dx%d\n", resampler->repeat[0],resampler->batch[0],resampler->fft_size[0]);
+  fprintf(stdout,"GPU_DEBUG : plan 0 is %dx%d\n", resampler->batch[0],resampler->fft_size[0]);
   fprintf(stdout,"GPU_DEBUG : plan 0 worksize: %u\n",(unsigned) workSize[0]);
   reportDeviceMemInfo();
 #endif  
-
-  /*
- * FFT transforming time series into complex spectrum.
- * Input data has dimension RESAMPLING_CHUNK_SIZE with
- * Set the batch size to be RESAMPLING_BATCH with
- * (BENG_FRAMES_PER_GROUP-1)*2*BENG_CHANNELS_*BENG_SNAPSHOTS/RESAMPLING_CHUNK_SIZE / RESAMPLING_BATCH
- *  required iterations.
- */
-  resampler->fft_size[1] = RESAMPLING_CHUNK_SIZE;
-  inembed[0]  = RESAMPLING_CHUNK_SIZE; 
-  onembed[0]  = RESAMPLING_CHUNK_SIZE/2+1;
-  resampler->batch[1]  = RESAMPLING_BATCH;
-  resampler->repeat[1] = (BENG_FRAMES_PER_GROUP-1)*2*BENG_CHANNELS_*BENG_SNAPSHOTS/RESAMPLING_CHUNK_SIZE/RESAMPLING_BATCH;
-  if( cufftPlanMany(&(resampler->cufft_plan[1]), 1, &(resampler->fft_size[1]),
-		inembed,1,inembed[0],
-		onembed,1,onembed[0],
-		CUFFT_R2C,resampler->batch[1]) != CUFFT_SUCCESS)
-  {
+  
+  // 2nd stage: SwarmR2C FFT
+  resampler->fft_size[1] = FFT_SIZE_SWARM_R2C;
+  inembed[0] = FFT_SIZE_SWARM_R2C; 
+  onembed[0] = FFT_SIZE_SWARM_R2C/2 + 1;
+  resampler->batch[1] = FFT_BATCHES_SWARM_R2C;
+  cufft_status = cufftPlanMany(
+    &(resampler->cufft_plan[1]), // plan handle
+    1,                           // rank
+    &(resampler->fft_size[1]),   // FFT size
+    inembed,1,inembed[0],        // input: dims,dim0 stride,batch stride
+    onembed,1,onembed[0],        // output: dims,dim0 stride,batch stride
+    CUFFT_R2C,                   // type of transform
+    resampler->batch[1]);        // batches
+  if (cufft_status != CUFFT_SUCCESS) {
     hashpipe_error(__FILE__, "CUFFT error: plan 1 creation failed");
-    //state = STATE_ERROR;
   }
 #ifdef GPU_DEBUG
   cufftGetSize(resampler->cufft_plan[1],workSize);
-  fprintf(stdout,"GPU_DEBUG : plan 1 is %dx%dx%d\n", resampler->repeat[1],resampler->batch[1],resampler->fft_size[1]);
+  fprintf(stdout,"GPU_DEBUG : plan 1 is %dx%d\n", resampler->batch[1],resampler->fft_size[1]);
   fprintf(stdout,"GPU_DEBUG : plan 1 worksize: %u\n",(unsigned) workSize[0]);
   reportDeviceMemInfo();
 #endif  
-
- /*
- * FFT transforming complex spectrum into resampled time series simultaneously
- * trimming the SWARM guard bands (150 MHz -- 1174 MHz).
- * Input data has dimension EXPANSIONS_FACTOR
- */
-  resampler->skip_chan = (int)(150e6 / (SWARM_RATE / RESAMPLING_CHUNK_SIZE));
-  resampler->fft_size[2] = RESAMPLING_CHUNK_SIZE*EXPANSION_FACTOR/DECIMATION_FACTOR;
-  inembed[0]  = RESAMPLING_CHUNK_SIZE/2+1; 
-  onembed[0]  = RESAMPLING_CHUNK_SIZE*EXPANSION_FACTOR/DECIMATION_FACTOR;
-  resampler->batch[2]    = resampler->batch[1];
-  resampler->repeat[2]   = resampler->repeat[1];
-  if( cufftPlanMany(&(resampler->cufft_plan[2]), 1, &(resampler->fft_size[2]),
-		inembed,1,inembed[0],
-		onembed,1,onembed[0],
-		CUFFT_C2R,resampler->batch[2]) != CUFFT_SUCCESS )
-  {
+  
+  // 3rd stage: R2dbeC2R IFFT
+  resampler->fft_size[2] = FFT_SIZE_R2DBE_C2R;
+  inembed[0] = FFT_SIZE_R2DBE_C2R/2 + 1;
+  onembed[0] = FFT_SIZE_R2DBE_C2R;
+  resampler->batch[2] = FFT_BATCHES_R2DBE_C2R;
+  cufft_status = cufftPlanMany(
+    &(resampler->cufft_plan[2]), // plan handle
+    1,                           // rank
+    &(resampler->fft_size[2]),   // FFT size
+    inembed,1,                   // input: dims,dim0 stride
+    FFT_SIZE_SWARM_R2C/2 + 1,    // input batch stride, NOTE: this matches output batch stride in 2nd stage
+    onembed,1,onembed[0],        // output: dims,dim0 stride,batch stride
+    CUFFT_C2R,                   // type of transform
+    resampler->batch[2]);        // batches
+  if (cufft_status != CUFFT_SUCCESS) {
     hashpipe_error(__FILE__, "CUFFT error: plan 2 creation failed");
-    //state = STATE_ERROR;
   }
-
-
+  
 #ifdef GPU_DEBUG
   for (i=0; i<3; ++i){
     cufftSetStream(resampler->cufft_plan[i], resampler->stream);
   }
   cufftGetSize(resampler->cufft_plan[2],workSize);
-  fprintf(stdout,"GPU_DEBUG : plan 2 is %dx%dx%d\n", resampler->repeat[2],resampler->batch[2],resampler->fft_size[2]);
+  fprintf(stdout,"GPU_DEBUG : plan 2 is %dx%d\n", resampler->batch[2],resampler->fft_size[2]);
   fprintf(stdout,"GPU_DEBUG : masking first %d channels \n",resampler->skip_chan);
   fprintf(stdout,"GPU_DEBUG : plan 2 worksize: %u\n",(unsigned) workSize[0]);
   reportDeviceMemInfo();
 #endif  
-
+  
   return 1;
 }
 
@@ -320,6 +381,16 @@ __device__ cufftComplex read_complex_sample(int32_t *samples_int)
  return make_cuFloatComplex(sample_real, sample_imag);
 }
 
+/*
+ * Read 2-bit value as int8_t and shift input data accordingly inplace.
+ */
+__device__ int8_t read_2bit_sample(int32_t *samples_int) {
+  int8_t sample;
+  sample = (*samples_int & 0x03) - 2;
+  *samples_int = (*samples_int) >> 2;
+  return sample;
+}
+
 /** @brief Parse VDIF frame and store B-engine frames in buffer
 Parses SWARM SDBE VDIF frames and stores de-quantized B-engine frames
 in two buffers (one for each time-stream).  Before use, the data
@@ -335,8 +406,8 @@ __global__ void vdif_to_beng(
 // int32_t *fid_out,
 // int32_t *cid_out,
 // int32_t *bcount_out,
- cufftComplex *beng_data_out_0,
- cufftComplex *beng_data_out_1,
+ int8_t *beng_data_out_0,
+ int8_t *beng_data_out_1,
 // int32_t *beng_frame_completion,
  int32_t num_vdif_frames,
  uint64_t b_zero){
@@ -364,22 +435,29 @@ __global__ void vdif_to_beng(
     cid = get_cid_from_vdif(vdif_frame_start);
     fid = get_fid_from_vdif(vdif_frame_start);
     bcount = (int32_t)(get_bcount_from_vdif(vdif_frame_start) - b_zero);
-    //cid_out[iframe + threadIdx.y + blockIdx.x*blockDim.y] = cid;
-    //fid_out[iframe + threadIdx.y + blockIdx.x*blockDim.y] = fid;
-    //bcount_out[iframe + threadIdx.y + blockIdx.x*blockDim.y] = bcount;
-    /* Reorder to have snapshots contiguous and consecutive channels
-     * separated by 128 snapshots times the number of B-engine frames
-     * in buffer. This means consecutive x-threads will handle consecutive snapshots.
+    /* Reorder to have consecutive channels for a single FFT window 
+     * adjacent in memory. No transpose is therefore needed to have the 
+     * IFFT operate on contiguous memory.
      */
-    idx_beng_data_out = SWARM_XENG_PARALLEL_CHAN * (cid * SWARM_N_FIDS + fid)*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS;
-    //idx_beng_data_out += ((bcount-bcount_offset) % BENG_BUFFER_IN_COUNTS)*BENG_SNAPSHOTS;
-    idx_beng_data_out += (bcount % BENG_BUFFER_IN_COUNTS)*BENG_SNAPSHOTS; // bcount_offset = 0
-    idx_beng_data_out += threadIdx.x;
+    idx_beng_data_out = ((cid>>1)*(2*SWARM_XENG_PARALLEL_CHAN) + (cid%2) + fid*2)*SWARM_N_FIDS;
+    idx_beng_data_out += (bcount % BENG_FRAMES_PER_GROUP)*BENG_SNAPSHOTS*BENG_CHANNELS_;
+    /* Output buffers reference int8_t data, and data for each channel 
+     * will occupy two fields, re+im.
+     */
+    idx_beng_data_out *= 2;
     /* idata increases by the number of int32_t handled simultaneously
      * by all x-threads. Each thread handles B-engine packet data 
      * for a single snapshot per iteration.
      */
     for (idata=0; idata<VDIF_INT_SIZE_DATA; idata+=BENG_VDIF_INT_PER_SNAPSHOT*blockDim.x){
+      int this_snapshot;
+      // Calculate the snapshot number within the B-frame...
+      this_snapshot = idata/BENG_VDIF_INT_PER_SNAPSHOT + threadIdx.x;
+      // ...and add the [ 0..69 |--> 70..127 ] correction
+      this_snapshot = (this_snapshot + 58) % BENG_SNAPSHOTS;
+      // add offset to snapshot for channels a-to-d
+      int offset_snapshot_index_by;
+      offset_snapshot_index_by = -2 * (int)(this_snapshot > 1);
       /* Get sample data out of global memory. Offset from the 
        * VDIF frame start by the header, the number of snapshots
        * processed by the group of x-threads (idata), and the
@@ -388,17 +466,48 @@ __global__ void vdif_to_beng(
        */
       samples_per_snapshot_half_0 = *(vdif_frame_start + VDIF_INT_SIZE_HEADER + idata + BENG_VDIF_INT_PER_SNAPSHOT*threadIdx.x);
       samples_per_snapshot_half_1 = *(vdif_frame_start + VDIF_INT_SIZE_HEADER + idata + BENG_VDIF_INT_PER_SNAPSHOT*threadIdx.x + 1);
+      /* 2-bit samples are stored in order:
+       *   byte0: d1_im d1_re d0_im d0_re
+       *   byte1: c1_im c1_re c0_im c0_re
+       *   byte2: b1_im b1_re b0_im b0_re
+       *   byte3: a1_im a1_re a0_im a0_re
+       *   byte4: h1_im h1_re h0_im h0_re
+       *   byte5: g1_im g1_re g0_im g0_re
+       *   byte6: f1_im f1_re f0_im f0_re
+       *   byte7: e1_im e1_re e0_im e0_re
+       * and each group of SWARM_XENG_PARALLEL_CHAN is [a b c d e f g h]
+       */
       for (isample=0; isample<SWARM_XENG_PARALLEL_CHAN/2; ++isample){
-        beng_data_out_1[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1))*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS] = read_complex_sample(&samples_per_snapshot_half_0);
-        beng_data_out_0[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1))*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS] = read_complex_sample(&samples_per_snapshot_half_0);
-        beng_data_out_1[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2)*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS] = read_complex_sample(&samples_per_snapshot_half_1);
-        beng_data_out_0[idx_beng_data_out+(SWARM_XENG_PARALLEL_CHAN/2-(isample+1)+SWARM_XENG_PARALLEL_CHAN/2)*BENG_BUFFER_IN_COUNTS*BENG_SNAPSHOTS] = read_complex_sample(&samples_per_snapshot_half_1);
+        int this_idx;
+        //          (fid,cid,bcount)                       ( ordering {d..a})
+        this_idx = idx_beng_data_out + 2*(SWARM_XENG_PARALLEL_CHAN/2-(isample+1));
+        /* Apply the a-to-d channel shift, the offset is given in
+         * snapshots, so the native shift size in the output buffer is
+         * by:
+         *   offset_snapshot_index_by*BENG_CHANNELS_ * sizeof(<buffer_type>)
+         * and for re+im int8_t, the final factor equals 2.
+         */
+        //          (a-to-d shift)
+        this_idx += offset_snapshot_index_by*2*BENG_CHANNELS_;
+        // Adjust the index according to the snapshot number.
+        this_idx += this_snapshot*2*BENG_CHANNELS_;
+        //    (pol X/Y)      (im/re)
+        beng_data_out_1[this_idx + 0] = read_2bit_sample(&samples_per_snapshot_half_0); // imaginary
+        beng_data_out_1[this_idx + 1] = read_2bit_sample(&samples_per_snapshot_half_0); // real
+        beng_data_out_0[this_idx + 0] = read_2bit_sample(&samples_per_snapshot_half_0); // imaginary
+        beng_data_out_0[this_idx + 1] = read_2bit_sample(&samples_per_snapshot_half_0); // real
+        //          (fid,cid,bcount)                     ( ordering {h..e})
+        this_idx = idx_beng_data_out + 2*(SWARM_XENG_PARALLEL_CHAN-(isample+1));
+        // no e-to-h shift
+        this_idx += 0;
+        // Adjust the index according to the snapshot number.
+        this_idx += this_snapshot*2*BENG_CHANNELS_;
+        //    (pol X/Y)       (im/re)
+        beng_data_out_1[this_idx + 0] = read_2bit_sample(&samples_per_snapshot_half_1); // imaginary
+        beng_data_out_1[this_idx + 1] = read_2bit_sample(&samples_per_snapshot_half_1); // real
+        beng_data_out_0[this_idx + 0] = read_2bit_sample(&samples_per_snapshot_half_1); // imaginary
+        beng_data_out_0[this_idx + 1] = read_2bit_sample(&samples_per_snapshot_half_1); // real
       }
-      /* The next snapshot handled by this thread will increment
-      * by the number of x-threads, so index into B-engine data
-      * should increment by that number.
-      */
-      idx_beng_data_out += blockDim.x;
     } // for (idata=0; ...)
     // increment completion counter for this B-engine frame
     //old = atomicAdd(beng_frame_completion + ((bcount-bcount_offset) % BENG_BUFFER_IN_COUNTS), 1);
@@ -412,76 +521,53 @@ __global__ void vdif_to_beng(
   } // for (iframe=0; ...)
 }
 
-/**@brief Reorder B-engine data for BENG_FRAMES_OUT_CONSECUTIVE_SNAPSHOTS
-Reorder B-engine data that is snapshot contiguous and where consecutive channels
-are separated by 128 snapshots time the number of B-engine frames in the buffer.
-This kernel must be called with a (16,16) thread block and enough x-blocks
-to cover 1 B-engine.  The output has 16400 zero-padded channels
-- blockDim.x = 16
-- blockDim.y = 16;
-- gridDim.x = BENG_CHANNELS_ * BENG_SNAPSHOTS / (blockDim.x*blockDim.y)
-@author Katherine Rosenfeld
-@date June 2015
-*/
-__global__ void reorderTzp_smem(cufftComplex *beng_data_in, cufftComplex *beng_data_out, int num_beng_frames){
-  // gridDim.x = 16384 * 128 / (16 * 16) = 8192
-  // blockDim.x = 16; blockDim.y = 16;
-  // --> launches 2097152 threads
-
-  int32_t sid_out,bid_in;
-
-  __shared__ cufftComplex tile[16][16];
-
-  // for now, let us loop the grid over B-engine frames:
-  for (int bid_out=0; bid_out<num_beng_frames-1; bid_out+=1){
-
-    // input snapshot id
-    int sid_in = (blockIdx.x * blockDim.x + threadIdx.x) & (BENG_SNAPSHOTS-1);
-    // input channel id 
-    int cid = threadIdx.y + blockDim.y * (blockIdx.x / (BENG_SNAPSHOTS / blockDim.x));
-
-    // shift by 2-snapshots case:
-    if (((cid / 4) & (0x1)) == 0) {
-      sid_out = (sid_in-2) & 0x7f;
-    } else {
-      sid_out = sid_in;
-    }
-
-    // and by 1-B-frame:
-    if (sid_out < 69){
-      bid_in = bid_out;
-    } else {
-      bid_in = bid_out+1;
-    }
-
-    tile[threadIdx.x][threadIdx.y] = beng_data_in[BENG_SNAPSHOTS*num_beng_frames*cid + BENG_SNAPSHOTS*bid_in + sid_in];
-
-    __syncthreads();
-
-    // now we transpose warp orientation over channels and snapshot index
-
-    // snapshot id
-    sid_in = threadIdx.y + (blockIdx.x*blockDim.y) & (BENG_SNAPSHOTS-1);
-    // channel id 
-    cid = threadIdx.x + blockDim.x * (blockIdx.x / (BENG_SNAPSHOTS / blockDim.x)); 
-
-    // shift by 2-snapshots case:
-    if (((cid / 4) & (0x1)) == 0) {
-      sid_out = (sid_in-2) & 0x7f;
-    } else {
-      sid_out = sid_in;
-    }
-
-    beng_data_out[(BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS)*bid_out + UNPACKED_BENG_CHANNELS*sid_out + cid] 
-	= tile[threadIdx.y][threadIdx.x];
-
-    // zero out nyquist: 
-    if (cid < 16) {
-      beng_data_out[(BENG_SNAPSHOTS*UNPACKED_BENG_CHANNELS)*bid_out + UNPACKED_BENG_CHANNELS*sid_out + BENG_CHANNELS_ + cid]	= make_cuComplex(0.,0.);
-    }
-
-    __syncthreads();
-  }
+/* Convert int8_t,int8_t spectral data to cufftComplex spectral data.
+ * Arguments:
+ * ----------
+ *   in_spec_start -- pointer to first sample of first spectrum in input
+ *   out_spec_start -- pointer to first sample of first spectrum in output
+ *   nspectra -- number of spectra in input to process
+ * Returns:
+ * --------
+ *   <void>
+ * Notes:
+ * ------
+ *   The input spectra are assumed to be written as imag,real,imag,real...
+ *   with each imag,real pair representing a single complex-valued spectral
+ *   sample written as two consecutive int8_t values.
+ *
+ *   An additional zero-valued channel is inserted in the output for each
+ *   spectrum at the half-sample-rate position as is required for the subsequent
+ *   C2R transform.
+ *
+ *   Call with 32 x-threads, 32 y-threads, 16 x-blocks = 16384 channels
+ *   = 1 spectrum per pass. So the loop is only over the number of spectra
+ *   to be processed.
+ */
+__global__ void beng_int8_to_cufftComplex(const int8_t * __restrict__ in_spec_start, cufftComplex *out_spec_start, int nspectra)
+{
+	// write single channel cufftComplex pair per thread
+	int idx_out = threadIdx.x + blockDim.x*threadIdx.y + blockIdx.x*blockDim.x*blockDim.y;
+	// read single channel int8_t,int8_t pair per thread
+	int idx_in = 2*(idx_out);
+	int ii;
+	float im_in, re_in;
+	cufftComplex zz_out;
+	for (ii=0; ii<nspectra; ii++) {
+		// read imag,real and write cufftComplex
+		im_in = __int2float_rd(*(in_spec_start + idx_in));
+		re_in = __int2float_rd(*(in_spec_start + idx_in + 1));
+		zz_out = make_cuFloatComplex(re_in, im_in);
+		*(out_spec_start+idx_out) = zz_out;
+		/* Advance input pointer by a single spectrum, BENG_CHANNELS_ number
+		 * of channels at 2 x sizeof(int8_t) each
+		 */
+		idx_in += 2*BENG_CHANNELS_;
+		/* Advance output poniter by a single spectrum, BENG_CHANNELS number
+		 * of channels at 1 x sizeof(cufftComplex) each
+		 */
+		idx_out += BENG_CHANNELS;
+	}
 }
 
 /** @brief 2-bit quantization kernel
@@ -511,126 +597,126 @@ __global__ void quantize2bit(const float *in, unsigned int *out, int N, float th
 	}
 }
 
-/** @brief Transform SWARM spectra into timeseries
+/* 1st stage: SwarmC2R IFFT
+ * input: beng_fluffed_[01]
+ * output: swarm_c2r_ifft_out_[01]
  */
-int SwarmC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
-  int i;
+int SwarmC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx) {
   cufftResult cufft_status;
+  
 #ifdef GPU_COMPUTE
-  //cudaSetDevice(resampler->deviceId);
 #ifdef GPU_DEBUG
   float elapsedTime;
   cudaEventRecord(resampler->tic,resampler->stream);
 #endif // GPU_DEBUG
-  // transform SWARM spectra into timeseries
-  for (i = 0; i < resampler->repeat[0]; ++i) {
-	cufft_status = cufftExecC2R(resampler->cufft_plan[0],
-			resampler->gpu_B_0 + i*resampler->batch[0]*UNPACKED_BENG_CHANNELS, 
-			(cufftReal *)resampler->gpu_A_0 + i*resampler->batch[0]*(2*BENG_CHANNELS_));
-	cufft_status = cufftExecC2R(resampler->cufft_plan[0],
-			resampler->gpu_B_1 + i*resampler->batch[0]*UNPACKED_BENG_CHANNELS, 
-			(cufftReal *)resampler->gpu_A_1 + i*resampler->batch[0]*(2*BENG_CHANNELS_));
-#ifdef GPU_DEBUG
-		if (cufft_status != CUFFT_SUCCESS){
-		    hashpipe_error(__FILE__, "CUFFT error: plan 0 execution failed");
-		    return STATE_ERROR;
- 		}
-#endif // GPU_DEBUG
-	}
-#ifdef GPU_DEBUG
-	cudaEventRecord(resampler->toc,resampler->stream);
-	cudaEventSynchronize(resampler->toc);
-	if (aphids_ctx->iters % APHIDS_UPDATE_EVERY == 0) {
-		cudaEventElapsedTime(&elapsedTime,resampler->tic,resampler->toc);
-		aphids_log(aphids_ctx, APHIDS_LOG_INFO, "plan 0 cufft took %f ms [%f Gbps]",
-			elapsedTime,  2*resampler->repeat[0]*resampler->batch[0]*resampler->fft_size[0] / (elapsedTime * 1e-3) /1e9 /2);
-		fprintf(stdout,"GPU_DEBUG : plan 0 took %f ms [%f Gbps] \n", 
-			elapsedTime,  2*resampler->repeat[0]*resampler->batch[0]*resampler->fft_size[0] / (elapsedTime * 1e-3) /1e9 /2);
-	}
-#endif // GPU_DEBUG
-#endif // GPU_COMPUTE
-  return STATE_PROC;
-}
-
-/** @brief Transform SWARM timeseries into R2DBE compatible spectrum
- */
-int SwarmR2C(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
-  int i;
-  cufftResult cufft_status;
-
-#ifdef GPU_COMPUTE
-  //cudaSetDevice(resampler->deviceId);
-#ifdef GPU_DEBUG
-  float elapsedTime;
-  cudaEventRecord(resampler->tic,resampler->stream);
-#endif // GPU_DEBUG
-  // transform timeseries into reconfigured spectra
-  for (i = 0; i < resampler->repeat[1]; ++i) {
-	cufft_status = cufftExecR2C(resampler->cufft_plan[1],
-		(cufftReal *) resampler->gpu_A_0 + i*resampler->batch[1]*RESAMPLING_CHUNK_SIZE,
-		resampler->gpu_B_0 + i*resampler->batch[1]*(RESAMPLING_CHUNK_SIZE/2+1));
-	cufft_status = cufftExecR2C(resampler->cufft_plan[1],
-		(cufftReal *) resampler->gpu_A_1 + i*resampler->batch[1]*RESAMPLING_CHUNK_SIZE,
-		resampler->gpu_B_1 + i*resampler->batch[1]*(RESAMPLING_CHUNK_SIZE/2+1));
-#ifdef GPU_DEBUG
-	if (cufft_status != CUFFT_SUCCESS){
-	    hashpipe_error(__FILE__, "CUFFT error: plan 1 execution failed");
-	    return STATE_ERROR;
- 	}
-#endif // GPU_DEBUG
+  // do transform for pol 0
+  cufft_status = cufftExecC2R(resampler->cufft_plan[0],
+    resampler->beng_fluffed_0, resampler->swarm_c2r_ifft_out_0);
+  if (cufft_status != CUFFT_SUCCESS){
+    hashpipe_error(__FILE__, "CUFFT error: plan 0 execution failed (pol 0)");
+    return STATE_ERROR;
+  }
+  // do transform for pol 1
+  cufft_status = cufftExecC2R(resampler->cufft_plan[0],
+    resampler->beng_fluffed_1, resampler->swarm_c2r_ifft_out_1);
+  if (cufft_status != CUFFT_SUCCESS){
+    hashpipe_error(__FILE__, "CUFFT error: plan 0 execution failed (pol 1)");
+    return STATE_ERROR;
   }
 #ifdef GPU_DEBUG
   cudaEventRecord(resampler->toc,resampler->stream);
   cudaEventSynchronize(resampler->toc);
   if (aphids_ctx->iters % APHIDS_UPDATE_EVERY == 0) {
-	cudaEventElapsedTime(&elapsedTime,resampler->tic,resampler->toc);
-	aphids_log(aphids_ctx, APHIDS_LOG_INFO, "plan 1 cufft took %f ms [%f Gbps]",
-		elapsedTime,  2*resampler->repeat[1]*resampler->batch[1]*resampler->fft_size[1] / (elapsedTime * 1e-3) /1e9 /2);
-	fprintf(stdout,"GPU_DEBUG : plan 1 took %f ms [%f Gbps] \n", 
-		elapsedTime,  2*resampler->repeat[1]*resampler->batch[1]*resampler->fft_size[1] / (elapsedTime * 1e-3) /1e9 /2);
-	fflush(stdout);
+    cudaEventElapsedTime(&elapsedTime,resampler->tic,resampler->toc);
+    aphids_log(aphids_ctx, APHIDS_LOG_INFO, "plan 0 cufft took %f ms [%f Gbps]",
+      elapsedTime, resampler->batch[0]*resampler->fft_size[0] / (elapsedTime * 1e-3) /1e9 /2);
+    fprintf(stdout,"GPU_DEBUG : plan 0 took %f ms [%f Gbps] \n", 
+      elapsedTime, resampler->batch[0]*resampler->fft_size[0] / (elapsedTime * 1e-3) /1e9 /2);
+    fflush(stdout);
   }
 #endif // GPU_DEBUG
 #endif // GPU_COMPUTE
   return STATE_PROC;
 }
 
-/** @brief Transform half R2DBE spectrum into timeseries
+/* 2nd stage: SwarmR2C FFT
+ * input: swarm_c2r_ifft_out_[01]
+ * output: swarm_r2c_fft_out_[01]
  */
-int Hr2dbeC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx){
-  int i;
+int SwarmR2C(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx) {
   cufftResult cufft_status;
+  
 #ifdef GPU_COMPUTE
-  //cudaSetDevice(resampler->deviceId);
 #ifdef GPU_DEBUG
   float elapsedTime;
   cudaEventRecord(resampler->tic,resampler->stream);
 #endif // GPU_DEBUG
-	// mask and transform reconfigured spectra into resampled timeseries 
-  for (i = 0; i < resampler->repeat[2]; ++i) {
-	cufft_status = cufftExecC2R(resampler->cufft_plan[2],
-		resampler->gpu_B_0 + i*resampler->batch[2]*(RESAMPLING_CHUNK_SIZE/2+1) + resampler->skip_chan,
-		(cufftReal *) resampler->gpu_A_0 + i*resampler->batch[2]*(RESAMPLING_CHUNK_SIZE*EXPANSION_FACTOR/DECIMATION_FACTOR));
-	cufft_status = cufftExecC2R(resampler->cufft_plan[2],
-		resampler->gpu_B_1 + i*resampler->batch[2]*(RESAMPLING_CHUNK_SIZE/2+1) + resampler->skip_chan,
-		(cufftReal *) resampler->gpu_A_1 + i*resampler->batch[2]*(RESAMPLING_CHUNK_SIZE*EXPANSION_FACTOR/DECIMATION_FACTOR));
-#ifdef GPU_DEBUG
-	if (cufft_status != CUFFT_SUCCESS){
-	    hashpipe_error(__FILE__, "CUFFT error: plan 2 execution failed");
-	    return STATE_ERROR;
- 	}
-#endif // GPU_DEBUG
+  // do transform for pol 0
+  cufft_status = cufftExecR2C(resampler->cufft_plan[1],
+    resampler->swarm_c2r_ifft_out_0, resampler->swarm_r2c_fft_out_0);
+  if (cufft_status != CUFFT_SUCCESS){
+    hashpipe_error(__FILE__, "CUFFT error: plan 1 execution failed (pol 0)");
+    return STATE_ERROR;
+  }
+  // do transform for pol 1
+  cufft_status = cufftExecR2C(resampler->cufft_plan[1],
+    resampler->swarm_c2r_ifft_out_1, resampler->swarm_r2c_fft_out_1);
+  if (cufft_status != CUFFT_SUCCESS){
+    hashpipe_error(__FILE__, "CUFFT error: plan 1 execution failed (pol 1)");
+    return STATE_ERROR;
   }
 #ifdef GPU_DEBUG
   cudaEventRecord(resampler->toc,resampler->stream);
   cudaEventSynchronize(resampler->toc);
   if (aphids_ctx->iters % APHIDS_UPDATE_EVERY == 0) {
-	cudaEventElapsedTime(&elapsedTime,resampler->tic,resampler->toc);
-	aphids_log(aphids_ctx, APHIDS_LOG_INFO, "plan 2 cufft took %f ms [%f Gbps]",
-		elapsedTime,  2*resampler->repeat[2]*resampler->batch[2]*resampler->fft_size[2] / (elapsedTime * 1e-3) /1e9 /2);
-	fprintf(stdout,"GPU_DEBUG : plan 2 took %f ms [%f Gbps] \n", 
-		elapsedTime,  2*resampler->repeat[2]*resampler->batch[2]*resampler->fft_size[2] / (elapsedTime * 1e-3) /1e9 /2);
-	fflush(stdout);
+    cudaEventElapsedTime(&elapsedTime,resampler->tic,resampler->toc);
+    aphids_log(aphids_ctx, APHIDS_LOG_INFO, "plan 1 cufft took %f ms [%f Gbps]",
+      elapsedTime, resampler->batch[1]*resampler->fft_size[1] / (elapsedTime * 1e-3) /1e9 /2);
+    fprintf(stdout,"GPU_DEBUG : plan 1 took %f ms [%f Gbps] \n", 
+      elapsedTime, resampler->batch[1]*resampler->fft_size[1] / (elapsedTime * 1e-3) /1e9 /2);
+    fflush(stdout);
+  }
+#endif // GPU_DEBUG
+#endif // GPU_COMPUTE
+  return STATE_PROC;
+}
+
+/* 3rd stage: R2dbeC2R IFFT
+ * input: swarm_r2c_fft_out_[01]
+ * output: r2dbe_c2r_ifft_out_[01]
+ */
+int R2dbeC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx) {
+  cufftResult cufft_status;
+  
+#ifdef GPU_COMPUTE
+#ifdef GPU_DEBUG
+  float elapsedTime;
+  cudaEventRecord(resampler->tic,resampler->stream);
+#endif // GPU_DEBUG
+  // do transform for pol 0, skipping 150MHz at the start
+  cufft_status = cufftExecC2R(resampler->cufft_plan[2],
+    resampler->swarm_r2c_fft_out_0+resampler->skip_chan, resampler->r2dbe_c2r_ifft_out_0);
+  if (cufft_status != CUFFT_SUCCESS){
+    hashpipe_error(__FILE__, "CUFFT error: plan 2 execution failed (pol 0)");
+    return STATE_ERROR;
+  }
+  // do transform for pol 1, skipping 150MHz at the start
+  cufft_status = cufftExecC2R(resampler->cufft_plan[2],
+    resampler->swarm_r2c_fft_out_1+resampler->skip_chan, resampler->r2dbe_c2r_ifft_out_1);
+  if (cufft_status != CUFFT_SUCCESS){
+    hashpipe_error(__FILE__, "CUFFT error: plan 2 execution failed (pol 1)");
+    return STATE_ERROR;
+  }
+#ifdef GPU_DEBUG
+  cudaEventRecord(resampler->toc,resampler->stream);
+  cudaEventSynchronize(resampler->toc);
+  if (aphids_ctx->iters % APHIDS_UPDATE_EVERY == 0) {
+    cudaEventElapsedTime(&elapsedTime,resampler->tic,resampler->toc);
+    aphids_log(aphids_ctx, APHIDS_LOG_INFO, "plan 2 cufft took %f ms [%f Gbps]",
+      elapsedTime, resampler->batch[2]*resampler->fft_size[2] / (elapsedTime * 1e-3) /1e9 /2);
+    fprintf(stdout,"GPU_DEBUG : plan 2 took %f ms [%f Gbps] \n", 
+      elapsedTime, resampler->batch[2]*resampler->fft_size[2] / (elapsedTime * 1e-3) /1e9 /2);
+    fflush(stdout);
   }
 #endif // GPU_DEBUG
 #endif // GPU_COMPUTE
@@ -642,18 +728,25 @@ int aphids_resampler_destroy(aphids_resampler_t *resampler) {
   int i;
   cufftResult cufft_status;
   HANDLE_ERROR( cudaSetDevice(resampler->deviceId) );
-  HANDLE_ERROR( cudaFree(resampler->gpu_A_0) );
-  HANDLE_ERROR( cudaFree(resampler->gpu_B_0) );
-  HANDLE_ERROR( cudaFree(resampler->gpu_A_1) );
-  HANDLE_ERROR( cudaFree(resampler->gpu_B_1) );
+  HANDLE_ERROR( cudaFree(resampler->beng_0) );
+  HANDLE_ERROR( cudaFree(resampler->beng_1) );
+  HANDLE_ERROR( cudaFree(resampler->beng_fluffed_0) );
+  HANDLE_ERROR( cudaFree(resampler->beng_fluffed_1) );
+  HANDLE_ERROR( cudaFree(resampler->swarm_c2r_ifft_out_0) );
+  HANDLE_ERROR( cudaFree(resampler->swarm_c2r_ifft_out_1) );
+  HANDLE_ERROR( cudaFree(resampler->swarm_r2c_fft_out_0) );
+  HANDLE_ERROR( cudaFree(resampler->swarm_r2c_fft_out_1) );
+  HANDLE_ERROR( cudaFree(resampler->r2dbe_c2r_ifft_out_0) );
+  HANDLE_ERROR( cudaFree(resampler->r2dbe_c2r_ifft_out_1) );
   HANDLE_ERROR( cudaFree(resampler->gpu_out_buf) );
+  
   for (i=0; i < 3; ++i){
-	cufft_status = cufftDestroy(resampler->cufft_plan[i]);
-	if (cufft_status != CUFFT_SUCCESS){
-#ifdef GPU_DEBUG
+    cufft_status = cufftDestroy(resampler->cufft_plan[i]);
+    if (cufft_status != CUFFT_SUCCESS) {
+//~ #ifdef GPU_DEBUG
           hashpipe_error(__FILE__, "CUFFT error: problem destroying plan %d\n", i);
-#endif
-	} 
+//~ #endif
+    } 
   }
 #ifdef GPU_DEBUG
   cudaEventDestroy(resampler->tic);
@@ -670,6 +763,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
   int rv = 0;
   int index_in = 0;
   int index_out = 0;
+  int iter;
   beng_group_completion_t this_bgc;
   vdif_in_databuf_t *db_in = (vdif_in_databuf_t *)args->ibuf;
   vdif_out_databuf_t *db_out = (vdif_out_databuf_t *)args->obuf;
@@ -807,21 +901,22 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	uint64_t b_zero = this_bgc.bfc[0].b;
 	// de-packetize vdif
 	// zero out the buffer first
-	cudaMemset(resampler[i].gpu_A_0, 0,BENG_FRAMES_PER_GROUP*BENG_SNAPSHOTS*BENG_CHANNELS_*sizeof(cufftComplex));
-	cudaMemset(resampler[i].gpu_A_1, 0,BENG_FRAMES_PER_GROUP*BENG_SNAPSHOTS*BENG_CHANNELS_*sizeof(cufftComplex));
+	cudaMemset(resampler[i].beng_0, 0, BENG_FRAMES_PER_GROUP*BENG_SNAPSHOTS*BENG_CHANNELS_*2*sizeof(int8_t));
+	cudaMemset(resampler[i].beng_1, 0, BENG_FRAMES_PER_GROUP*BENG_SNAPSHOTS*BENG_CHANNELS_*2*sizeof(int8_t));
+	
 	// call to vdif_to_beng?
-        threads.x = 32; threads.y = 32; threads.z = 1;
-        blocks.x = 128, blocks.y = 1; blocks.z = 1; 
-        vdif_to_beng<<<blocks,threads>>>((int32_t*) this_bgc.bgv_buf_gpu, 
-					resampler[i].gpu_A_0, resampler[i].gpu_A_1,
-					this_bgc.beng_group_vdif_packet_count,b_zero);
+	threads.x = 32; threads.y = 32; threads.z = 1;
+	blocks.x = 128, blocks.y = 1; blocks.z = 1; 
+	vdif_to_beng<<<blocks,threads>>>((int32_t*) this_bgc.bgv_buf_gpu, 
+		resampler[i].beng_0, resampler[i].beng_1,
+		this_bgc.beng_group_vdif_packet_count,b_zero);
+	cudaDeviceSynchronize();
 	
 	// ... set the input buffer block free ...
 	hashpipe_databuf_set_free((hashpipe_databuf_t *)db_in, index_in);
 	// ... and increment input buffer index.
 	fprintf(stdout,"%s:%s(%d): input buffer %d free\n",__FILE__,__FUNCTION__,__LINE__,index_in);
 	index_in = (index_in + 1) % db_in->header.n_block;
-
 	
 	// In principle we can start processing on next input block on a 
 	// separate GPU, for now serialize GPU work, but use different ones
@@ -831,80 +926,93 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	//     and if so, start task n+1 and update state indicator
 	//   * needs moving wait-filled/free around and dependent on the
 	//     processing state for each GPU
-
-	// reorder BENG data
-	//~ already set device: cudaSetDevice(i);
-        threads.x = 16; threads.y = 16; threads.z = 1;
-        blocks.x = (BENG_CHANNELS_*BENG_SNAPSHOTS/(16*16)); blocks.y = 1; blocks.z = 1;
-	reorderTzp_smem<<<blocks,threads>>>(resampler[i].gpu_A_0, resampler[i].gpu_B_0, BENG_BUFFER_IN_COUNTS);
-	reorderTzp_smem<<<blocks,threads>>>(resampler[i].gpu_A_1, resampler[i].gpu_B_1, BENG_BUFFER_IN_COUNTS);
-
-	// transform SWARM spectra to time series
-	state = SwarmC2R(&(resampler[i]), &aphids_ctx);
-
-	// transform SWARM time series to R2DBE compatible spectra
-	state = SwarmR2C(&(resampler[i]), &aphids_ctx);
-
-	// transform R2DBE spectra to trimmed and resampled time series
-	state = Hr2dbeC2R(&(resampler[i]), &aphids_ctx);
-
-	// calculate threshold for quantization
-#ifdef QUANTIZE_THRESHOLD_COMPUTE
-	if (resampler[i].quantizeThreshold_0 == 0){
-
-          // wrap as device pointer
-          thrust::device_ptr<float> dev_ptr;
-
-          // setup arguments
-          summary_stats_unary_op<float>  unary_op;
-          summary_stats_binary_op<float> binary_op;
-          summary_stats_data<float>      init,result;
-
-	  // calculate variance for phased sums independently
-  	  init.initialize();
-
-	  dev_ptr = thrust::device_pointer_cast((float *) resampler[i].gpu_A_0);
-          result = thrust::transform_reduce(dev_ptr, 
-						dev_ptr + 2*BENG_CHANNELS_*BENG_SNAPSHOTS,
-						unary_op, init, binary_op);
-	  resampler[i].quantizeThreshold_0 = sqrt(result.variance());
-	  // add computation of mean
-	  resampler[i].quantizeOffset_0 = result.average();
-
-	  dev_ptr = thrust::device_pointer_cast((float *) resampler[i].gpu_A_1);
-  	  init.initialize();
-          result = thrust::transform_reduce(dev_ptr, 
-						dev_ptr + 2*BENG_CHANNELS_*BENG_SNAPSHOTS,
-						unary_op, init, binary_op);
-	  resampler[i].quantizeThreshold_1 = sqrt(result.variance());
-	  // add computation of mean
-	  resampler[i].quantizeOffset_1 = result.average();
-
-      // set the same quantization parameters across all resamplers
-      for (int ii=0; ii < NUM_GPU; ii++) {
-		  resampler[ii].quantizeThreshold_0 = resampler[i].quantizeThreshold_0;
-		  resampler[ii].quantizeOffset_0 = resampler[i].quantizeOffset_0;
-		  resampler[ii].quantizeThreshold_1 = resampler[i].quantizeThreshold_1;
-		  resampler[ii].quantizeOffset_1 = resampler[i].quantizeOffset_1;
-	  }
-	  fprintf(stdout,"%s:%s(%d): Quantization parameters set to {0:(%f,%f),1:(%f,%f)}\n",__FILE__,__FUNCTION__,__LINE__,resampler[i].quantizeOffset_0,resampler[i].quantizeThreshold_0,resampler[i].quantizeOffset_1,resampler[i].quantizeThreshold_1);
-    }
-#endif
-
-	// quantize to 2-bits
-	//~ already set device: cudaSetDevice(i);
-	threads.x = 16; threads.y = 32; threads.z = 1;
-	blocks.x = 512; blocks.y = 1; blocks.z = 1;
-	quantize2bit<<<blocks,threads>>>((float *) resampler[i].gpu_A_0, (unsigned int*) resampler[i].gpu_B_0, 
-	(2*BENG_CHANNELS_*BENG_SNAPSHOTS*EXPANSION_FACTOR),
-	resampler[i].quantizeThreshold_0,resampler[i].quantizeOffset_0);
-	quantize2bit<<<blocks,threads>>>((float *) resampler[i].gpu_A_1, (unsigned int*) resampler[i].gpu_B_1, 
-	(2*BENG_CHANNELS_*BENG_SNAPSHOTS*EXPANSION_FACTOR),
-	resampler[i].quantizeThreshold_1,resampler[i].quantizeOffset_1);
 	
-	// copy data to output buffer
-	cudaMemcpy((void *)resampler[i].gpu_out_buf,(void *)resampler[i].gpu_B_0,sizeof(vdif_out_data_block_t),cudaMemcpyDeviceToDevice);
-	cudaMemcpy((void *)resampler[i].gpu_out_buf + sizeof(vdif_out_data_block_t),(void *)resampler[i].gpu_B_1,sizeof(vdif_out_data_block_t),cudaMemcpyDeviceToDevice);
+	for (iter=0; iter<RESAMPLE_BATCH_ITERATIONS; iter++) {
+		// first zero output buffers
+		cudaMemset((void *)resampler[i].beng_fluffed_0, 0, RESAMPLE_BATCH_SNAPSHOTS*BENG_CHANNELS*sizeof(cufftComplex));
+		cudaMemset((void *)resampler[i].beng_fluffed_1, 0, RESAMPLE_BATCH_SNAPSHOTS*BENG_CHANNELS*sizeof(cufftComplex));
+		
+		// then inflate batch to cufftComplex
+		threads.x = 32; threads.y = 32; threads.z = 1;
+		blocks.x = 16, blocks.y = 1; blocks.z = 1;
+		beng_int8_to_cufftComplex<<<blocks,threads>>>(
+			resampler[i].beng_0 + iter*2*RESAMPLE_BATCH_SNAPSHOTS*BENG_CHANNELS_,
+			resampler[i].beng_fluffed_0, RESAMPLE_BATCH_SNAPSHOTS);
+		cudaDeviceSynchronize();
+		beng_int8_to_cufftComplex<<<blocks,threads>>>(
+			resampler[i].beng_1 + iter*2*RESAMPLE_BATCH_SNAPSHOTS*BENG_CHANNELS_,
+			resampler[i].beng_fluffed_1, RESAMPLE_BATCH_SNAPSHOTS);
+		cudaDeviceSynchronize();
+		
+		// transform SWARM spectra to time series
+		state = SwarmC2R(&(resampler[i]), &aphids_ctx);
+		cudaDeviceSynchronize();
+		
+		// transform SWARM time series to R2DBE compatible spectra
+		state = SwarmR2C(&(resampler[i]), &aphids_ctx);
+		cudaDeviceSynchronize();
+		
+		// transform R2DBE spectra to trimmed and resampled time series
+		state = R2dbeC2R(&(resampler[i]), &aphids_ctx);
+		cudaDeviceSynchronize();
+		
+		// calculate threshold for quantization
+#ifdef QUANTIZE_THRESHOLD_COMPUTE
+		if (resampler[i].quantizeThreshold_0 == 0) {
+			// wrap as device pointer
+			thrust::device_ptr<float> dev_ptr;
+			// setup arguments
+			summary_stats_unary_op<float>  unary_op;
+			summary_stats_binary_op<float> binary_op;
+			summary_stats_data<float>      init,result;
+			// initialize
+			init.initialize();
+			// calculate quantization parameters for pol 0
+			dev_ptr = thrust::device_pointer_cast((float *) resampler[i].r2dbe_c2r_ifft_out_0);
+			result = thrust::transform_reduce(dev_ptr, 
+				dev_ptr + FFT_BATCHES_R2DBE_C2R*FFT_SIZE_R2DBE_C2R,
+				unary_op, init, binary_op);
+			resampler[i].quantizeThreshold_0 = sqrt(result.variance());
+			resampler[i].quantizeOffset_0 = result.average();
+			// calculate quantization parameters for pol 1
+			dev_ptr = thrust::device_pointer_cast((float *) resampler[i].r2dbe_c2r_ifft_out_1);
+			init.initialize();
+			result = thrust::transform_reduce(dev_ptr, 
+				dev_ptr + FFT_BATCHES_R2DBE_C2R*FFT_SIZE_R2DBE_C2R,
+				unary_op, init, binary_op);
+			resampler[i].quantizeThreshold_1 = sqrt(result.variance());
+			resampler[i].quantizeOffset_1 = result.average();
+			// set the same quantization parameters across all resamplers
+			for (int ii=0; ii < NUM_GPU; ii++) {
+				resampler[ii].quantizeThreshold_0 = resampler[i].quantizeThreshold_0;
+				resampler[ii].quantizeOffset_0 = resampler[i].quantizeOffset_0;
+				resampler[ii].quantizeThreshold_1 = resampler[i].quantizeThreshold_1;
+				resampler[ii].quantizeOffset_1 = resampler[i].quantizeOffset_1;
+			}
+			fprintf(stdout,"%s:%s(%d): Quantization parameters set to {0:(%f,%f),1:(%f,%f)}\n",__FILE__,__FUNCTION__,__LINE__,resampler[i].quantizeOffset_0,resampler[i].quantizeThreshold_0,resampler[i].quantizeOffset_1,resampler[i].quantizeThreshold_1);
+		}
+		cudaDeviceSynchronize();
+#endif
+		// quantize to 2-bits
+		threads.x = 16; threads.y = 32; threads.z = 1;
+		blocks.x = 512; blocks.y = 1; blocks.z = 1;
+		quantize2bit<<<blocks,threads>>>(
+			(float *) resampler[i].r2dbe_c2r_ifft_out_0, // input
+			(unsigned int*) &(resampler[i].gpu_out_buf->chan[0].datas[iter*VDIF_OUT_PKTS_PER_BLOCK/RESAMPLE_BATCH_ITERATIONS]),    // output
+			FFT_BATCHES_R2DBE_C2R*FFT_SIZE_R2DBE_C2R,    // number of samples
+			resampler[i].quantizeThreshold_0,            // threshold
+			resampler[i].quantizeOffset_0                // offset
+		);
+		cudaDeviceSynchronize();
+		quantize2bit<<<blocks,threads>>>(
+			(float *) resampler[i].r2dbe_c2r_ifft_out_1, // input
+			(unsigned int*) &(resampler[i].gpu_out_buf->chan[1].datas[iter*VDIF_OUT_PKTS_PER_BLOCK/RESAMPLE_BATCH_ITERATIONS]),    // output
+			FFT_BATCHES_R2DBE_C2R*FFT_SIZE_R2DBE_C2R,    // number of samples
+			resampler[i].quantizeThreshold_0,            // threshold
+			resampler[i].quantizeOffset_0                // offset
+		);
+		cudaDeviceSynchronize();
+	}
 
 	// Output to next thread to mirror the input?:
 	//   * update metadata that describes the amount of data available
