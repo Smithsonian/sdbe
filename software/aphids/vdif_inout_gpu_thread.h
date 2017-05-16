@@ -53,7 +53,8 @@
 #define FFT_BATCHES_R2DBE_C2R FFT_BATCHES_SWARM_R2C
 
 //output
-#define OUTPUT_MAX_VALUE_MASK 3 // ((int)pow((double) 2,OUTPUT_BITS_PER_SAMPLE) - 1)
+#define OUTPUT_MAX_VALUE_MASK_2BIT 3
+#define OUTPUT_MAX_VALUE_MASK_4BIT 15
 
 // VDIF packed B-engine packet
 #define BENG_VDIF_HDR_0_OFFSET_INT 4 // b1 b2 b3 b4

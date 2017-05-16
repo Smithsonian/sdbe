@@ -589,10 +589,51 @@ __global__ void quantize2bit(const float *in, unsigned int *out, int N, float th
 		/* Assume sample x > 0, lower bit indicates above threshold. Then
 		 * test, if x < 0, XOR with 11.
 		 */
-		int sample_2bit = ( ((fabsf(val_in) >= thresh) | 0x02) ^ (0x03*(val_in < 0)) ) & OUTPUT_MAX_VALUE_MASK;
+		int sample_2bit = ( ((fabsf(val_in) >= thresh) | 0x02) ^ (0x03*(val_in < 0)) ) & OUTPUT_MAX_VALUE_MASK_2BIT;
 		sample_2bit = sample_2bit << (threadIdx.x*2);
 		out[idx_out] = 0;
 		atomicOr(out+idx_out, sample_2bit);
+		idx_out += gridDim.x*blockDim.y;
+	}
+}
+
+/** @brief 4-bit quantization kernel
+
+This 4bit quantization kernel must be called with 8 x-threads,
+any number of y-threads, and any number of x-blocks.
+@author Andre Young
+@date June 2015
+*/
+__global__ void quantize4bit(const float *in, unsigned int *out, int N, float sigma, float offset) {
+	int idx_in = blockIdx.x*blockDim.x*blockDim.y + threadIdx.y*blockDim.x + threadIdx.x;
+	int idx_out = blockIdx.x*blockDim.y + threadIdx.y;
+	/* Optimal 4-bit quantization thresholds, see Jenet & Anderson,
+	 * ``The effects of digitization on nonstationary stochastic signals
+	 * with applications to pulsar signal baseband recording,'' PASP,
+	 * 110, 1467--1478, 1998.
+	 */
+	//                         0       1       2       3      4      5      6      7
+	const float thresh[8] = {0.0, 0.2514, 0.5152, 0.7928, 1.093, 1.432, 1.839, 2.397};
+	const int idx_b2_from_b3[2] = {2, 6};
+	const int idx_b1_from_b3b2[4] = {1, 3, 5, 7};
+	int b4, b3, b2, b1;
+	float val_in;
+	int sample_4bit;
+	
+	for (int ii=0; (idx_in+ii)<N; ii+=gridDim.x*blockDim.x*blockDim.y)
+	{
+		val_in = (in[idx_in+ii] - offset)/sigma;
+		b4 = val_in > 0;
+		val_in = fabsf(val_in);
+		b3 = val_in >= thresh[4];
+		b2 = val_in >= thresh[idx_b2_from_b3[b3]];
+		b1 = val_in >= thresh[idx_b1_from_b3b2[(b3<<1) | b2]];
+		sample_4bit = ((b3<<2 | b2<<1 | b1)) ^ (0x07*(b4 == 0));
+		sample_4bit = (sample_4bit & 0x07) | (b4<<3);
+		sample_4bit = sample_4bit & OUTPUT_MAX_VALUE_MASK_4BIT;
+		sample_4bit = sample_4bit << (threadIdx.x*4);
+		out[idx_out] = 0;
+		atomicOr(out+idx_out, sample_4bit);
 		idx_out += gridDim.x*blockDim.y;
 	}
 }
