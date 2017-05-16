@@ -58,7 +58,8 @@ typedef struct vdif_out_header {
 // bandwidth (2 SWARM channels), the packet size is 4096 bytes.
 // For 2bit samples over full bandwidth, the packet size is 8192 bytes 
 // (valid for SWARM rates of 10/11 and higher).
-#define VDIF_OUT_PKT_DATA_SIZE 8192 // size in bytes
+// For 4bit samples over full bandwidth the packet size is 16384 bytes.
+#define VDIF_OUT_PKT_DATA_SIZE 16384 // size in bytes
 typedef struct vdif_out_data {
 	char data[VDIF_OUT_PKT_DATA_SIZE];
 } vdif_out_data_t;

@@ -251,16 +251,16 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
    */
   cudaMalloc((void **)&(resampler->r2dbe_c2r_ifft_out_0), FFT_BATCHES_R2DBE_C2R*FFT_SIZE_R2DBE_C2R*sizeof(cufftReal));
   cudaMalloc((void **)&(resampler->r2dbe_c2r_ifft_out_1), FFT_BATCHES_R2DBE_C2R*FFT_SIZE_R2DBE_C2R*sizeof(cufftReal));
-  /* Holds the requantized 2-bit output data for entire group of
+  /* Holds the requantized 4-bit output data for entire group of
    * B-frames processed. Total size requirement is:
    *     sizeof(vdif_out_group_t) -- this is everything
    *   =     2 -- number of polarizations [VDIF_CHAN]
    *   x 16384 -- number of VDIF packets per group [VDIF_OUT_PKTS_PER_BLOCK]
-   *   x  8192 -- number of bytes per VDIF packet data [VDIF_OUT_PKT_DATA_SIZE]
-   *   = 268435456 bytes total (single structure for both polarizations)
+   *   x 16384 -- number of bytes per VDIF packet data [VDIF_OUT_PKT_DATA_SIZE]
+   *   = 536870912 bytes total (single structure for both polarizations)
    */
   cudaMalloc((void **)&(resampler->gpu_out_buf), sizeof(vdif_out_data_group_t));
-  //////// Total allocated memory in this batch: 1614024944 bytes //////
+  //////// Total allocated memory in this batch: 1882460400 bytes //////
   
   /*
    * The number of skipped channels is needed before setting parameters 
@@ -1034,10 +1034,10 @@ static void *run_method(hashpipe_thread_args_t * args) {
 		}
 		cudaDeviceSynchronize();
 #endif
-		// quantize to 2-bits
-		threads.x = 16; threads.y = 32; threads.z = 1;
+		// quantize to 4-bits
+		threads.x = 8; threads.y = 64; threads.z = 1;
 		blocks.x = 512; blocks.y = 1; blocks.z = 1;
-		quantize2bit<<<blocks,threads>>>(
+		quantize4bit<<<blocks,threads>>>(
 			(float *) resampler[i].r2dbe_c2r_ifft_out_0, // input
 			(unsigned int*) &(resampler[i].gpu_out_buf->chan[0].datas[iter*VDIF_OUT_PKTS_PER_BLOCK/RESAMPLE_BATCH_ITERATIONS]),    // output
 			FFT_BATCHES_R2DBE_C2R*FFT_SIZE_R2DBE_C2R,    // number of samples
@@ -1045,7 +1045,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 			resampler[i].quantizeOffset_0                // offset
 		);
 		cudaDeviceSynchronize();
-		quantize2bit<<<blocks,threads>>>(
+		quantize4bit<<<blocks,threads>>>(
 			(float *) resampler[i].r2dbe_c2r_ifft_out_1, // input
 			(unsigned int*) &(resampler[i].gpu_out_buf->chan[1].datas[iter*VDIF_OUT_PKTS_PER_BLOCK/RESAMPLE_BATCH_ITERATIONS]),    // output
 			FFT_BATCHES_R2DBE_C2R*FFT_SIZE_R2DBE_C2R,    // number of samples
@@ -1057,7 +1057,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 
 	// Output to next thread to mirror the input?:
 	//   * update metadata that describes the amount of data available
-	db_out->blocks[index_out].bit_depth = 2;
+	db_out->blocks[index_out].bit_depth = 4;
 	db_out->blocks[index_out].N_32bit_words_per_chan = (2*BENG_CHANNELS_*BENG_SNAPSHOTS*EXPANSION_FACTOR) / (32 / db_out->blocks[index_out].bit_depth);
 	db_out->blocks[index_out].gpu_id = resampler[i].deviceId; //index_out % NUM_GPU;
 	db_out->blocks[index_out].vdg_buf_gpu = resampler[i].gpu_out_buf;
