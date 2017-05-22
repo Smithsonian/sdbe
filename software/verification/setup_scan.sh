@@ -14,9 +14,9 @@ EXP=$1
 OBS=$2
 SCAN=$3
 PKTCOUNT=${4-"1024"}
-PKTSIZE=${5-"4128"}
+PKTSIZE=${5-"8224"}
 POS_PATH="/home/oper/difx/data"
-POS_EXEC="/home/oper/difx/data/prep-one-scan.sh"
+POS_EXEC="/home/oper/bin/prep-one-scan.sh"
 
 # change to prep-one-scan required path
 SCANNAME="${EXP}_${OBS}_${SCAN}"

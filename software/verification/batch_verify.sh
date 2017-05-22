@@ -15,7 +15,7 @@ SCAN=$3
 
 EXEC="./verify_scan.py"
 ARGS="-c 32 -v 1"
-BATCH_LOG="./out/batch_verify.log"
+BATCH_LOG="/home/ayoung/Work/obs/Apr2017/aphids/verify/lo/batch_verify.log"
 
 echo "Batch started `date`" >> $BATCH_LOG
 echo "====================" >> $BATCH_LOG
@@ -25,7 +25,7 @@ echo "====================" >> $BATCH_LOG
 #~ for f in `ls $SEARCH_STR` ; do
 PATH_SWARM_DATA=/mnt/disks/1/0/data
 SEARCH_STR=`echo "${PATH_SWARM_DATA}/${EXP}_${OBS}_${SCAN}.vdif"`
-for f in `ssh Mark6-4015 "ls $SEARCH_STR"` ; do
+for f in `ssh Mark6-4016 "ls $SEARCH_STR"` ; do
 	FILENAME=`echo $f | grep -E -o "[^[:space:]/]*.vdif"`
 	PARTS=`echo $FILENAME | sed y/\_/\ / | sed s/".vdif"// | sed s/Sn/Sm/`
 	if $EXEC $ARGS $PARTS ; then 
