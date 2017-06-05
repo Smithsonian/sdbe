@@ -23,10 +23,11 @@ from logging import getLogger
 
 import vdif
 
-FRAME_SIZE_BYTES = 8224
+FRAME_HEADER_BYTES = 32
 R2DBE_SAMPLES_PER_WINDOW = 32768
+R2DBE_RATE = 4096e6
 
-def read_from_file(filename,num_frames,offset_frames=0,samples_per_window=R2DBE_SAMPLES_PER_WINDOW,frame_size_bytes=FRAME_SIZE_BYTES):
+def read_from_file(filename,num_frames,offset_frames=0,samples_per_window=R2DBE_SAMPLES_PER_WINDOW):
 	"""
 	Read a given number of VDIF frames from file.
 	
@@ -36,7 +37,6 @@ def read_from_file(filename,num_frames,offset_frames=0,samples_per_window=R2DBE_
 	num_frames -- The number of frames to read.
 	offset_frames -- Number of frames to skip at the start of the file.
 	samples_per_window -- Samples per window (default is 32768)
-	frame_size_bytes -- Number of bytes in VDIF frame (default is 8224)
 	
 	Returns:
 	--------
@@ -54,16 +54,21 @@ def read_from_file(filename,num_frames,offset_frames=0,samples_per_window=R2DBE_
 	psn = 0;
 	vdif0 = None
 	with open(filename,'r') as f:
+		# determine packet size
+		b = f.read(FRAME_HEADER_BYTES)
+		vh = vdif.VDIFFrameHeader.from_bin(b)
+		frame_size_bytes = vh.frame_length * 8
+		f.seek(0,0)
 		if (offset_frames > 0):
 			logger.info('Reading from offset of %d VDIF frames.' % offset_frames)
 			offset_bytes = 0
-			for ii in range(offset_frames):
-				frame_bytes = f.read(frame_size_bytes)
-				offset_bytes += frame_size_bytes
-				if (len(frame_bytes) != frame_size_bytes):
-					logger.error("EoF reached prematurely")
-					break
-			logger.info('Offset by %d bytes.' % offset_bytes)
+			# skip all-but-one first
+			f.seek(frame_size_bytes*(offset_frames-1),0)
+			# read last skip and see if it is full frame
+			frame_bytes = f.read(frame_size_bytes)
+			if (len(frame_bytes) != frame_size_bytes):
+				logger.error("EoF reached prematurely")
+			logger.info('Offset by %d bytes.' % frame_size_bytes*offset_frames)
 		
 		for ii in range(0,num_frames):
 			frame_bytes = f.read(frame_size_bytes)
