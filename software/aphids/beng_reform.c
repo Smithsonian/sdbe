@@ -141,19 +141,20 @@ void beng_reform_headers(vdif_in_packet_t *pkts, int npkts) {
 	newbeng_hdr_t *hdr;
 	beng_timestamp_t t_now;
 	vdif_in_packet_t *pkt;
-	if (T0.sec == -1 && T0.clk == -1) {
-		hdr = (newbeng_hdr_t *)&(pkts->header.beng);
-		_read_beng_timestamp(hdr,&T0);
-		TPREV.sec = T0.sec;
-		TPREV.clk = T0.clk;
-		BPREV = 0;
-	}
 	for (ii=0; ii<npkts; ii++) {
 		// point to next packet
 		pkt = pkts+ii;
 		// ignore invalid packets
 		if (pkt->header.w0.invalid) {
 			continue;
+		}
+		// set reference time if it is not already set
+		if (T0.sec == -1 && T0.clk == -1) {
+			hdr = (newbeng_hdr_t *)&(pkt->header.beng);
+			_read_beng_timestamp(hdr,&T0);
+			TPREV.sec = T0.sec;
+			TPREV.clk = T0.clk;
+			BPREV = 0;
 		}
 		// get pointer to header, as new format
 		hdr = (newbeng_hdr_t *)&(pkt->header.beng);
