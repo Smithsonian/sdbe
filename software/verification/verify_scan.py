@@ -153,9 +153,9 @@ if __name__ == "__main__":
 	
 	# first compare timestamps
 	filename_aphids = "{2}/{0}_aphids-{1}.vdif".format(scan_to_name(args),tag,path_dat)
-	filename_r2dbe = "r2dbe-1_if-1_{0}.vdif".format(scan_to_name(args).replace("Sm",args.ref_station_code),path_r2dbe)
+	filename_r2dbe = "{1}/r2dbe-1_if-1_{0}.vdif".format(scan_to_name(args).replace("Sm",args.ref_station_code),path_r2dbe)
 	x0,v0 = read_from_file(filename_aphids,1)
-	x1_full,v1 = read_from_file("{0}/{1}".format(path_r2dbe,filename_r2dbe),1)
+	x1_full,v1 = read_from_file(filename_r2dbe,1)
 	if v0.secs_since_epoch > v1.secs_since_epoch:
 		# whoa, something wrong
 		logger.info("APHIDS data v0 is late by one second or more compared to R2DBE data v1...:")
@@ -173,14 +173,14 @@ if __name__ == "__main__":
 		N_skip = 125000 - v0.data_frame
 		x0,v0 = read_from_file(filename_aphids,N_vdif_frames,offset_frames=N_skip)
 		logger.info("   skipped {0} frames at start of APHIDS stream, start time is: {1}@{2}+{3}".format(N_skip,v0.ref_epoch,v0.secs_since_epoch,v0.data_frame))
-		x1_full,v1 = read_from_file("{0}/{1}".format(path_r2dbe,filename_r2dbe),N_vdif_frames)
+		x1_full,v1 = read_from_file(filename_r2dbe,N_vdif_frames)
 		logger.info("   skipped {0} frames at start of R2DBE stream, start time is: {1}@{2}+{3}".format(0,v1.ref_epoch,v1.secs_since_epoch,v1.data_frame))
 	elif v0.secs_since_epoch == v1.secs_since_epoch:
 		# R2DBE data potentially starts earlier, skip until next second
 		N_skip = v0.data_frame
 		x0,v0 = read_from_file(filename_aphids,N_vdif_frames)
 		logger.info("   skipped {0} frames at start of APHIDS stream, start time is: {1}@{2}+{3}".format(0,v0.ref_epoch,v0.secs_since_epoch,v0.data_frame))
-		x1_full,v1 = read_from_file("{0}/{1}".format(path_r2dbe,filename_r2dbe),N_vdif_frames,offset_frames=N_skip)
+		x1_full,v1 = read_from_file(filename_r2dbe,N_vdif_frames,offset_frames=N_skip)
 		logger.info("   skipped {0} frames at start of R2DBE stream, start time is: {1}@{2}+{3}".format(N_skip,v1.ref_epoch,v1.secs_since_epoch,v1.data_frame))
 	
 	# trim 150MHz in x1
