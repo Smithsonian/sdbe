@@ -22,9 +22,9 @@
 #define STATE_PROCESS   1
 
 #ifdef NET_HAMSTER // sets network parameters for hamster >> Mark6-4016
-#define TX_HOST0 "192.168.10.63" // Mark6-4016 IP for receiving chan0 data
+#define TX_HOST0 "10.2.2.32" // Mark6-4016 IP for receiving chan0 data
 #define TX_PORT0 ((uint16_t)54323) // port for receiving chan0 data
-#define TX_HOST1 "192.168.10.65" // Mark6-4016 IP for receiving chan1 data
+#define TX_HOST1 "10.2.2.34" // Mark6-4016 IP for receiving chan1 data
 #define TX_PORT1 ((uint16_t)54325) // port for receiving chan1 data
 #else // sets network parameters for local test
 #define TX_HOST0 "localhost"

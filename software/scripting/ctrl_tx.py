@@ -18,7 +18,7 @@ class ListenerTX(Thread):
 	chan_list = [CHAN_GLOBAL, CHAN_TX]
 	SGTX_CMD = "./sgtx {0}.vdif {1} {2} {3}"
 	SGTX_FMT_STR = "/mnt/disks/%u/%u/{0}/%s".format(PATH_LAST_DIR)
-	SGTX_IP_ADDR = "192.168.10.10"
+	SGTX_IP_ADDR = "10.2.2.10"
 	SGTX_PORT = "12345"
 	
 	def __init__(self, r):

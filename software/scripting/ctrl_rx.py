@@ -13,7 +13,7 @@ from ctrl_shared import *
 class ListenerRX(Thread):
 	chan_list = [CHAN_GLOBAL, CHAN_RX]
 	SGRX_CMD = "./sgrx -o {0}.vdif -a {1} -p {2} -d {3} -m {4}"
-	SGRX_IP_ADDR = ["192.168.10.63","192.168.10.65"]
+	SGRX_IP_ADDR = ["10.2.2.32","10.2.2.34"]
 	SGRX_PORT = ["54323","54325"]
 	SGRX_DISK_LIST = ["0,1,2,3,4,5,6,7","0,1,2,3,4,5,6,7"]
 	SGRX_MOD_LIST = ["1,2","3,4"]
