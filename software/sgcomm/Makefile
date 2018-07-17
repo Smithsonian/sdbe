@@ -2,7 +2,7 @@ CC=gcc
 OPTIM=-O3
 CFLAGS=-std=gnu99 -fPIC $(OPTIM) -g
 LIBS=-lrt -lpthread -lscatgat
-LFLAGS=$(LIBS)
+LFLAGS=$(LIBS) -L./
 DEPS=sgcomm_report.o sgcomm_net.o sgcomm_threads.o
 EXEC_TRANSCEIVER=sgtxrx
 OBJS_TRANSCEIVER=sgcomm_tx_rx_test.o $(DEPS)
@@ -13,13 +13,19 @@ OBJS_TRANSMITTER=sgcomm_tx_test.o $(DEPS)
 EXEC_RECEIVER=sgrx
 OBJS_RECEIVER=sgcomm_rx_test.o $(DEPS)
 
-$(EXEC_TRANSCEIVER): $(OBJS_TRANSCEIVER)
+LIBSCATGAT=libscatgat.so
+
+$(LIBSCATGAT):
+	echo -e "\n\n#######################\nYou need to compile scatter-gather library first and then copy $(LIBSCATGAT) into this directory.\n#######################\n\n"
+	exit 1
+
+$(EXEC_TRANSCEIVER): $(OBJS_TRANSCEIVER) $(LIBSCATGAT)
 	$(CC) -o $@ $^ $(LFLAGS)
 
-$(EXEC_TRANSMITTER): $(OBJS_TRANSMITTER)
+$(EXEC_TRANSMITTER): $(OBJS_TRANSMITTER) $(LIBSCATGAT)
 	$(CC) -o $@ $^ $(LFLAGS)
 
-$(EXEC_RECEIVER): $(OBJS_RECEIVER)
+$(EXEC_RECEIVER): $(OBJS_RECEIVER) $(LIBSCATGAT)
 	$(CC) -o $@ $^ $(LFLAGS)
 
 %.o: %.c
