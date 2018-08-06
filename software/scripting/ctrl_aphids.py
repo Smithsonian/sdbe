@@ -11,13 +11,13 @@ from ctrl_shared import *
 
 class ListenerAPHIDS(Thread):
 	chan_list = [CHAN_GLOBAL, CHAN_APHIDS]
-	APHIDS_CMD = "./aphids_start.py -i {0} --in-type {1} --inout-type {2} --out-type {3} --stdout {4} --stderr {5}"
+	APHIDS_CMD = "aphids_start.py -i {0} --in-type {1} --inout-type {2} --out-type {3} --stdout {4} --stderr {5}"
 	APHIDS_ID = "1"
 	APHIDS_IN_TYPE = "net"
 	APHIDS_INOUT_TYPE = "gpu"
 	APHIDS_OUT_TYPE = "net"
 	
-	APHIDS_CMD_STOP = "./aphids_stop.py {0}"
+	APHIDS_CMD_STOP = "aphids_stop.py {0}"
 	
 	def __init__(self, r):
 		super(ListenerAPHIDS, self).__init__()
