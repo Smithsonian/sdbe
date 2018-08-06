@@ -453,11 +453,6 @@ __global__ void vdif_to_beng(
       int this_snapshot;
       // Calculate the snapshot number within the B-frame...
       this_snapshot = idata/BENG_VDIF_INT_PER_SNAPSHOT + threadIdx.x;
-      // ...and add the [ 0..69 |--> 70..127 ] correction
-      this_snapshot = (this_snapshot + 58) % BENG_SNAPSHOTS;
-      // add offset to snapshot for channels a-to-d
-      int offset_snapshot_index_by;
-      offset_snapshot_index_by = -2 * (int)(this_snapshot > 1);
       /* Get sample data out of global memory. Offset from the 
        * VDIF frame start by the header, the number of snapshots
        * processed by the group of x-threads (idata), and the
@@ -481,14 +476,6 @@ __global__ void vdif_to_beng(
         int this_idx;
         //          (fid,cid,bcount)                       ( ordering {d..a})
         this_idx = idx_beng_data_out + 2*(SWARM_XENG_PARALLEL_CHAN/2-(isample+1));
-        /* Apply the a-to-d channel shift, the offset is given in
-         * snapshots, so the native shift size in the output buffer is
-         * by:
-         *   offset_snapshot_index_by*BENG_CHANNELS_ * sizeof(<buffer_type>)
-         * and for re+im int8_t, the final factor equals 2.
-         */
-        //          (a-to-d shift)
-        this_idx += offset_snapshot_index_by*2*BENG_CHANNELS_;
         // Adjust the index according to the snapshot number.
         this_idx += this_snapshot*2*BENG_CHANNELS_;
         //    (pol X/Y)      (im/re)
@@ -498,8 +485,6 @@ __global__ void vdif_to_beng(
         beng_data_out_0[this_idx + 1] = read_2bit_sample(&samples_per_snapshot_half_0); // real
         //          (fid,cid,bcount)                     ( ordering {h..e})
         this_idx = idx_beng_data_out + 2*(SWARM_XENG_PARALLEL_CHAN-(isample+1));
-        // no e-to-h shift
-        this_idx += 0;
         // Adjust the index according to the snapshot number.
         this_idx += this_snapshot*2*BENG_CHANNELS_;
         //    (pol X/Y)       (im/re)
