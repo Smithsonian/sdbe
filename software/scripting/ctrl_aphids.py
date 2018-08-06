@@ -37,7 +37,7 @@ class ListenerAPHIDS(Thread):
 			# launch sgrx in subprocess
 			self.process_start()
 			# notify transmitter it can start
-			sleep(10)
+			sleep(15)
 			r.publish(CHAN_TX,MSG_START)
 		elif item['data'] == MSG_STOP:
 			print "local stop"
