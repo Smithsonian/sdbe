@@ -12,11 +12,11 @@ OBS=$2
 SCAN=$3
 PKTCOUNT=${4-"1024"}
 PKTSIZE=${5-"8224"}
-OUTPATH=${6-"."}
+OUTPATH=${6-"./work/array"}
 
 REMOTE_HOST="Mark6-4016"
 REMOTE_USER="oper"
-REMOTE_PATH="/home/oper/ayoung"
+REMOTE_PATH="/home/oper/tmp"
 
 # do setup_scan.sh
 if ! ssh "${REMOTE_USER}@${REMOTE_HOST}" ". /home/${REMOTE_USER}/.profile ; cd ${REMOTE_PATH} ; ./setup_scan.sh ${EXP} ${OBS} ${SCAN} ${PKTCOUNT} ${PKTSIZE} " ; then

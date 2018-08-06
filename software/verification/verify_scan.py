@@ -9,16 +9,14 @@ from subprocess import call
 from sys import exit as sys_exit
 from xml.etree.ElementTree import parse
 
+import os
+
 from cross_corr import corr_FXt, corr_Xt_search
 from read_r2dbe_vdif import read_from_file
 from vdif import UTC
 
 # set various constants
 filename_delay = "delays.csv"
-path_dat = "/home/ayoung/Work/obs/Apr2017/aphids/verify/lo/dat"
-path_r2dbe = "/home/ayoung/Work/obs/Apr2017/ref-ant"
-path_out = "/home/ayoung/Work/obs/Apr2017/aphids/verify/lo"
-path_sched = "/home/ayoung/Work/obs/Apr2017/aphids/sched"
 aphids_rate = 4096e6
 r2dbe_rate = 4096e6
 swarm_rate = 4576e6
@@ -26,9 +24,9 @@ sdbe_spv = 32768 # samples-per-vdif
 r2dbe_spv = 32768 # samples-per-vdif
 sdbe_tpv = 8 # time-per-vdif, in microseconds
 freq_start = 150e6 # r2dbe downconversion
-tag = "12"
+tags = {0 : "12", 1 : "34"}
 
-def get_scan_flat_files(args):
+def get_scan_flat_files(args, path_dat="./work/array"):
 	copy_scan_cmd = "./copy_scan.sh {0.exp} {0.obs} {0.scan} {2} {0.pkt_size} {1}"
 	# add some extra packets so that if we need to skip a few at the start we still have enough
 	print copy_scan_cmd.format(args,path_dat,args.pkt_count+256)
@@ -75,7 +73,7 @@ class ScanMeta(object):
 	def start_vextime(self):
 		return self.datetime_to_vextime(self.start_datetime)
 
-def get_scan_meta_info(args):
+def get_scan_meta_info(args, path_sched="./work/sched"):
 	global logger
 	try:
 		
@@ -101,10 +99,16 @@ if __name__ == "__main__":
 		"This script uses copy_scan.sh (locally) and setup_scan.sh (remotely), see documentation for these scripts for more information. "
 		"Scan flat-file name are composed as ${EXP}_${OBS}_${SCAN} with a suffix '_aphids-12' or '_aphids-34' where appropriate, and an extension '.vdif'."
 	)
+	parser.add_argument("-a", "--aphids-input", metavar="AINP", type=int, default=1,
+						help="APHIDS input number (default is 1)")
 	parser.add_argument("-b", "--pkt-size", metavar="PKTSIZE", type=int, default=8224,
 						help="size of VDIF packet in bytes (default=4128)")
 	parser.add_argument("-c", "--pkt-count", metavar="PKTCOUNT", type=int, default=1024,
 						help="number of VDIF packets to slice in each dataset (default=1024)")
+	parser.add_argument("-o", "--output-dir", metavar="OUTDIR", type=str, default="./work",
+						help="root path of all input / output")
+	parser.add_argument("-r", "--r2dbe-input", metavar="R2INP", type=int, default=1,
+						help="R2DBE input number (default is 1)")
 	parser.add_argument("-s", "--ref-station-code", metavar="XX", type=str, default="Jc",
 						help="two-letter station code used to record single-dish data")
 	parser.add_argument("-v", "--verbose", metavar="VERBOSITY", type=int, default=0,
@@ -116,11 +120,18 @@ if __name__ == "__main__":
 	parser.add_argument("scan", metavar="SCAN", type=str,
 						help="scan name")
 	args = parser.parse_args()
-	
+
+	# set paths
+	path_out = args.output_dir
+	path_log = path_out + os.sep + "log" # log file
+	path_dat = path_out + os.sep + "array" # location of pre-processed array data fragments
+	path_r2dbe = path_out + os.sep + "ref-ant" # location of single-dish recorded data
+	path_sched = path_out + os.sep + "sched" # location with schedule xml files
+
 	# global logger
 	logger = getLogger(__name__)
 	formatter = Formatter("%(levelname)s - %(asctime)s - %(message)s")
-	loghndl = FileHandler("{1}/{0}.log".format(scan_to_name(args),path_out),mode="w")
+	loghndl = FileHandler("{1}/{0}.log".format(scan_to_name(args),path_log),mode="w")
 	loghndl.setFormatter(formatter)
 	logger.addHandler(loghndl)
 	if args.verbose <= 0:
@@ -138,7 +149,7 @@ if __name__ == "__main__":
 	logger.info("reading {0} VDIF frames".format(N_vdif_frames))
 	
 	# copy processed scan flat files
-	if get_scan_flat_files(args):
+	if get_scan_flat_files(args,path_dat=path_dat):
 		logger.error("could not retrieve flat file for '{0.exp} {0.obs} {0.scan}'".format(args))
 		sys_exit(1)
 	
@@ -146,14 +157,14 @@ if __name__ == "__main__":
 	time_start = scan_to_datetime(args)
 	
 	# get scan meta information
-	meta = get_scan_meta_info(args)
+	meta = get_scan_meta_info(args, path_sched=path_sched)
 	
 	# initialize return code
 	pass_not_fail = True
 	
 	# first compare timestamps
-	filename_aphids = "{2}/{0}_aphids-{1}.vdif".format(scan_to_name(args),tag,path_dat)
-	filename_r2dbe = "{1}/r2dbe-1_if-1_{0}.vdif".format(scan_to_name(args).replace("Sm",args.ref_station_code),path_r2dbe)
+	filename_aphids = "{2}/{0}_aphids-{1}.vdif".format(scan_to_name(args),tags[args.aphids_input],path_dat)
+	filename_r2dbe = "{0}/{1}_{2}.vdif".format(path_r2dbe,scan_to_name(args).replace("Sw","r2dbe1"),args.r2dbe_input)
 	x0,v0 = read_from_file(filename_aphids,1)
 	x1_full,v1 = read_from_file(filename_r2dbe,1)
 	if v0.secs_since_epoch > v1.secs_since_epoch:
