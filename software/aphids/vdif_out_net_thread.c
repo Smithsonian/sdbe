@@ -89,6 +89,25 @@ static void *run_method(hashpipe_thread_args_t * args) {
 		return NULL;
 	}
 	
+	// gather metadata for output VDIF header
+	char *meta_str = malloc(sizeof(char)*16);
+	if (aphids_get(&aphids_ctx, "vdif:station", meta_str) != APHIDS_OK) {
+		fprintf(stdout,"%s:%s(%d): raw metadata failed to fetch station, using default\n",__FILE__,__FUNCTION__,__LINE__);
+		strcpy(meta_str, "XX");
+	}
+        uint16_t meta_station = ((((uint16_t)meta_str[0])&0x00FF)<<8) | (((uint16_t)meta_str[1])&0x00FF);
+	if (aphids_get(&aphids_ctx, "vdif:bdc", meta_str)  != APHIDS_OK) {
+		fprintf(stdout,"%s:%s(%d): raw metadata failed to fetch bdc, using default\n",__FILE__,__FUNCTION__,__LINE__);
+		strcpy(meta_str, "0");
+	}
+	uint8_t meta_bdc = 0x01 & ((uint8_t)atoi(meta_str));
+	if (aphids_get(&aphids_ctx, "vdif:rx", meta_str)  != APHIDS_OK) {
+		fprintf(stdout,"%s:%s(%d): raw metadata failed to fetch rx, using default\n",__FILE__,__FUNCTION__,__LINE__);
+		strcpy(meta_str, "0");
+	}
+	uint8_t meta_rx = 0x01 & ((uint8_t)atoi(meta_str));
+	fprintf(stdout,"%s:%s(%d): raw metadata is station=%d, bdc=%d, rx=%d\n",__FILE__,__FUNCTION__,__LINE__,meta_station,meta_bdc,meta_rx);
+
 	while (run_threads()) { // hashpipe wants us to keep running
 	
 		switch(state) {
@@ -156,7 +175,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 			} // case STATE_IDLE
 			
 			case STATE_PROCESS: {
-				
+
 				while ((rv = hashpipe_databuf_wait_filled((hashpipe_databuf_t *)db_in, index_db_in)) != HASHPIPE_OK) {
 					if (rv == HASHPIPE_TIMEOUT) { // index is not ready
 						aphids_log(&aphids_ctx, APHIDS_LOG_ERROR, "hashpipe input databuf timeout");
@@ -278,12 +297,13 @@ static void *run_method(hashpipe_thread_args_t * args) {
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w0.secs_inre = secs_inre;
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w1.ref_epoch = ref_epoch;
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w1.df_num_insec = df_num_insec;
+						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w3.stationID = meta_station;
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w3.threadID = 0;
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w3.bps = qs_buf.blocks[index_db_in].bit_depth - 1; // VDIF bits-per-sample adds 1
 						// mark polarization / bdc sideband / receiver sideband
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w4.pol = jj;
-						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w4.bdc_sideband = 0; // <--- Apr2017, Quad2; Apr2017, Quad3 --> vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w4.bdc_sideband = 1;
-						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w4.rx_sideband = 1;
+						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w4.bdc_sideband = meta_bdc; // <--- Apr2017, Quad2; Apr2017, Quad3 --> vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w4.bdc_sideband = 1;
+						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.w4.rx_sideband = meta_rx;
 						vpg_buf_cpu[index_db_in]->chan[jj].packets[ii].header.edh_psn = edh_psn;
 					}
 					df_num_insec++;

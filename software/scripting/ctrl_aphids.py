@@ -112,12 +112,89 @@ class ListenerAPHIDS(Thread):
 	@property
 	def stopped(self):
 		return self._stop.isSet()
-	
+
+def map_quad_sideband_to_vdif_band(quad, sideband, frequency_band):
+	sideband = sideband.upper()
+	err_str = 'Unsupported frequency setup: quad={q}, sideband={s}, frequency band={f}'.format(q=quad, s=sideband, f=frequency_band)
+	if frequency_band == 230:
+		if sideband == "USB":
+			if quad == 1:
+				rx, bdc = 1, 0
+				return rx, bdc
+			elif quad == 2:
+				rx, bdc = 1, 1
+				return rx, bdc
+			else:
+				raise ValueError(err_str)
+		elif sideband == "LSB":
+			if quad == 0:
+				rx, bdc = 0, 0
+				return rx, bdc
+			elif quad == 1:
+				rx, bdc = 0, 1
+				return rx, bdc
+			else:
+				raise ValueError(err_str)
+		else:
+			raise ValueError(err_str)
+	elif frequency_band == 345:
+		if sideband == "USB":
+                        if quad == 0:
+                                rx, bdc = 1, 0
+                                return rx, bdc
+                        elif quad == 1:
+                                rx, bdc = 1, 1
+                                return rx, bdc
+                        else:
+                                raise ValueError(err_str)
+                elif sideband == "LSB":
+                        if quad == 0:
+                                rx, bdc = 0, 0
+				return rx, bdc
+                        elif quad == 1:
+                                rx, bdc = 0, 1
+				return rx, bdc
+                        else:
+                                raise ValueError(err_str)
+                else:
+                        raise ValueError(err_str)
+	else:
+		raise ValueError(err_str)
 
 if __name__ == "__main__":
+	from argparse import ArgumentParser
+
+	parser = ArgumentParser(description="Batch process SDBE datasets with APHIDS")
+        parser.add_argument('-s', '--station-code', type=str, default='Sw',
+						help='VDIF station code to use in output data (default is "Sw")')
+	parser.add_argument('-q', '--quad', type=int, default=1,
+						help='zero-based SWARM quadrant for this dataset (default is 1)')
+	parser.add_argument('-b', '--sideband', type=str, default='USB',
+						help='"USB" or "LSB" (default is "USB")')
+	parser.add_argument('-f', '--frequency-band', type=int, default='230',
+						help='either 230 or 345 (default is 230)')
+        args = parser.parse_args()
+
 	# connect to redis server
 	r = StrictRedis(host=REDIS_HOST,port=REDIS_PORT)
-	
+
+	# set metadata for vdif_out_net_thread
+	vdif_out_net_thread_prefix = "aphids[%d]:vdif_out_net_thread:vdif"
+	rx, bdc = map_quad_sideband_to_vdif_band(args.quad, args.sideband, args.frequency_band)
+	for ii in range(4):
+		# station code
+		key = (vdif_out_net_thread_prefix % ii) + ":station"
+		value = args.station_code
+		r.set(key,value)
+		# BDC sideband
+		key = (vdif_out_net_thread_prefix % ii) + ":bdc"
+		value = str(bdc)
+		r.set(key,value)
+		# RX sideband
+		key = (vdif_out_net_thread_prefix % ii) + ":rx"
+		value = str(rx)
+		r.set(key,value)
+
 	# start listener
 	listen_aphids = ListenerAPHIDS(r)
 	listen_aphids.start()

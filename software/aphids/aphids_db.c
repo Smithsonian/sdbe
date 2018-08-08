@@ -68,8 +68,12 @@ int aphids_get(aphids_context_t * aphids_ctx, char * key, char * value) {
 
   }
 
-  // finally copy over the reply
-  strcpy(value, reply->str);
+  if (strlen(value) >= strlen(reply->str)) {
+    // finally copy over the reply
+    strcpy(value, reply->str);
+  } else {
+    return APHIDS_ERR_GET_FAIL;
+  }
 
   // free reply and exit
   freeReplyObject(reply);
