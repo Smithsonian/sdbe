@@ -107,6 +107,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
 	}
 	uint8_t meta_rx = 0x01 & ((uint8_t)atoi(meta_str));
 	fprintf(stdout,"%s:%s(%d): raw metadata is station=%d, bdc=%d, rx=%d\n",__FILE__,__FUNCTION__,__LINE__,meta_station,meta_bdc,meta_rx);
+	free(meta_str);
 
 	while (run_threads()) { // hashpipe wants us to keep running
 	
