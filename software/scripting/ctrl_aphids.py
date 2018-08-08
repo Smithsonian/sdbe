@@ -139,25 +139,65 @@ def map_quad_sideband_to_vdif_band(quad, sideband, frequency_band):
 			raise ValueError(err_str)
 	elif frequency_band == 345:
 		if sideband == "USB":
-                        if quad == 0:
-                                rx, bdc = 1, 0
-                                return rx, bdc
-                        elif quad == 1:
-                                rx, bdc = 1, 1
-                                return rx, bdc
-                        else:
-                                raise ValueError(err_str)
-                elif sideband == "LSB":
-                        if quad == 0:
-                                rx, bdc = 0, 0
+			if quad == 0:
+				rx, bdc = 1, 0
 				return rx, bdc
-                        elif quad == 1:
-                                rx, bdc = 0, 1
+			elif quad == 1:
+				rx, bdc = 1, 1
 				return rx, bdc
-                        else:
-                                raise ValueError(err_str)
-                else:
-                        raise ValueError(err_str)
+			else:
+				raise ValueError(err_str)
+		elif sideband == "LSB":
+			if quad == 0:
+				rx, bdc = 0, 0
+				return rx, bdc
+			elif quad == 1:
+				rx, bdc = 0, 1
+				return rx, bdc
+			else:
+				raise ValueError(err_str)
+		else:
+			raise ValueError(err_str)
+	else:
+		raise ValueError(err_str)
+
+def map_quad_sideband_to_trim(quad, sideband, frequency_band):
+	sideband = sideband.upper()
+	err_str = 'Unsupported frequency setup: quad={q}, sideband={s}, frequency band={f}'.format(q=quad, s=sideband, f=frequency_band)
+	if frequency_band == 230:
+		if sideband == "USB":
+			if quad == 1:
+				return 150
+			elif quad == 2:
+				return 150
+			else:
+				raise ValueError(err_str)
+		elif sideband == "LSB":
+			if quad == 0:
+				return 102
+			elif quad == 1:
+				return 102
+			else:
+				raise ValueError(err_str)
+		else:
+			raise ValueError(err_str)
+	elif frequency_band == 345:
+		if sideband == "USB":
+			if quad == 0:
+				return 102
+			elif quad == 1:
+				return 102
+			else:
+				raise ValueError(err_str)
+		elif sideband == "LSB":
+			if quad == 0:
+				return 102
+			elif quad == 1:
+				return 102
+			else:
+				raise ValueError(err_str)
+		else:
+			raise ValueError(err_str)
 	else:
 		raise ValueError(err_str)
 
@@ -193,6 +233,14 @@ if __name__ == "__main__":
 		# RX sideband
 		key = (vdif_out_net_thread_prefix % ii) + ":rx"
 		value = str(rx)
+		r.set(key,value)
+
+	# set the band trimming
+	vdif_inout_gpu_thread_prefix = "aphids[%d]:vdif_inout_gpu_thread"
+	mhz = map_quad_sideband_to_trim(args.quad, args.sideband, args.frequency_band)
+	for ii in range(4):
+		key = (vdif_inout_gpu_thread_prefix % ii) + ":trim_from_dc"
+		value = str(mhz)
 		r.set(key,value)
 
 	# start listener
