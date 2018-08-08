@@ -181,7 +181,7 @@ typedef struct aphids_resampler {
 
 /** @brief Initialize resampler structure (including device memory).
  */
-int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
+int aphids_resampler_init(aphids_resampler_t *resampler, int skip_mhz, int _deviceId) {
   // create FFT plans
   int inembed[3], onembed[3];
   cufftResult cufft_status = CUFFT_SUCCESS;
@@ -266,7 +266,7 @@ int aphids_resampler_init(aphids_resampler_t *resampler, int _deviceId) {
    * The number of skipped channels is needed before setting parameters 
    * of the third transform, so define it at the start.
    */
-  resampler->skip_chan = (int)(150e6 / (SWARM_RATE / FFT_SIZE_SWARM_R2C));
+  resampler->skip_chan = (int)(skip_mhz * 1e6 / (SWARM_RATE / FFT_SIZE_SWARM_R2C));
   
   // 1st stage: SwarmC2R IFFT
   resampler->fft_size[0] = FFT_SIZE_SWARM_C2R;
@@ -678,14 +678,14 @@ int R2dbeC2R(aphids_resampler_t *resampler, aphids_context_t *aphids_ctx) {
   float elapsedTime;
   cudaEventRecord(resampler->tic,resampler->stream);
 #endif // GPU_DEBUG
-  // do transform for pol 0, skipping 150MHz at the start
+  // do transform for pol 0, skipping integer MHz at the start
   cufft_status = cufftExecC2R(resampler->cufft_plan[2],
     resampler->swarm_r2c_fft_out_0+resampler->skip_chan, resampler->r2dbe_c2r_ifft_out_0);
   if (cufft_status != CUFFT_SUCCESS){
     hashpipe_error(__FILE__, "CUFFT error: plan 2 execution failed (pol 0)");
     return STATE_ERROR;
   }
-  // do transform for pol 1, skipping 150MHz at the start
+  // do transform for pol 1, skipping integer MHz at the start
   cufft_status = cufftExecC2R(resampler->cufft_plan[2],
     resampler->swarm_r2c_fft_out_1+resampler->skip_chan, resampler->r2dbe_c2r_ifft_out_1);
   if (cufft_status != CUFFT_SUCCESS){
@@ -765,6 +765,14 @@ static void *run_method(hashpipe_thread_args_t * args) {
     return NULL;
   }
 
+  // get the MHz trim parameter
+  char *meta_str = (char *)malloc(sizeof(char)*16);  
+  if (aphids_get(&aphids_ctx, "trim_from_dc", meta_str) != APHIDS_OK) {
+    fprintf(stdout,"%s:%s(%d): could not read MHz trim width, using default\n",__FILE__,__FUNCTION__,__LINE__);
+  }
+  int mhz_trim = atoi(meta_str);
+  fprintf(stdout,"%s:%s(%d): trimming %d MHz from DC\n",__FILE__,__FUNCTION__,__LINE__,mhz_trim);
+  free(meta_str);
 
   /* Initialize GPU  */
   //~ fprintf(stdout, "sizeof(vdif_in_packet_block_t): %d\n", sizeof(vdif_in_packet_block_t));
@@ -773,7 +781,7 @@ static void *run_method(hashpipe_thread_args_t * args) {
   // initalize resampler
   resampler = (aphids_resampler_t *) malloc(NUM_GPU*sizeof(aphids_resampler_t));
   for (i=0; i< NUM_GPU; i++){
-    aphids_resampler_init(&(resampler[i]), i);
+    aphids_resampler_init(&(resampler[i]), mhz_trim, i);
   }
 
 
