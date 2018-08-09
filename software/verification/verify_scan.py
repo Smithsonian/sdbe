@@ -15,6 +15,10 @@ from cross_corr import corr_FXt, corr_Xt_search
 from read_r2dbe_vdif import read_from_file
 from vdif import UTC
 
+import sys
+sys.path.insert(0,"../scripting")
+from ctrl_aphids import map_quad_sideband_to_trim
+
 # set various constants
 filename_delay = "delays.csv"
 aphids_rate = 4096e6
@@ -23,7 +27,6 @@ swarm_rate = 4576e6
 sdbe_spv = 32768 # samples-per-vdif
 r2dbe_spv = 32768 # samples-per-vdif
 sdbe_tpv = 8 # time-per-vdif, in microseconds
-freq_start = 150e6 # r2dbe downconversion
 tags = {0 : "12", 1 : "34"}
 
 def get_scan_flat_files(args, path_dat="./work/array"):
@@ -113,6 +116,12 @@ if __name__ == "__main__":
 						help="two-letter station code used to record single-dish data")
 	parser.add_argument("-v", "--verbose", metavar="VERBOSITY", type=int, default=0,
 						help="set verbosity level to VERBOSITY, 0 = WARNING and higher, 1 = INFO and higher, 2 = DEBUG and higher (default=0)")
+	parser.add_argument("--quad", metavar="QUAD", type=int, default=1,
+						help="SWARM quadrant where data originated from (default is 1)")
+	parser.add_argument("--sideband", metavar="SIDEBAND", type=str, default="USB",
+						help="sideband where data originated from, 'USB' or 'LSB' (default is 'USB')")
+	parser.add_argument("--frequency-band", metavar="RXBAND", type=int, default=230,
+						help="receiver frequency band for observation, 230 or 345 (default is 230)")
 	parser.add_argument("exp", metavar="EXP", type=str,
 						help="experiment name")
 	parser.add_argument("obs", metavar="OBS", type=str,
@@ -120,6 +129,8 @@ if __name__ == "__main__":
 	parser.add_argument("scan", metavar="SCAN", type=str,
 						help="scan name")
 	args = parser.parse_args()
+
+	trim = map_quad_sideband_to_trim(args.quad, args.sideband, args.frequency_band)
 
 	# set paths
 	path_out = args.output_dir
@@ -194,11 +205,11 @@ if __name__ == "__main__":
 		x1_full,v1 = read_from_file(filename_r2dbe,N_vdif_frames,offset_frames=N_skip)
 		logger.info("   skipped {0} frames at start of R2DBE stream, start time is: {1}@{2}+{3}".format(N_skip,v1.ref_epoch,v1.secs_since_epoch,v1.data_frame))
 	
-	# trim 150MHz in x1
+	# trim integer MHz in x1
 	N_fft = 32768
-	idx0_gt150MHz = int(150e6 / (4096e6/N_fft))
+	idx0_gtXXXMHz = int(trim * 1e6 / (4096e6/N_fft))
 	X1_full = fft(x1_full.reshape((-1,N_fft)),axis=1)
-	X1_trim = X1_full[:,idx0_gt150MHz:N_fft/2]
+	X1_trim = X1_full[:,idx0_gtXXXMHz:N_fft/2]
 	x1 = irfft(X1_trim,axis=1,n=N_fft)
 	
 	# compute spectra
@@ -217,8 +228,8 @@ if __name__ == "__main__":
 	#~ X_sdbe[:,[0]] = 0
 	
 	# cross-correlate over wide window with lower averaging
-	r = arange(-4,5)
-	s_0x1,S_0x1,s_peaks = corr_Xt_search(X1[:,:16384],X0[:,:16384],fft_window_size=32768,search_range=r,search_avg=N_vdif_frames/2)
+	r = arange(-128,129)
+	s_0x1,S_0x1,s_peaks = corr_Xt_search(X1[:,:16384],X0[:,:16384],fft_window_size=32768,search_range=r,search_avg=16)#N_vdif_frames/2)
 	noise = s_0x1[s_peaks.argmax(),:].std()
 	signal = abs(s_0x1[s_peaks.argmax(),:]).max()
 	peak_window = r[s_peaks.argmax()]
@@ -245,7 +256,7 @@ if __name__ == "__main__":
 	S1 = (X1 * X1.conj()).mean(axis=0)
 	
 	r = arange(-4,5) + solution_sdbe_window_lag
-	s_0x1,S_0x1,s_peaks = corr_Xt_search(X1[:,:16384],X0[:,:16384],fft_window_size=32768,search_range=r,search_avg=N_vdif_frames/2)
+	s_0x1,S_0x1,s_peaks = corr_Xt_search(X1[:,:16384],X0[:,:16384],fft_window_size=32768,search_range=r,search_avg=16)#N_vdif_frames/2)
 	noise = s_0x1[s_peaks.argmax(),:].std()
 	signal = abs(s_0x1[s_peaks.argmax(),:]).max()
 	peak_window = r[s_peaks.argmax()]
@@ -272,7 +283,7 @@ if __name__ == "__main__":
 				fh.seek(pos,0)
 				break
 	except IOError:
-		fh = open("{0}/{1}".format(path_out,filename_delay),"w")
+		fh = open("{0}/{1}.rx{rx}.sb{sb}.quad{qd}".format(path_out,filename_delay,rx=args.frequency_band,sb=args.sideband,qd=args.quad),"w")
 	fh.write("{0},{1},{2:10.6f}\r\n".format(meta.start_datetime.strftime("%Y-%m-%d %H:%M:%S"),meta.end_datetime.strftime("%Y-%m-%d %H:%M:%S"),aphids_clock_early/1e-6))
 	fh.close()
 	

@@ -4,7 +4,7 @@
 # search strings, and for each matched item calls verify_scan.py on 
 # that scan. Matches are found against pre-processed VDIF output.
 if [ "$#" -lt 3 ] ; then
-	echo "Usage: $0 EXP OBS SCAN [WORK_DIR]
+	echo "Usage: $0 EXP OBS SCAN [WORK_DIR [QUAD SIDEBAND RXBAND [R2INP APHINP]]]
 
 Mandatory arguments:
   EXP        Expriment name
@@ -13,6 +13,11 @@ Mandatory arguments:
 Optional arguments:
   WORK_DIR   Root path to where input / output files are located,
              default is './work'.
+  QUAD       SWARM quadrant where data came from
+  SIDEBAND   Receiver sideband corresponding to data
+  RXBAND     Receiver band for observation
+  R2INP      Input on the R2DBE datastream
+  APHINP     Input on the APHIDS datastream
 
 The program expects the following directories in WORK_DIR:
   WORK_DIR/sched - should contain schedule in .xml format that
@@ -35,6 +40,15 @@ SCAN=$3
 
 # Optional parameters that set paths to input / ouput files
 WORK_DIR=${4-"./work"}
+
+# Optional parameters that set the quadrant, sideband and receiver band
+QUAD=${5-"1"}
+SIDEBAND=${6-"USB"}
+RXBAND=${7-"230"}
+
+# Optional parameters that select inputs
+R2INP=${8-"1"}
+APHINP=${9-"1"}
 
 # Check the required input directories exist
 SCHED_DIR=${WORK_DIR}/sched
@@ -60,7 +74,7 @@ LOG_DIR=${WORK_DIR}/log
 mkdir -p ${LOG_DIR}
 
 EXEC="./verify_scan.py"
-ARGS="-c 32 -v 1"
+ARGS="-c 1024 -v 1 --quad ${QUAD} --sideband ${SIDEBAND} --frequency-band ${RXBAND} --aphids-input ${APHINP} --r2dbe-input ${R2INP}"
 BATCH_LOG="${WORK_DIR}/batch_verify.log"
 
 echo "Batch started `date`" >> $BATCH_LOG
