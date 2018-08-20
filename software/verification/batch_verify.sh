@@ -74,7 +74,7 @@ LOG_DIR=${WORK_DIR}/log
 mkdir -p ${LOG_DIR}
 
 EXEC="./verify_scan.py"
-ARGS="-c 1024 -v 1 --quad ${QUAD} --sideband ${SIDEBAND} --frequency-band ${RXBAND} --aphids-input ${APHINP} --r2dbe-input ${R2INP}"
+ARGS="-c 1024 -v 1 --output-dir ${WORK_DIR} --quad ${QUAD} --sideband ${SIDEBAND} --frequency-band ${RXBAND} --aphids-input ${APHINP} --r2dbe-input ${R2INP}"
 BATCH_LOG="${WORK_DIR}/batch_verify.log"
 
 echo "Batch started `date`" >> $BATCH_LOG
