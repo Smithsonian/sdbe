@@ -270,8 +270,9 @@ if __name__ == "__main__":
 	
 	logger.info("APHIDS clock is early by {0} microseconds".format(aphids_clock_early/1e-6))
 	# write entry into delays file
+	delay_file_path = "{0}/{1}.rx{rx}.sb{sb}.quad{qd}".format(path_out,filename_delay,rx=args.frequency_band,sb=args.sideband,qd=args.quad)
 	try:
-		fh = open("{0}/{1}".format(path_out,filename_delay),"r+")
+		fh = open(delay_file_path,"r+")
 		while True:
 			pos = fh.tell()
 			line = fh.readline()
@@ -283,7 +284,7 @@ if __name__ == "__main__":
 				fh.seek(pos,0)
 				break
 	except IOError:
-		fh = open("{0}/{1}.rx{rx}.sb{sb}.quad{qd}".format(path_out,filename_delay,rx=args.frequency_band,sb=args.sideband,qd=args.quad),"w")
+		fh = open(delay_file_path,"w")
 	fh.write("{0},{1},{2:10.6f}\r\n".format(meta.start_datetime.strftime("%Y-%m-%d %H:%M:%S"),meta.end_datetime.strftime("%Y-%m-%d %H:%M:%S"),aphids_clock_early/1e-6))
 	fh.close()
 	
